@@ -511,7 +511,7 @@ H3
         )
 
         // Install Hermes with termux extras
-        onProgress("Installing Hermes (pip install -e .[termux])…", "This may take several minutes")
+        onProgress("Installing Hermes (pip install -e .[termux]) — this may take several minutes…")
         val installCmd = """
             cd ${homeDir}/hermes-agent &&
             . .venv/bin/activate &&
