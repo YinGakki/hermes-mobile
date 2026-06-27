@@ -40,9 +40,9 @@ android {
             val keyAlias = System.getenv("SIGNING_KEY_ALIAS")
             val keyPwd = System.getenv("SIGNING_KEY_PASSWORD")
 
-            if (!keystorePath.isNullOrEmpty() && java.io.File(keystorePath).exists()) {
+            if (!keystorePath.isNullOrEmpty() && File(keystorePath).exists()) {
                 signingConfig = signingConfigs.create("release") {
-                    storeFile = java.io.File(keystorePath)
+                    storeFile = File(keystorePath)
                     storePassword = keystorePwd
                     this.keyAlias = keyAlias
                     this.keyPassword = keyPwd
