@@ -74,14 +74,17 @@ jobs:
           echo "Bootstrap: $(wc -c < "$f") bytes"
 
       - name: Decode signing keystore
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == '1'
         env:
+          # GitHub Actions forbids the `secrets` context in step-level `if:`,
+          # so forward the secret to env first, and gate the step on that flag.
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/keystore"
-          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/release.jks"
           echo "Keystore decoded ($(wc -c < "$RUNNER_TEMP/keystore/release.jks") bytes)"
 
       - name: Build release APK
