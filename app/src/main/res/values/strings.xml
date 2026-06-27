@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hermes Agent</string>
+    <string name="status_initializing">Initializing…</string>
+    <string name="status_extracting_bootstrap">Extracting environment…</string>
+    <string name="status_installing_python">Installing Python…</string>
+    <string name="status_installing_build_deps">Installing build dependencies…</string>
+    <string name="status_installing_hermes">Installing Hermes Agent…</string>
+    <string name="status_verifying">Verifying install…</string>
+    <string name="done_title">Hermes Agent is ready</string>
+    <string name="done_subtitle">Launch a shell to start chatting.</string>
+    <string name="action_open_shell">Open Shell</string>
+    <string name="action_rerun_setup">Re-run Setup</string>
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+    <string name="error_title">Error</string>
+    <string name="retry">Retry</string>
+</resources>

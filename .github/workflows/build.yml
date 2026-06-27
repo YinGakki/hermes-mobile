@@ -1,0 +1,142 @@
+name: Build Release APK
+
+# Build a self-signed release APK that embeds the Termux bootstrap and
+# installs Hermes Agent on first launch.
+#
+# Required GitHub Secrets:
+#   KEYSTORE_BASE64        Base64-encoded .jks keystore (from `keytool -genkeypair`)
+#   KEYSTORE_PASSWORD      Keystore password
+#   SIGNING_KEY_ALIAS      Alias of the signing key inside the keystore
+#   SIGNING_KEY_PASSWORD   Password for that alias
+#
+# Optional (used only by the "release" job to publish a GitHub Release):
+#   (none — releases are created from pushed tags; the workflow uploads
+#    the APK as a build artifact in all cases)
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: assembleRelease (arm64-v8a)
+    runs-on: ubuntu-latest
+
+    env:
+      # Must match the abiFilters / bootstrap arch used in app/build.gradle.kts.
+      TERMUX_ARCH: aarch64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # Accept licenses non-interactively and pre-install the platform/build-tools
+          # versions declared by compileSdk in app/build.gradle.kts.
+          packages: |
+            platforms;android-35
+            build-tools;35.0.0
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Download Termux bootstrap (${{ env.TERMUX_ARCH }})
+        shell: bash
+        run: ./scripts/download-bootstrap.sh --arch ${{ env.TERMUX_ARCH }}
+
+      - name: Verify bootstrap is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="app/src/main/assets/bootstrap-${TERMUX_ARCH}.zip"
+          if [ ! -s "$f" ]; then
+            echo "ERROR: $f missing or empty"
+            exit 1
+          fi
+          echo "Bootstrap: $(wc -c < "$f") bytes"
+
+      - name: Decode signing keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/keystore"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/release.jks"
+          echo "Keystore decoded ($(wc -c < "$RUNNER_TEMP/keystore/release.jks") bytes)"
+
+      - name: Build release APK
+        env:
+          SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/keystore/release.jks
+          SIGNING_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          ./gradlew :app:assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -Pandroid.builder.sdkDownload=false
+
+      - name: Locate built APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/release -name '*.apk' | head -n1)
+          if [ -z "$apk" ]; then
+            echo "ERROR: no APK produced"
+            exit 1
+          fi
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$apk")" >> "$GITHUB_OUTPUT"
+          echo "Found APK: $apk ($(wc -c < "$apk") bytes)"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-agent-arm64-release
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release (on tag)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hermes-agent-arm64-release
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true

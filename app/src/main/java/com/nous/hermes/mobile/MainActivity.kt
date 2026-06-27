@@ -1,0 +1,251 @@
+package com.nous.hermes.mobile
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.util.Log
+import android.view.View
+import android.widget.Button
+import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+
+class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "HermesMainActivity"
+    }
+
+    private lateinit var loadingOverlay: View
+    private lateinit var statusText: TextView
+    private lateinit var statusDetail: TextView
+    private lateinit var logView: TextView
+    private lateinit var logScroll: ScrollView
+    private lateinit var progressBar: ProgressBar
+    private lateinit var doneLayout: View
+    private lateinit var openShellButton: Button
+    private lateinit var retryButton: Button
+    private lateinit var serverManager: HermesServerManager
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        loadingOverlay = findViewById(R.id.loadingOverlay)
+        statusText = findViewById(R.id.statusText)
+        statusDetail = findViewById(R.id.statusDetail)
+        progressBar = findViewById(R.id.progressBar)
+        logView = findViewById(R.id.logView)
+        logScroll = findViewById(R.id.logScroll)
+        doneLayout = findViewById(R.id.doneLayout)
+        openShellButton = findViewById(R.id.openShellButton)
+        retryButton = findViewById(R.id.retryButton)
+
+        serverManager = HermesServerManager(this)
+
+        requestBatteryOptimizationExemption()
+        startForegroundService()
+
+        openShellButton.setOnClickListener {
+            // Open the official Termux app if installed; otherwise show instructions
+            try {
+                val intent = packageManager.getLaunchIntentForPackage("com.termux")
+                if (intent != null) {
+                    startActivity(intent)
+                } else {
+                    showShellInstructions()
+                }
+            } catch (e: Exception) {
+                showShellInstructions()
+            }
+        }
+
+        retryButton.setOnClickListener {
+            startSetupFlow()
+        }
+
+        startSetupFlow()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serverManager.stopHermes()
+        stopService(Intent(this, HermesForegroundService::class.java))
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+
+        try {
+            @Suppress("BatteryLife")
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not request battery optimization exemption: ${e.message}")
+        }
+    }
+
+    private fun startForegroundService() {
+        val intent = Intent(this, HermesForegroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun startSetupFlow() {
+        showLoading(true)
+        doneLayout.visibility = View.GONE
+        logView.text = ""
+        setStatus("Initializing…")
+
+        Thread {
+            try {
+                runSetup()
+            } catch (e: Exception) {
+                Log.e(TAG, "Setup failed", e)
+                runOnUiThread {
+                    showError(e.message ?: "Unknown error")
+                }
+            }
+        }.start()
+    }
+
+    private fun runSetup() {
+        // Step 1: Extract bootstrap
+        if (!BootstrapInstaller.isBootstrapInstalled(this)) {
+            updateStatus("Extracting environment…")
+            BootstrapInstaller.install(this) { msg -> updateStatus(msg) }
+        }
+        updateStatus("Environment ready")
+
+        // Step 2: Install proot (needed for dpkg/apt-get path remapping)
+        if (!serverManager.isProotInstalled()) {
+            updateStatus("Installing proot…", "Needed for package management")
+            val prootOk = serverManager.installProot { msg -> updateDetail(msg) }
+            if (!prootOk) {
+                throw RuntimeException("Failed to install proot")
+            }
+        }
+        updateStatus("proot ready")
+
+        // Step 3: Install Python (Hermes core runtime)
+        if (!serverManager.isPythonInstalled()) {
+            updateStatus("Installing Python…", "This may take a few minutes")
+            val pyOk = serverManager.installPython { msg -> updateDetail(msg) }
+            if (!pyOk) {
+                throw RuntimeException("Failed to install Python")
+            }
+        }
+        updateStatus("Python ready")
+
+        // Step 4: Install build deps (rust, clang, make, libffi, openssl, etc.)
+        updateStatus("Installing build dependencies…", "rust, clang, make, openssl, …")
+        val depsOk = serverManager.installHermesBuildDeps { msg -> updateDetail(msg) }
+        if (!depsOk) {
+            Log.w(TAG, "Build deps install had issues — continuing")
+        }
+        updateStatus("Build dependencies ready")
+
+        // Step 5: Install Hermes Agent
+        if (!serverManager.isHermesInstalled()) {
+            updateStatus("Installing Hermes Agent…", "git clone + pip install -e .[termux]")
+            val hermesOk = serverManager.installHermes { msg -> updateDetail(msg) }
+            if (!hermesOk) {
+                throw RuntimeException("Failed to install Hermes Agent")
+            }
+        } else {
+            updateStatus("Hermes Agent already installed")
+        }
+        updateStatus("Hermes Agent installed")
+
+        // Step 6: Write skeleton config
+        serverManager.configureHermesSkeleton()
+
+        // Step 7: Health check
+        updateStatus("Verifying install…", "hermes --version")
+        val healthOk = serverManager.healthCheck { msg -> updateDetail(msg) }
+        if (!healthOk) {
+            Log.w(TAG, "Health check failed — Hermes may still work, continuing")
+        }
+        updateStatus("Setup complete")
+
+        // Step 8: Show the done screen
+        runOnUiThread {
+            showLoading(false)
+            doneLayout.visibility = View.VISIBLE
+        }
+    }
+
+    private fun showShellInstructions() {
+        val paths = BootstrapInstaller.getPaths(this)
+        val msg = """
+            |Hermes Agent is installed at:
+            |${paths.prefixDir}
+            |
+            |To start chatting, install Termux from F-Droid, then run:
+            |
+            |    export PATH=${paths.prefixDir}/bin:${'$'}PATH
+            |    export HOME=${paths.homeDir}
+            |    cd ${paths.homeDir}/hermes-agent
+            |    . .venv/bin/activate
+            |    hermes setup
+            |    hermes
+            |
+            |Or run `hermes setup --portal` to use Nous Portal (free OAuth).
+        """.trimMargin()
+        AlertDialog.Builder(this)
+            .setTitle("How to use Hermes")
+            .setMessage(msg)
+            .setPositiveButton(R.string.ok, null)
+            .show()
+    }
+
+    private fun showError(message: String) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.error_title)
+            .setMessage(message)
+            .setPositiveButton(R.string.retry) { _, _ -> startSetupFlow() }
+            .setNegativeButton(R.string.cancel) { _, _ -> finish() }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun showLoading(show: Boolean) {
+        loadingOverlay.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    private fun setStatus(text: String, detail: String? = null) {
+        statusText.text = text
+        if (detail != null) {
+            statusDetail.text = detail
+            statusDetail.visibility = View.VISIBLE
+        } else {
+            statusDetail.visibility = View.GONE
+        }
+    }
+
+    private fun updateStatus(text: String, detail: String? = null) {
+        runOnUiThread { setStatus(text, detail) }
+    }
+
+    private fun updateDetail(text: String) {
+        runOnUiThread {
+            statusDetail.text = text
+            statusDetail.visibility = View.VISIBLE
+            // Append to log view too
+            logView.append(text + "\n")
+            logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        }
+    }
+}
