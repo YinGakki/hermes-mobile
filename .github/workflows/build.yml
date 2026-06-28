@@ -187,7 +187,7 @@ jobs:
             --extra libuv --extra libnghttp2 --extra libnghttp3 \
             --extra ripgrep --extra rhash --extra jsoncpp \
             --extra libedit --extra ndk-sysroot --extra ndk-multilib --extra libcompiler-rt \
-            --extra nodejs-lts --extra npm --extra c-ares --extra libicu \
+            --extra nodejs --extra npm --extra c-ares --extra libicu \
             --extra cmake --extra libllvm --extra lld
           echo "---"
           echo "Bundle contents:"

@@ -10,7 +10,13 @@
     <string name="done_title">Hermes Agent is ready</string>
     <string name="done_subtitle">Launch a shell to start chatting.</string>
     <string name="action_open_shell">Open Shell</string>
+    <string name="action_install_chat">Install Chat UI</string>
+    <string name="action_open_chat">Open Chat UI</string>
     <string name="action_rerun_setup">Re-run Setup</string>
+    <string name="chat_installing">Installing hermes-web-ui (npm install, ~30 MB)…</string>
+    <string name="chat_starting">Starting hermes-web-ui server…</string>
+    <string name="chat_install_failed">Failed to install hermes-web-ui. Check log for details.</string>
+    <string name="chat_start_failed">Failed to start hermes-web-ui server.</string>
     <string name="ok">OK</string>
     <string name="cancel">Cancel</string>
     <string name="error_title">Error</string>

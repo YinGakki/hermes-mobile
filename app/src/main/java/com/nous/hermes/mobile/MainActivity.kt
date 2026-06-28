@@ -30,8 +30,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var doneLayout: View
     private lateinit var openShellButton: Button
+    private lateinit var chatButton: Button
     private lateinit var retryButton: Button
     private lateinit var serverManager: HermesServerManager
+    private lateinit var studioInstaller: HermesStudioInstaller
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,9 +47,11 @@ class MainActivity : AppCompatActivity() {
         logScroll = findViewById(R.id.logScroll)
         doneLayout = findViewById(R.id.doneLayout)
         openShellButton = findViewById(R.id.openShellButton)
+        chatButton = findViewById(R.id.chatButton)
         retryButton = findViewById(R.id.retryButton)
 
         serverManager = HermesServerManager(this)
+        studioInstaller = HermesStudioInstaller(this)
 
         requestBatteryOptimizationExemption()
         startForegroundService()
@@ -70,7 +74,112 @@ class MainActivity : AppCompatActivity() {
             startSetupFlow()
         }
 
+        chatButton.setOnClickListener {
+            onChatButtonClicked()
+        }
+
+        // Sync chat button label with current install state on launch
+        updateChatButtonLabel()
+
         startSetupFlow()
+    }
+
+    /**
+     * If hermes-web-ui is already installed, label the button "Open Chat UI"
+     * and start the server + WebView. Otherwise label it "Install Chat UI"
+     * and run `npm install -g hermes-web-ui` first (with progress dialog).
+     */
+    private fun updateChatButtonLabel() {
+        chatButton.text = if (studioInstaller.isInstalled()) {
+            getString(R.string.action_open_chat)
+        } else {
+            getString(R.string.action_install_chat)
+        }
+    }
+
+    private fun onChatButtonClicked() {
+        if (!studioInstaller.isInstalled()) {
+            // Phase 1: install hermes-web-ui via npm (one-time, ~30MB)
+            installChatUi()
+            return
+        }
+        // Already installed — start server + open WebView
+        startChatServerAndOpen()
+    }
+
+    private fun installChatUi() {
+        // Show a non-cancelable progress dialog during npm install.
+        val dialog = android.app.ProgressDialog(this).apply {
+            setMessage(getString(R.string.chat_installing))
+            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
+            isIndeterminate = true
+            setCancelable(false)
+            show()
+        }
+        Thread {
+            val ok = studioInstaller.install { msg ->
+                runOnUiThread {
+                    dialog.setMessage(msg)
+                    logView.append("$msg\n")
+                    logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+                }
+            }
+            runOnUiThread {
+                dialog.dismiss()
+                if (ok) {
+                    updateChatButtonLabel()
+                    // Auto-start server + open WebView now that install succeeded
+                    startChatServerAndOpen()
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.error_title)
+                        .setMessage(getString(R.string.chat_install_failed))
+                        .setPositiveButton(R.string.retry) { _, _ -> installChatUi() }
+                        .setNegativeButton(R.string.cancel, null)
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    private fun startChatServerAndOpen() {
+        if (studioInstaller.isRunning) {
+            openChatWebView()
+            return
+        }
+        // Show brief progress while server starts (~2s)
+        val dialog = android.app.ProgressDialog(this).apply {
+            setMessage(getString(R.string.chat_starting))
+            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
+            isIndeterminate = true
+            setCancelable(false)
+            show()
+        }
+        Thread {
+            val ok = studioInstaller.start { msg ->
+                runOnUiThread { dialog.setMessage(msg) }
+            }
+            runOnUiThread {
+                dialog.dismiss()
+                if (ok) {
+                    openChatWebView()
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.error_title)
+                        .setMessage(getString(R.string.chat_start_failed))
+                        .setPositiveButton(R.string.retry) { _, _ -> startChatServerAndOpen() }
+                        .setNegativeButton(R.string.cancel, null)
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    private fun openChatWebView() {
+        val intent = Intent(this, ChatActivity::class.java).apply {
+            putExtra(ChatActivity.EXTRA_BASE_URL, HermesStudioInstaller.STUDIO_BASE_URL)
+        }
+        startActivity(intent)
     }
 
     override fun onDestroy() {

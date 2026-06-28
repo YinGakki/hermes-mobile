@@ -23,6 +23,45 @@ class HermesServerManager(private val context: Context) {
         private const val TAG = "HermesServerManager"
         const val HERMES_PORT = 18789
         private const val HERMES_REPO = "https://github.com/NousResearch/hermes-agent.git"
+
+        /**
+         * Build the Termux-prefix environment map for use by other classes
+         * (e.g. HermesStudioInstaller) that need to spawn processes in the
+         * prefix without going through runInPrefix (e.g. for long-running
+         * server processes that need their stdout drained in a custom way).
+         */
+        fun buildEnvMap(context: Context, paths: BootstrapInstaller.Paths): Map<String, String> {
+            return mapOf(
+                "PREFIX" to paths.prefixDir,
+                "HOME" to paths.homeDir,
+                "PATH" to "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin",
+                "LD_LIBRARY_PATH" to "${paths.prefixDir}/lib",
+                "LD_PRELOAD" to "${paths.prefixDir}/lib/libtermux-exec.so",
+                "TERMUX_PREFIX" to paths.prefixDir,
+                "TERMUX__PREFIX" to paths.prefixDir,
+                "LANG" to "en_US.UTF-8",
+                "TMPDIR" to paths.tmpDir,
+                "TMP" to paths.tmpDir,
+                "TEMP" to paths.tmpDir,
+                "PROOT_TMP_DIR" to paths.tmpDir,
+                "TERM" to "xterm-256color",
+                "ANDROID_DATA" to "/data",
+                "ANDROID_ROOT" to "/system",
+                "APT_CONFIG" to "${paths.prefixDir}/etc/apt/apt.conf",
+                "DPKG_ADMINDIR" to "${paths.prefixDir}/var/lib/dpkg",
+                "SSL_CERT_FILE" to "${paths.prefixDir}/etc/tls/cert.pem",
+                "SSL_CERT_DIR" to "/system/etc/security/cacerts",
+                "CURL_CA_BUNDLE" to "${paths.prefixDir}/etc/tls/cert.pem",
+                "GIT_SSL_CAINFO" to "${paths.prefixDir}/etc/tls/cert.pem",
+                "GIT_CONFIG_NOSYSTEM" to "1",
+                "GIT_EXEC_PATH" to "${paths.prefixDir}/libexec/git-core",
+                "GIT_TEMPLATE_DIR" to "${paths.prefixDir}/share/git-core/templates",
+                "OPENSSL_CONF" to "${paths.prefixDir}/etc/tls/openssl.cnf",
+                "CONTAINER" to "1",
+                "CARGO_HOME" to "${paths.homeDir}/.cargo",
+                "RUSTUP_HOME" to "${paths.homeDir}/.rustup",
+            )
+        }
     }
 
     private var hermesProcess: Process? = null
@@ -328,7 +367,7 @@ class HermesServerManager(private val context: Context) {
                 val downloadCmd = """
                     cd $prefix/tmp &&
                     apt-get update --allow-insecure-repositories 2>&1;
-                    apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs-lts npm 2>&1
+                    apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs npm 2>&1
                 """.trimIndent()
                 val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
                 if (dlCode != 0) {
@@ -531,7 +570,7 @@ WEOF
      * Retry helper with exponential backoff. Used for apt/pip operations
      * that fail transiently due to Termux repo mirror or PyPI flakiness.
      */
-    private fun runWithRetry(
+    internal fun runWithRetry(
         maxAttempts: Int,
         baseDelayMs: Long,
         onProgress: (String) -> Unit,
@@ -1100,39 +1139,7 @@ WEOF
 
     // ── Environment ─────────────────────────────────────────────────────────
 
-    private fun buildEnvironment(
+    internal fun buildEnvironment(
         paths: BootstrapInstaller.Paths,
-    ): Map<String, String> {
-        return mapOf(
-            "PREFIX" to paths.prefixDir,
-            "HOME" to paths.homeDir,
-            "PATH" to "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin",
-            "LD_LIBRARY_PATH" to "${paths.prefixDir}/lib",
-            "LD_PRELOAD" to "${paths.prefixDir}/lib/libtermux-exec.so",
-            "TERMUX_PREFIX" to paths.prefixDir,
-            "TERMUX__PREFIX" to paths.prefixDir,
-            "LANG" to "en_US.UTF-8",
-            "TMPDIR" to paths.tmpDir,
-            "TMP" to paths.tmpDir,
-            "TEMP" to paths.tmpDir,
-            "PROOT_TMP_DIR" to paths.tmpDir,
-            "TERM" to "xterm-256color",
-            "ANDROID_DATA" to "/data",
-            "ANDROID_ROOT" to "/system",
-            "APT_CONFIG" to "${paths.prefixDir}/etc/apt/apt.conf",
-            "DPKG_ADMINDIR" to "${paths.prefixDir}/var/lib/dpkg",
-            "SSL_CERT_FILE" to "${paths.prefixDir}/etc/tls/cert.pem",
-            "SSL_CERT_DIR" to "/system/etc/security/cacerts",
-            "CURL_CA_BUNDLE" to "${paths.prefixDir}/etc/tls/cert.pem",
-            "GIT_SSL_CAINFO" to "${paths.prefixDir}/etc/tls/cert.pem",
-            "GIT_CONFIG_NOSYSTEM" to "1",
-            "GIT_EXEC_PATH" to "${paths.prefixDir}/libexec/git-core",
-            "GIT_TEMPLATE_DIR" to "${paths.prefixDir}/share/git-core/templates",
-            "OPENSSL_CONF" to "${paths.prefixDir}/etc/tls/openssl.cnf",
-            "CONTAINER" to "1",
-            // Rust toolchain env (helps maturin/cargo on Termux)
-            "CARGO_HOME" to "${paths.homeDir}/.cargo",
-            "RUSTUP_HOME" to "${paths.homeDir}/.rustup",
-        )
-    }
+    ): Map<String, String> = buildEnvMap(context, paths)
 }
