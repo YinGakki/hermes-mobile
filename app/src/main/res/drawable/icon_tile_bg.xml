@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icon tile background — the square that holds the card's leading icon.
+     Matches OpenClaw: 12dp corners, dark slate fill. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#1e293b" />
+    <corners android:radius="12dp" />
+</shape>

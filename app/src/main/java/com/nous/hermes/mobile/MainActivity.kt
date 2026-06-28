@@ -48,9 +48,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private lateinit var doneLayout: View
-    private lateinit var openShellButton: Button
-    private lateinit var chatButton: Button
-    private lateinit var retryButton: Button
+    private lateinit var openShellButton: View
+    private lateinit var chatButton: View
+    private lateinit var retryButton: View
+    private lateinit var chatCardTitle: TextView
+    private lateinit var chatCardSubtitle: TextView
+    private lateinit var versionFooter: TextView
     private lateinit var installProgressContainer: View
     private lateinit var installProgressBar: ProgressBar
     private lateinit var progressPercentText: TextView
@@ -89,6 +92,10 @@ class MainActivity : AppCompatActivity() {
         openShellButton = findViewById(R.id.openShellButton)
         chatButton = findViewById(R.id.chatButton)
         retryButton = findViewById(R.id.retryButton)
+        chatCardTitle = findViewById(R.id.chatCardTitle)
+        chatCardSubtitle = findViewById(R.id.chatCardSubtitle)
+        versionFooter = findViewById(R.id.versionFooter)
+        versionFooter.text = getString(R.string.dashboard_version, getVersionName())
         installProgressContainer = findViewById(R.id.installProgressContainer)
         installProgressBar = findViewById(R.id.installProgressBar)
         progressPercentText = findViewById(R.id.progressPercent)
@@ -443,10 +450,21 @@ class MainActivity : AppCompatActivity() {
     // ── Chat UI ─────────────────────────────────────────────────────────────
 
     private fun updateChatButtonLabel() {
-        chatButton.text = if (studioInstaller.isInstalled()) {
-            getString(R.string.action_open_chat)
+        if (studioInstaller.isInstalled()) {
+            chatCardTitle.text = getString(R.string.action_open_chat)
+            chatCardSubtitle.text = getString(R.string.card_open_chat_subtitle_open)
         } else {
-            getString(R.string.action_install_chat)
+            chatCardTitle.text = getString(R.string.card_open_chat_title)
+            chatCardSubtitle.text = getString(R.string.card_open_chat_subtitle_install)
+        }
+    }
+
+    private fun getVersionName(): String {
+        return try {
+            val pi = packageManager.getPackageInfo(packageName, 0)
+            pi.versionName ?: "0.1.0"
+        } catch (e: Exception) {
+            "0.1.0"
         }
     }
 

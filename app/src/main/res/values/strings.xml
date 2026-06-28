@@ -46,4 +46,17 @@
     <!-- Install progress bar -->
     <string name="progress_starting">准备安装…</string>
     <string name="progress_done">安装完成</string>
+
+    <!-- Dashboard (post-install) -->
+    <string name="dashboard_quick_actions">快捷操作</string>
+    <string name="dashboard_status_ready">Hermes Agent 已就绪</string>
+    <string name="dashboard_status_subtitle">点击下方操作开始使用</string>
+    <string name="card_open_shell_title">打开终端</string>
+    <string name="card_open_shell_subtitle">在 Termux 中使用 hermes 命令</string>
+    <string name="card_open_chat_title">聊天界面</string>
+    <string name="card_open_chat_subtitle_install">安装 hermes-web-ui (npm, ~30MB)</string>
+    <string name="card_open_chat_subtitle_open">打开 Hermes Web 聊天界面</string>
+    <string name="card_rerun_title">重新运行安装</string>
+    <string name="card_rerun_subtitle">重新执行 bootstrap 和安装步骤</string>
+    <string name="dashboard_version">Hermes Agent v%1$s</string>
 </resources>

@@ -121,6 +121,9 @@
                     android:layout_weight="1"
                     android:layout_height="wrap_content"
                     android:text="@string/step_proot"
+                    android:textColor="#e2e8f0"
+                    android:background="@drawable/step_button_bg"
+                    android:padding="12dp"
                     android:layout_marginEnd="8dp" />
 
                 <ProgressBar
@@ -146,6 +149,9 @@
                     android:layout_weight="1"
                     android:layout_height="wrap_content"
                     android:text="@string/step_python"
+                    android:textColor="#e2e8f0"
+                    android:background="@drawable/step_button_bg"
+                    android:padding="12dp"
                     android:layout_marginEnd="8dp" />
 
                 <ProgressBar
@@ -171,6 +177,9 @@
                     android:layout_weight="1"
                     android:layout_height="wrap_content"
                     android:text="@string/step_build_deps"
+                    android:textColor="#e2e8f0"
+                    android:background="@drawable/step_button_bg"
+                    android:padding="12dp"
                     android:layout_marginEnd="8dp" />
 
                 <ProgressBar
@@ -196,6 +205,9 @@
                     android:layout_weight="1"
                     android:layout_height="wrap_content"
                     android:text="@string/step_hermes"
+                    android:textColor="#e2e8f0"
+                    android:background="@drawable/step_button_bg"
+                    android:padding="12dp"
                     android:layout_marginEnd="8dp" />
 
                 <ProgressBar
@@ -239,54 +251,266 @@
 
     </LinearLayout>
 
-    <!-- Done overlay: shown after all setup completes -->
-    <LinearLayout
+    <!-- Done overlay: shown after all setup completes.
+         Dashboard-style card list inspired by openclaw-termux's StatusCard
+         layout (icon tile + title/subtitle + chevron). -->
+    <ScrollView
         android:id="@+id/doneLayout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="32dp"
+        android:fillViewport="true"
         android:visibility="gone">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/done_title"
-            android:textColor="#818cf8"
-            android:textSize="20sp"
-            android:textStyle="bold" />
+            android:orientation="vertical"
+            android:padding="20dp">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/done_subtitle"
-            android:textColor="#94a3b8"
-            android:textSize="14sp" />
+            <!-- Status header -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/card_bg"
+                android:padding="16dp"
+                android:layout_marginBottom="20dp">
 
-        <Button
-            android:id="@+id/openShellButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:text="@string/action_open_shell" />
+                <LinearLayout
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:gravity="center"
+                    android:background="@drawable/icon_tile_bg">
 
-        <Button
-            android:id="@+id/chatButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/action_install_chat" />
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_launcher_foreground"
+                        android:contentDescription="@null" />
+                </LinearLayout>
 
-        <Button
-            android:id="@+id/retryButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/action_rerun_setup"
-            style="?android:attr/buttonBarButtonStyle" />
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:orientation="vertical">
 
-    </LinearLayout>
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/dashboard_status_ready"
+                        android:textColor="#e2e8f0"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/dashboard_status_subtitle"
+                        android:textColor="#94a3b8"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Section header -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginBottom="8dp"
+                android:text="@string/dashboard_quick_actions"
+                android:textColor="#64748b"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.1" />
+
+            <!-- Card: Open Shell -->
+            <LinearLayout
+                android:id="@+id/openShellButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/card_bg_clickable"
+                android:padding="16dp"
+                android:layout_marginBottom="10dp"
+                android:clickable="true"
+                android:focusable="true">
+
+                <LinearLayout
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:gravity="center"
+                    android:background="@drawable/icon_tile_bg">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_terminal"
+                        android:contentDescription="@null" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/card_open_shell_title"
+                        android:textColor="#e2e8f0"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/card_open_shell_subtitle"
+                        android:textColor="#94a3b8"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_chevron"
+                    android:contentDescription="@null" />
+            </LinearLayout>
+
+            <!-- Card: Open Chat -->
+            <LinearLayout
+                android:id="@+id/chatButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/card_bg_clickable"
+                android:padding="16dp"
+                android:layout_marginBottom="10dp"
+                android:clickable="true"
+                android:focusable="true">
+
+                <LinearLayout
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:gravity="center"
+                    android:background="@drawable/icon_tile_bg">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_chat"
+                        android:contentDescription="@null" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/chatCardTitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/card_open_chat_title"
+                        android:textColor="#e2e8f0"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/chatCardSubtitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/card_open_chat_subtitle_install"
+                        android:textColor="#94a3b8"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_chevron"
+                    android:contentDescription="@null" />
+            </LinearLayout>
+
+            <!-- Card: Re-run setup -->
+            <LinearLayout
+                android:id="@+id/retryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/card_bg_clickable"
+                android:padding="16dp"
+                android:layout_marginBottom="10dp"
+                android:clickable="true"
+                android:focusable="true">
+
+                <LinearLayout
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:gravity="center"
+                    android:background="@drawable/icon_tile_bg">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@drawable/ic_refresh"
+                        android:contentDescription="@null" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/card_rerun_title"
+                        android:textColor="#e2e8f0"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/card_rerun_subtitle"
+                        android:textColor="#94a3b8"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_chevron"
+                    android:contentDescription="@null" />
+            </LinearLayout>
+
+            <!-- Footer: version -->
+            <TextView
+                android:id="@+id/versionFooter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:textColor="#475569"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+    </ScrollView>
 
 </FrameLayout>

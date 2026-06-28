@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rounded card background for dashboard-style list items.
+     Matches OpenClaw's StatusCard: 12dp corners, slightly lighter than
+     the window background so cards lift off the deep-navy canvas. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#0f172a" />
+    <corners android:radius="12dp" />
+    <stroke
+        android:width="1dp"
+        android:color="#1e293b" />
+</shape>
