@@ -117,25 +117,19 @@ jobs:
           mkdir -p "$wheelhouse"
           cd "$hermes_dir"
 
-          # Pass 1: wheels only, targeting manylinux x86_64 + py3-none-any.
-          # --only-binary=:all: forces wheels (no sdists); packages without a
-          # matching wheel are skipped here but caught in pass 2.
+          # Single pass: wheels only, targeting manylinux x86_64 + py3-none-any.
+          # --only-binary=:all: is REQUIRED when --platform/--python-version are
+          # set (pip rejects mixing platform constraints with sdists otherwise).
+          # This fetches every wheel available for the target: pure-python
+          # (py3-none-any, which installs fine on Android aarch64) + manylinux
+          # x86_64 (which pip skips at install time on Android, falling back
+          # to PyPI for the Android-native build — see HermesServerManager).
           pip download --dest "$wheelhouse" \
             '.[termux]' \
             -c constraints-termux.txt \
             --platform manylinux2014_x86_64 \
             --python-version 311 \
             --only-binary=:all: 2>&1 | tail -20 || true
-
-          # Pass 2: also fetch sdists for pure-python packages that have no
-          # manylinux wheel. sdists of pure-python packages install fine on
-          # Android (they're just .py files, no compilation). sdists of native
-          # packages would need compilation — those get skipped at install
-          # time and fetched fresh from PyPI/Termux.
-          pip download --dest "$wheelhouse" \
-            '.[termux]' \
-            -c constraints-termux.txt \
-            --python-version 311 2>&1 | tail -20 || true
 
           echo "Wheel cache contents:"
           ls -1 "$wheelhouse" | head -30
