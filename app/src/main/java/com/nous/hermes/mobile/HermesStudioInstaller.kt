@@ -111,7 +111,7 @@ class HermesStudioInstaller(private val context: Context) {
         val prefix = paths.prefixDir
         val homeDir = paths.homeDir
 
-        val env = HermesServerManager.buildEnvMap(context, paths)
+        val env = HermesServerManager.buildEnvMap(context, paths).toMutableMap()
         // hermes-web-ui reads PORT from env (default 8648)
         env["PORT"] = STUDIO_PORT.toString()
         env["NODE_ENV"] = "production"
