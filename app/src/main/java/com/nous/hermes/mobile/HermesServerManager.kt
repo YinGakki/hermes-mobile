@@ -926,25 +926,37 @@ H3
         // This is a targeted fix that downloads just the missing lib.
         ensureCurlDeps(prefix, onProgress)
 
-        // Clone Hermes (idempotent + retry). GitHub clone can fail
-        // transiently due to network blips; retry up to 3 times.
-        // Falls back to tarball download if git-remote-https is broken
-        // (e.g. libcurl/libngtcp2 symbol mismatch).
+        // Clone Hermes (idempotent + retry). GitHub may be blocked in some
+        // networks (e.g. GFW in China), so we try multiple clone URLs
+        // including Chinese mirror sites. Falls back to tarball download
+        // (also with mirror URLs) if git-remote-https is broken.
         if (!File(homeDir, "hermes-agent/pyproject.toml").exists()) {
-            val cloneOk = runWithRetry(
-                maxAttempts = 3,
-                baseDelayMs = 3000L,
-                onProgress = onProgress,
-                what = "git clone hermes-agent",
-            ) {
-                onProgress("Cloning Hermes Agent repository…")
-                runInPrefix(
-                    "cd ${homeDir} && rm -rf hermes-agent && git clone --depth 1 $HERMES_REPO hermes-agent 2>&1",
-                    onOutput = { onProgress(it) },
-                ) == 0 && File(homeDir, "hermes-agent/pyproject.toml").exists()
+            // Git clone URLs — try official first, then Chinese mirrors
+            val cloneUrls = listOf(
+                HERMES_REPO,
+                "https://kkgithub.com/NousResearch/hermes-agent.git",
+                "https://bgithub.xyz/NousResearch/hermes-agent.git",
+            )
+            var cloneOk = false
+            for (cloneUrl in cloneUrls) {
+                cloneOk = runWithRetry(
+                    maxAttempts = 2,
+                    baseDelayMs = 3000L,
+                    onProgress = onProgress,
+                    what = "git clone from ${cloneUrl.substringAfter("://").substringBefore("/")}",
+                ) {
+                    onProgress("Cloning Hermes Agent repository from $cloneUrl…")
+                    runInPrefix(
+                        "cd ${homeDir} && rm -rf hermes-agent && git clone --depth 1 $cloneUrl hermes-agent 2>&1",
+                        onOutput = { onProgress(it) },
+                    ) == 0 && File(homeDir, "hermes-agent/pyproject.toml").exists()
+                }
+                if (cloneOk) break
+                onProgress("Clone from ${cloneUrl.substringAfter("://").substringBefore("/")} failed, trying next mirror…")
             }
+
             if (!cloneOk) {
-                Log.w(TAG, "git clone failed — falling back to tarball download")
+                Log.w(TAG, "git clone failed from all mirrors — falling back to tarball download")
                 onProgress("Git clone failed, trying tarball download…")
                 val tarballOk = runWithRetry(
                     maxAttempts = 3,
@@ -953,26 +965,28 @@ H3
                     what = "tarball download hermes-agent",
                 ) {
                     // Download tarball via Java HttpURLConnection (completely
-                    // bypasses Termux's libcurl, avoiding the libngtcp2 symbol
-                    // mismatch). Try multiple URLs — codeload.github.com may be
-                    // blocked in some networks (e.g. GFW), but github.com archive
-                    // URL may route differently.
+                    // bypasses Termux's libcurl). Try multiple URLs —
+                    // github.com may be blocked in some networks (GFW),
+                    // so Chinese mirror proxies are tried as fallback.
                     val tarballUrls = listOf(
                         "https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
+                        "https://gh-proxy.com/https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
+                        "https://kkgithub.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
                         "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/heads/main",
                     )
                     val tarballFile = File(paths.tmpDir, "hermes-agent.tar.gz")
                     var downloaded = false
                     for (url in tarballUrls) {
                         try {
-                            onProgress("Downloading tarball from $url…")
+                            val host = url.substringAfter("://").substringBefore("/")
+                            onProgress("Downloading tarball from $host…")
                             val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
                             conn.connectTimeout = 20000
                             conn.readTimeout = 120000
                             conn.instanceFollowRedirects = true
                             conn.requestMethod = "GET"
                             if (conn.responseCode != 200) {
-                                onProgress("HTTP ${conn.responseCode} from $url")
+                                onProgress("HTTP ${conn.responseCode} from $host")
                                 conn.disconnect()
                                 continue
                             }
@@ -986,12 +1000,13 @@ H3
                                 tarballFile.delete()
                                 continue
                             }
-                            onProgress("Tarball downloaded (${tarballSize / 1024}KB) from $url")
+                            onProgress("Tarball downloaded (${tarballSize / 1024}KB) from $host")
                             downloaded = true
                             break
                         } catch (e: Exception) {
-                            onProgress("Download from $url failed: ${e.message}")
-                            Log.w(TAG, "Tarball download from $url failed: ${e.message}")
+                            val host = url.substringAfter("://").substringBefore("/")
+                            onProgress("Download from $host failed: ${e.message}")
+                            Log.w(TAG, "Tarball download from $host failed: ${e.message}")
                             tarballFile.delete()
                         }
                     }
