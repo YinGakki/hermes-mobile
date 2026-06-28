@@ -667,9 +667,17 @@ H3
         // Try installing from bundled wheel cache first (if the APK
         // shipped assets/wheels/), else fall back to PyPI download.
         // Either way: retry up to 3 times.
+        //
+        // We use --find-links WITHOUT --no-index so pip PREFERS the local
+        // wheel cache (fast + reliable for the pure-python deps that make
+        // up the bulk of the install) but still falls back to PyPI for
+        // packages missing from the cache or whose only cached wheel is an
+        // incompatible platform (e.g. manylinux x86_64 wheels can't install
+        // on Android aarch64 — pip skips those and fetches the right one).
+        // --no-index would make pip fail hard on those, breaking the install.
         val wheelCacheDir = setupWheelCacheIfPresent(prefix, onProgress)
         val pipArgs = if (wheelCacheDir != null) {
-            "--no-index --find-links=$wheelCacheDir"
+            "--find-links=$wheelCacheDir"
         } else {
             ""
         }

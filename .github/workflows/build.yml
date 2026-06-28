@@ -99,37 +99,48 @@ jobs:
           # - Pure-python wheels (py3-none-any) work everywhere, including
           #   Termux/aarch64 Android.
           # - manylinux wheels are Linux x86_64 — they will NOT install on
-          #   Android aarch64. We fetch them only so pip can satisfy the
-          #   resolver; the actual Android-aarch64 wheels for packages
-          #   without pure-python alternatives (cryptography, cffi,
-          #   pydantic-core, etc.) MUST be sourced from the Termux
-          #   repository separately.
+          #   Android aarch64. We fetch them anyway so the cache has broad
+          #   coverage; at install time pip skips wheels whose platform tag
+          #   doesn't match the host (we use --find-links WITHOUT --no-index
+          #   in HermesServerManager, so PyPI remains a fallback for the
+          #   Android-aarch64-native packages like cryptography/cffi).
           #
           # In practice this step mainly pulls the pure-python deps
           # (fastapi, uvicorn, starlette, jinja2, pyyaml, click, etc.),
           # which is the bulk of the install by count.
+          #
+          # IMPORTANT: `pip download` does NOT accept `-e` (editable) — that
+          # is a `pip install`-only flag. Pass the requirement spec directly
+          # as `'.[termux]'`. Also do NOT pass --no-deps — we want the full
+          # transitive dependency tree cached.
           wheelhouse="$RUNNER_TEMP/wheels"
           mkdir -p "$wheelhouse"
           cd "$hermes_dir"
+
+          # Pass 1: wheels only, targeting manylinux x86_64 + py3-none-any.
+          # --only-binary=:all: forces wheels (no sdists); packages without a
+          # matching wheel are skipped here but caught in pass 2.
           pip download --dest "$wheelhouse" \
-            -e '.[termux]' \
+            '.[termux]' \
             -c constraints-termux.txt \
             --platform manylinux2014_x86_64 \
             --python-version 311 \
-            --only-binary=:all: \
-            --no-deps 2>&1 | tail -5 || true
-          # Retry without --only-binary to also get sdists for cases where
-          # a manylinux wheel is unavailable but a pure-python sdist exists.
+            --only-binary=:all: 2>&1 | tail -20 || true
+
+          # Pass 2: also fetch sdists for pure-python packages that have no
+          # manylinux wheel. sdists of pure-python packages install fine on
+          # Android (they're just .py files, no compilation). sdists of native
+          # packages would need compilation — those get skipped at install
+          # time and fetched fresh from PyPI/Termux.
           pip download --dest "$wheelhouse" \
-            -e '.[termux]' \
+            '.[termux]' \
             -c constraints-termux.txt \
-            --python-version 311 \
-            --no-deps 2>&1 | tail -5 || true
+            --python-version 311 2>&1 | tail -20 || true
 
           echo "Wheel cache contents:"
-          ls -1 "$wheelhouse" | head -20
+          ls -1 "$wheelhouse" | head -30
           echo "..."
-          echo "Total wheels: $(ls -1 "$wheelhouse" | wc -l)"
+          echo "Total files: $(ls -1 "$wheelhouse" | wc -l)"
 
       - name: Package wheel cache as tarball
         shell: bash
