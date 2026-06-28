@@ -77,13 +77,27 @@ jobs:
           fi
           echo "Bootstrap: $(wc -c < "$f") bytes"
 
-      - name: Decode signing keystore
-        if: env.HAS_KEYSTORE == '1'
+      - name: Detect signing keystore
+        id: has_keystore
+        # `secrets` context IS available in `env:` value position (just not in
+        # step-level `if:`). Forward it to env, then run a bash step that
+        # sets a step output we CAN check in a later `if:`.
         env:
-          # GitHub Actions forbids the `secrets` context in step-level `if:`,
-          # so forward the secret to env first, and gate the step on that flag.
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "has_keystore=true" >> "$GITHUB_OUTPUT"
+            echo "Keystore secret present (length: ${#KEYSTORE_BASE64})"
+          else
+            echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+            echo "WARNING: KEYSTORE_BASE64 secret not set — producing UNSIGNED APK"
+          fi
+
+      - name: Decode signing keystore
+        if: steps.has_keystore.outputs.has_keystore == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         shell: bash
         run: |
           set -euo pipefail
