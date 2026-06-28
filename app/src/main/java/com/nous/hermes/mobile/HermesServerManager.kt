@@ -84,9 +84,13 @@ class HermesServerManager(private val context: Context) {
     }
 
     fun isHermesInstalled(): Boolean {
+        // Only treat Hermes as "installed" when the wrapper script is on PATH.
+        // git clone succeeding alone is NOT enough — pyproject.toml existing
+        // doesn't mean `pip install -e .[termux]` finished. The wrapper is
+        // the very last thing installHermes() creates, so its presence is a
+        // reliable end-to-end success marker.
         val paths = BootstrapInstaller.getPaths(context)
-        return File(paths.prefixDir, "bin/hermes").exists() ||
-            File(paths.homeDir, "hermes-agent/pyproject.toml").exists()
+        return File(paths.prefixDir, "bin/hermes").exists()
     }
 
     // ── proot ──────────────────────────────────────────────────────────────
@@ -290,7 +294,33 @@ WEOF
         val prefix = paths.prefixDir
         val termuxPrefix = "/data/data/com.termux/files/usr"
 
+        // Skip entirely if a previous run already finished this step.
+        // We write a marker file as the LAST action, so its presence
+        // guarantees the extract loop below also completed.
+        val depsMarker = File(prefix, "var/.hermes-deps-installed")
+        if (depsMarker.exists()) {
+            onProgress("Build dependencies already installed (cached)")
+            return true
+        }
+
         onProgress("Downloading build dependencies…")
+
+        // apt-get update can fail transiently (Termux repo mirror flakiness).
+        // Retry up to 3 times with exponential backoff before giving up.
+        val updateOk = runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 2000L,
+            onProgress = onProgress,
+            what = "apt-get update",
+        ) {
+            runInPrefix(
+                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                onOutput = { onProgress(it) },
+            ) == 0
+        }
+        if (!updateOk) {
+            Log.w(TAG, "apt-get update failed after 3 retries (non-fatal — proceeding with apt-get download anyway)")
+        }
 
         // Official Hermes pkg list + transitive build tools needed to
         // compile native Python wheels (cryptography, cffi, etc).
@@ -305,13 +335,22 @@ WEOF
             "rhash jsoncpp",
         )
 
+        // Download each pkg group with its own retry — one group failing
+        // shouldn't force the whole step to restart from scratch.
         for (group in pkgGroups) {
-            val dlCode = runInPrefix(
-                "cd $prefix/tmp && apt-get download --allow-unauthenticated $group 2>&1",
-                onOutput = { onProgress(it) },
-            )
-            if (dlCode != 0) {
-                Log.w(TAG, "apt-get download ($group) failed with code $dlCode (non-fatal)")
+            val groupOk = runWithRetry(
+                maxAttempts = 3,
+                baseDelayMs = 2000L,
+                onProgress = onProgress,
+                what = "apt-get download $group",
+            ) {
+                runInPrefix(
+                    "cd $prefix/tmp && apt-get download --allow-unauthenticated $group 2>&1",
+                    onOutput = { onProgress(it) },
+                ) == 0
+            }
+            if (!groupOk) {
+                Log.w(TAG, "apt-get download ($group) failed after retries (non-fatal)")
             }
         }
 
@@ -352,7 +391,42 @@ WEOF
         onProgress("Creating header stubs…")
         createHeaderStubs(prefix)
 
+        // Write the marker LAST — only after every fixup above succeeded.
+        // On retry, the early-return check at the top of this function sees
+        // the marker and skips the whole step.
+        try {
+            File(prefix, "var").mkdirs()
+            depsMarker.writeText("ok\n")
+            onProgress("Marked build deps as installed")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not write deps marker: ${e.message}")
+        }
+
         return true
+    }
+
+    /**
+     * Retry helper with exponential backoff. Used for apt/pip operations
+     * that fail transiently due to Termux repo mirror or PyPI flakiness.
+     */
+    private fun runWithRetry(
+        maxAttempts: Int,
+        baseDelayMs: Long,
+        onProgress: (String) -> Unit,
+        what: String,
+        action: () -> Boolean,
+    ): Boolean {
+        var lastError: Boolean = false
+        for (attempt in 1..maxAttempts) {
+            if (attempt > 1) {
+                val delay = baseDelayMs * (1L shl (attempt - 2))
+                onProgress("Retry $attempt/$maxAttempts for $what (waiting ${delay}ms)…")
+                try { Thread.sleep(delay) } catch (_: InterruptedException) {}
+            }
+            lastError = !action()
+            if (!lastError) return true
+        }
+        return !lastError
     }
 
     private fun fixGitCoreShebangs(prefix: String) {
@@ -458,6 +532,76 @@ H3
     }
 
     /**
+     * If the APK ships a bundled wheel cache (assets/wheels/*.whl or
+     * assets/wheels.tar.gz), extract it to a local directory and return
+     * that path so installHermes can pass `--no-index --find-links=<dir>`
+     * to pip. This lets the install run fully offline for Hermes deps.
+     *
+     * Returns null if no wheel cache is bundled (fall back to PyPI).
+     */
+    private fun setupWheelCacheIfPresent(prefix: String, onProgress: (String) -> Unit): String? {
+        val assetManager = context.assets
+        val wheelsDir = File(prefix, "var/wheels")
+
+        // Check if wheel cache is bundled as a tarball first (preferred —
+        // single file, smaller in APK because compressible).
+        val tarballAsset = "wheels.tar.gz"
+        val hasTarball = try {
+            assetManager.list("")?.any { it == tarballAsset } == true
+        } catch (e: Exception) {
+            false
+        }
+        if (hasTarball) {
+            onProgress("Extracting bundled wheel cache (wheels.tar.gz)…")
+            wheelsDir.mkdirs()
+            val outFile = File(wheelsDir, tarballAsset)
+            try {
+                assetManager.open(tarballAsset).use { input ->
+                    outFile.outputStream().use { input.copyTo(it) }
+                }
+                runInPrefix(
+                    "cd ${wheelsDir.parentFile.absolutePath} && tar -xzf ${'$'}(basename ${'$'}outFile) -C wheels 2>&1",
+                    onOutput = { onProgress(it) },
+                )
+                outFile.delete()
+                val wheelCount = wheelsDir.listFiles { _, n -> n.endsWith(".whl") }?.size ?: 0
+                onProgress("Wheel cache: $wheelCount wheels extracted")
+                return wheelsDir.absolutePath
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not extract bundled wheels.tar.gz: ${e.message}")
+                outFile.delete()
+                wheelsDir.deleteRecursively()
+            }
+        }
+
+        // Otherwise check for a plain directory of wheels in assets/wheels/.
+        val hasWheelsDir = try {
+            assetManager.list("wheels")?.isNotEmpty() == true
+        } catch (e: Exception) {
+            false
+        }
+        if (hasWheelsDir) {
+            onProgress("Copying bundled wheel cache (assets/wheels/)…")
+            wheelsDir.mkdirs()
+            try {
+                assetManager.list("wheels")?.forEach { name ->
+                    assetManager.open("wheels/$name").use { input ->
+                        File(wheelsDir, name).outputStream().use { input.copyTo(it) }
+                    }
+                }
+                val wheelCount = wheelsDir.listFiles { _, n -> n.endsWith(".whl") }?.size ?: 0
+                onProgress("Wheel cache: $wheelCount wheels copied")
+                return wheelsDir.absolutePath
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not copy bundled wheels/: ${e.message}")
+                wheelsDir.deleteRecursively()
+            }
+        }
+
+        return null
+    }
+
+    /**
      * Install Hermes Agent following the official Termux guide:
      *
      *   git clone https://github.com/NousResearch/hermes-agent.git
@@ -487,15 +631,23 @@ H3
             systemctlStub.setExecutable(true)
         }
 
-        // Clone Hermes (idempotent)
+        // Clone Hermes (idempotent + retry). GitHub clone can fail
+        // transiently due to network blips; retry up to 3 times.
         if (!File(homeDir, "hermes-agent/pyproject.toml").exists()) {
-            onProgress("Cloning Hermes Agent repository…")
-            val cloneCode = runInPrefix(
-                "cd ${homeDir} && git clone --depth 1 $HERMES_REPO hermes-agent 2>&1",
-                onOutput = { onProgress(it) },
-            )
-            if (cloneCode != 0) {
-                Log.e(TAG, "git clone hermes-agent failed with code $cloneCode")
+            val cloneOk = runWithRetry(
+                maxAttempts = 3,
+                baseDelayMs = 3000L,
+                onProgress = onProgress,
+                what = "git clone hermes-agent",
+            ) {
+                onProgress("Cloning Hermes Agent repository…")
+                runInPrefix(
+                    "cd ${homeDir} && rm -rf hermes-agent && git clone --depth 1 $HERMES_REPO hermes-agent 2>&1",
+                    onOutput = { onProgress(it) },
+                ) == 0 && File(homeDir, "hermes-agent/pyproject.toml").exists()
+            }
+            if (!cloneOk) {
+                Log.e(TAG, "git clone hermes-agent failed after 3 retries")
                 return false
             }
         } else {
@@ -503,24 +655,41 @@ H3
             runInPrefix("cd ${homeDir}/hermes-agent && git pull --ff-only 2>&1") { onProgress(it) }
         }
 
-        // Create venv (Hermes recommends isolation)
+        // Create venv (Hermes recommends isolation). Idempotent — if the
+        // venv dir already exists from a previous partial run, recreate it
+        // to avoid stale .venv state from a half-finished install.
         onProgress("Creating Python venv…")
         runInPrefix(
-            "cd ${homeDir}/hermes-agent && python -m venv .venv 2>&1",
+            "cd ${homeDir}/hermes-agent && rm -rf .venv && python -m venv .venv 2>&1",
             onOutput = { onProgress(it) },
         )
 
-        // Install Hermes with termux extras
-        onProgress("Installing Hermes (pip install -e .[termux]) — this may take several minutes…")
-        val installCmd = """
-            cd ${homeDir}/hermes-agent &&
-            . .venv/bin/activate &&
-            pip install --upgrade pip 2>&1 | tail -1 &&
-            pip install -e '.[termux]' -c constraints-termux.txt 2>&1
-        """.trimIndent()
-        val installCode = runInPrefix(installCmd, onOutput = { onProgress(it) })
-        if (installCode != 0) {
-            Log.e(TAG, "pip install hermes failed with code $installCode")
+        // Try installing from bundled wheel cache first (if the APK
+        // shipped assets/wheels/), else fall back to PyPI download.
+        // Either way: retry up to 3 times.
+        val wheelCacheDir = setupWheelCacheIfPresent(prefix, onProgress)
+        val pipArgs = if (wheelCacheDir != null) {
+            "--no-index --find-links=$wheelCacheDir"
+        } else {
+            ""
+        }
+        val installOk = runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 5000L,
+            onProgress = onProgress,
+            what = "pip install hermes (termux)",
+        ) {
+            onProgress("Installing Hermes (pip install -e .[termux]) — this may take several minutes…")
+            val cmd = """
+                cd ${homeDir}/hermes-agent &&
+                . .venv/bin/activate &&
+                pip install --upgrade pip 2>&1 | tail -1 &&
+                pip install $pipArgs -e '.[termux]' -c constraints-termux.txt 2>&1
+            """.trimIndent()
+            runInPrefix(cmd, onOutput = { onProgress(it) }) == 0
+        }
+        if (!installOk) {
+            Log.e(TAG, "pip install hermes failed after 3 retries")
             return false
         }
 

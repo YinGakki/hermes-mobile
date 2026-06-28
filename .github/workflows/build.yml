@@ -77,6 +77,74 @@ jobs:
           fi
           echo "Bootstrap: $(wc -c < "$f") bytes"
 
+      - name: Set up Python (for wheel cache fetch)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Clone hermes-agent (for pyproject.toml + constraints)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          rm -rf hermes-agent
+          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git
+          echo "hermes_dir=$RUNNER_TEMP/hermes-agent" >> "$GITHUB_ENV"
+
+      - name: Pre-fetch Hermes wheel cache (no-arch + manylinux x86_64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # NOTE on platform tags:
+          # - Pure-python wheels (py3-none-any) work everywhere, including
+          #   Termux/aarch64 Android.
+          # - manylinux wheels are Linux x86_64 — they will NOT install on
+          #   Android aarch64. We fetch them only so pip can satisfy the
+          #   resolver; the actual Android-aarch64 wheels for packages
+          #   without pure-python alternatives (cryptography, cffi,
+          #   pydantic-core, etc.) MUST be sourced from the Termux
+          #   repository separately.
+          #
+          # In practice this step mainly pulls the pure-python deps
+          # (fastapi, uvicorn, starlette, jinja2, pyyaml, click, etc.),
+          # which is the bulk of the install by count.
+          wheelhouse="$RUNNER_TEMP/wheels"
+          mkdir -p "$wheelhouse"
+          cd "$hermes_dir"
+          pip download --dest "$wheelhouse" \
+            -e '.[termux]' \
+            -c constraints-termux.txt \
+            --platform manylinux2014_x86_64 \
+            --python-version 311 \
+            --only-binary=:all: \
+            --no-deps 2>&1 | tail -5 || true
+          # Retry without --only-binary to also get sdists for cases where
+          # a manylinux wheel is unavailable but a pure-python sdist exists.
+          pip download --dest "$wheelhouse" \
+            -e '.[termux]' \
+            -c constraints-termux.txt \
+            --python-version 311 \
+            --no-deps 2>&1 | tail -5 || true
+
+          echo "Wheel cache contents:"
+          ls -1 "$wheelhouse" | head -20
+          echo "..."
+          echo "Total wheels: $(ls -1 "$wheelhouse" | wc -l)"
+
+      - name: Package wheel cache as tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheelhouse="$RUNNER_TEMP/wheels"
+          if [ ! -d "$wheelhouse" ] || [ -z "$(ls -A "$wheelhouse" 2>/dev/null)" ]; then
+            echo "WARNING: wheel cache is empty — APK will fall back to PyPI at first launch"
+            exit 0
+          fi
+          mkdir -p app/src/main/assets
+          tar -czf app/src/main/assets/wheels.tar.gz -C "$RUNNER_TEMP" wheels
+          ls -la app/src/main/assets/wheels.tar.gz
+          echo "Wheel cache size: $(du -h app/src/main/assets/wheels.tar.gz | cut -f1)"
+
       - name: Detect signing keystore
         id: has_keystore
         # `secrets` context IS available in `env:` value position (just not in
