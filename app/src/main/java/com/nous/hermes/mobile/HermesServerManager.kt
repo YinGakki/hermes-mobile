@@ -480,8 +480,11 @@ WEOF
                 "git python clang rust make pkg-config libffi openssl nodejs ripgrep ffmpeg",
                 // Transitive native build toolchain (needed by rust + cffi + cryptography)
                 "cmake binutils lld libllvm libedit ndk-sysroot ndk-multilib libcompiler-rt",
-                // Shared libs that some Hermes extras link against
-                "libarchive libxml2 liblzma libcurl libuv libnghttp2 libnghttp3",
+                // Shared libs that some Hermes extras link against.
+                // libngtcp2 is a transitive dep of libcurl (HTTP/3 support) —
+                // must be explicitly listed because `apt-get download` does NOT
+                // resolve dependencies, unlike `apt-get install -d`.
+                "libarchive libxml2 liblzma libcurl libuv libnghttp2 libnghttp3 libngtcp2",
                 // Misc
                 "rhash jsoncpp",
             )
@@ -811,6 +814,8 @@ H3
 
         // Clone Hermes (idempotent + retry). GitHub clone can fail
         // transiently due to network blips; retry up to 3 times.
+        // Falls back to tarball download if git-remote-https is broken
+        // (e.g. libcurl/libngtcp2 symbol mismatch).
         if (!File(homeDir, "hermes-agent/pyproject.toml").exists()) {
             val cloneOk = runWithRetry(
                 maxAttempts = 3,
@@ -825,8 +830,42 @@ H3
                 ) == 0 && File(homeDir, "hermes-agent/pyproject.toml").exists()
             }
             if (!cloneOk) {
-                Log.e(TAG, "git clone hermes-agent failed after 3 retries")
-                return false
+                Log.w(TAG, "git clone failed — falling back to tarball download")
+                onProgress("Git clone failed, trying tarball download…")
+                val tarballOk = runWithRetry(
+                    maxAttempts = 3,
+                    baseDelayMs = 3000L,
+                    onProgress = onProgress,
+                    what = "tarball download hermes-agent",
+                ) {
+                    // Download tarball via Java HttpURLConnection (completely
+                    // bypasses Termux's libcurl, avoiding the libngtcp2 symbol
+                    // mismatch). GitHub's codeload URL serves a .tar.gz of the
+                    // default branch without needing git-remote-https.
+                    val tarballUrl = "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/heads/main"
+                    val tarballFile = File(paths.tmpDir, "hermes-agent.tar.gz")
+                    try {
+                        java.net.URL(tarballUrl).openStream().use { input ->
+                            tarballFile.outputStream().use { input.copyTo(it) }
+                        }
+                        onProgress("Tarball downloaded (${tarballFile.length() / 1024}KB), extracting…")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Tarball download failed: ${e.message}")
+                        return@runWithRetry false
+                    }
+                    // Extract with prefix's tar (doesn't need libcurl)
+                    val extractCode = runInPrefix(
+                        "cd ${homeDir} && rm -rf hermes-agent && tar -xzf ${tarballFile.absolutePath} -C ${homeDir} 2>&1 && mv hermes-agent-main hermes-agent 2>/dev/null || true",
+                        onOutput = { onProgress(it) },
+                    )
+                    tarballFile.delete()
+                    extractCode == 0 && File(homeDir, "hermes-agent/pyproject.toml").exists()
+                }
+                if (!tarballOk) {
+                    Log.e(TAG, "Both git clone and tarball download failed for hermes-agent")
+                    return false
+                }
+                onProgress("Hermes Agent downloaded via tarball (git clone fallback)")
             }
         } else {
             onProgress("Hermes repository already present, pulling latest…")
