@@ -1075,11 +1075,59 @@ H3
         if (venvActivate.exists()) {
             onProgress("Python venv already exists, reusing…")
         } else {
-            onProgress("Creating Python venv…")
-            runInPrefix(
-                "cd ${homeDir}/hermes-agent && rm -rf .venv && python -m venv .venv 2>&1",
+            // NOTE: do NOT use plain `python -m venv .venv` here.
+            // venv runs `ensurepip` internally, and ensurepip ships manylinux
+            // x86_64 wheels that fail to install on Android aarch64 — the
+            // venv ends up half-created with no bin/activate, and every
+            // subsequent `pip install` fails with "cannot open .venv/bin/activate".
+            // The well-known Termux workaround is `--without-pip` (skip the
+            // broken ensurepip) + `--system-site-packages` (let the venv see
+            // the system pip we installed via the python-pip deb). pip then
+            // resolves to the system pip, and `pip install` still targets the
+            // venv site-packages (venv takes precedence in sys.path), so
+            // isolation is preserved for Hermes' deps.
+            onProgress("Creating Python venv (--without-pip, using system pip)…")
+            val venvCode = runInPrefix(
+                "cd ${homeDir}/hermes-agent && rm -rf .venv && " +
+                    "python -m venv --without-pip --system-site-packages .venv 2>&1",
                 onOutput = { onProgress(it) },
             )
+            if (venvCode != 0 || !venvActivate.exists()) {
+                onProgress("venv creation failed (exit=$venvCode), retrying with --without-pip only…")
+                runInPrefix(
+                    "cd ${homeDir}/hermes-agent && rm -rf .venv && " +
+                        "python -m venv --without-pip .venv 2>&1",
+                    onOutput = { onProgress(it) },
+                )
+            }
+            if (!venvActivate.exists()) {
+                Log.e(TAG, "venv creation failed — .venv/bin/activate missing")
+                onProgress("ERROR: venv creation failed — .venv/bin/activate is missing")
+                return false
+            }
+            // Sanity-check that pip is reachable from the venv python.
+            // With --system-site-packages this should always be true; with
+            // plain --without-pip it may not be (no pip in venv, no system
+            // fallback). Detect early instead of failing cryptically in Phase 1.
+            val pipCheck = runInPrefix(
+                "cd ${homeDir}/hermes-agent && .venv/bin/python -m pip --version 2>&1",
+                onOutput = { onProgress(it) },
+            )
+            if (pipCheck != 0) {
+                onProgress("venv has no pip — bootstrapping via get-pip.py…")
+                val bootstrapOk = runInPrefix(
+                    "cd ${homeDir}/hermes-agent && " +
+                        "curl -fsSL https://bootstrap.pypa.io/get-pip.py -o get-pip.py && " +
+                        ".venv/bin/python get-pip.py 2>&1 && rm -f get-pip.py",
+                    timeoutMs = 120000,
+                    onOutput = { onProgress(it) },
+                )
+                if (bootstrapOk != 0) {
+                    Log.e(TAG, "pip bootstrap via get-pip.py failed (exit=$bootstrapOk)")
+                    onProgress("ERROR: failed to bootstrap pip into venv")
+                    return false
+                }
+            }
         }
 
         // Try installing from bundled wheel cache first (if the APK
