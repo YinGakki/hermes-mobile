@@ -156,9 +156,20 @@ class HermesServerManager(private val context: Context) {
     // ── Python ─────────────────────────────────────────────────────────────
 
     /**
-     * Install Python using proot to handle dpkg's hardcoded Termux paths.
-     * proot bind-mounts our prefix onto the compiled-in Termux prefix so
-     * dpkg postinst scripts and shared library lookups resolve correctly.
+     * Install Python + python-pip + all native transitive deps (libffi,
+     * openssl, libsqlite, ncurses, libbz2, liblzma, libcrypt, libexpat,
+     * readline, zlib, ...).
+     *
+     * Two code paths:
+     *   1. BUNDLED (preferred): If the APK ships assets/python-bundle.tar.gz
+     *      (pre-fetched at CI time via scripts/fetch-python-bundle.py),
+     *      extract it to a staging dir and dpkg-deb -x every .deb in it.
+     *      Fully offline — no apt-get needed at all.
+     *   2. FALLBACK: `apt-get download python python-pip` + apt resolves
+     *      transitive deps at install. Slower, requires network, only
+     *      used when the bundle isn't bundled (e.g. local dev builds).
+     *
+     * Either path is wrapped in 3× retry to absorb transient failures.
      */
     fun installPython(onProgress: (String) -> Unit): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
@@ -171,24 +182,39 @@ class HermesServerManager(private val context: Context) {
             onProgress = onProgress,
             what = "install python",
         ) {
-            onProgress("Downloading Python packages…")
-            val downloadCmd = """
-                cd $prefix/tmp &&
-                apt-get update --allow-insecure-repositories 2>&1;
-                apt-get download --allow-unauthenticated python python-pip 2>&1
-            """.trimIndent()
-            val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-            if (dlCode != 0) {
-                Log.e(TAG, "apt-get download python failed with code $dlCode")
-                return@runWithRetry false
+            // Try bundled deb cache first (assets/python-bundle.tar.gz).
+            val bundleReady = setupPythonBundleIfPresent(prefix, onProgress)
+
+            if (!bundleReady) {
+                // Fallback: apt-get download python + python-pip.
+                // NOTE: this only grabs the top-level .deb; transitive deps
+                // (libffi, openssl, ...) still need to be fetched by apt at
+                // install time — slower and needs network. The bundled path
+                // above avoids this entirely.
+                onProgress("No bundled Python — downloading via apt-get…")
+                val downloadCmd = """
+                    cd $prefix/tmp &&
+                    apt-get update --allow-insecure-repositories 2>&1;
+                    apt-get download --allow-unauthenticated python python-pip 2>&1
+                """.trimIndent()
+                val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
+                if (dlCode != 0) {
+                    Log.e(TAG, "apt-get download python failed with code $dlCode")
+                    return@runWithRetry false
+                }
             }
 
+            // Extract every .deb in $prefix/tmp into the prefix.
+            // Works for both bundled (17 debs incl. transitive deps) and
+            // apt-get-fetched (2 debs, transitive deps already in prefix
+            // from apt install — though we use download, so only 2 here).
             onProgress("Extracting Python…")
             val extractCmd = """
                 cd $prefix/tmp &&
                 mkdir -p _python_stage &&
-                for deb in python*.deb; do
-                    [ -f "${'$'}deb" ] && echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _python_stage/ 2>&1
+                shopt -s nullglob &&
+                for deb in *.deb; do
+                    echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _python_stage/ 2>&1
                 done &&
                 if [ -d "_python_stage$termuxPrefix" ]; then
                     cp -a _python_stage$termuxPrefix/* "$prefix/" 2>&1
@@ -197,7 +223,7 @@ class HermesServerManager(private val context: Context) {
                 fi &&
                 chmod 700 "$prefix/bin/python"* 2>/dev/null
                 chmod 700 "$prefix/bin/pip"* 2>/dev/null
-                rm -rf _python_stage python*.deb 2>/dev/null
+                rm -rf _python_stage *.deb 2>/dev/null
                 echo "Python installed"
             """.trimIndent()
             val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
@@ -215,6 +241,53 @@ class HermesServerManager(private val context: Context) {
             runInPrefix(fixCmd, onOutput = { onProgress(it) })
 
             isPythonInstalled()
+        }
+    }
+
+    /**
+     * Extract the bundled Python deb cache (assets/python-bundle.tar.gz)
+     * to $prefix/tmp/ so installPython()'s extract loop picks them up.
+     * Returns true if the bundle was extracted successfully, false if no
+     * bundle is bundled (caller should fall back to apt-get download).
+     */
+    private fun setupPythonBundleIfPresent(prefix: String, onProgress: (String) -> Unit): Boolean {
+        val assetManager = context.assets
+        val tarballAsset = "python-bundle.tar.gz"
+        val hasTarball = try {
+            assetManager.list("")?.any { it == tarballAsset } == true
+        } catch (e: Exception) {
+            false
+        }
+        if (!hasTarball) return false
+
+        onProgress("Extracting bundled Python deb cache (python-bundle.tar.gz)…")
+        val tmpDir = File(prefix, "tmp")
+        tmpDir.mkdirs()
+        val outFile = File(tmpDir, tarballAsset)
+        return try {
+            assetManager.open(tarballAsset).use { input ->
+                outFile.outputStream().use { input.copyTo(it) }
+            }
+            // Extract into tmp/ — the deb files will be picked up by
+            // installPython()'s `for deb in *.deb` loop right after.
+            // --strip-components=1 drops the top-level "python-bundle/" dir
+            // created by `tar -czf ... -C $RUNNER_TEMP python-bundle`.
+            val code = runInPrefix(
+                "cd $prefix/tmp && tar -xzf $tarballAsset --strip-components=1 2>&1",
+                onOutput = { onProgress(it) },
+            )
+            outFile.delete()
+            if (code != 0) {
+                Log.w(TAG, "tar -xzf python-bundle failed (code=$code) — falling back to apt-get")
+                return false
+            }
+            val debCount = tmpDir.listFiles { _, n -> n.endsWith(".deb") }?.size ?: 0
+            onProgress("Python bundle: $debCount debs staged in tmp/")
+            debCount > 0
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not extract bundled python-bundle.tar.gz: ${e.message}")
+            outFile.delete()
+            false
         }
     }
 

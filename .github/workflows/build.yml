@@ -150,6 +150,46 @@ jobs:
           ls -la app/src/main/assets/wheels.tar.gz
           echo "Wheel cache size: $(du -h app/src/main/assets/wheels.tar.gz | cut -f1)"
 
+      - name: Pre-fetch Python + native deps deb bundle (aarch64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fetch the full closure of `python` + `python-pip` plus ALL
+          # transitive Termux deps (libffi, openssl, libsqlite, ncurses,
+          # libbz2, liblzma, libcrypt, libexpat, readline, zlib, ...).
+          #
+          # This is what would otherwise be downloaded by `apt-get download
+          # python python-pip` at first launch — except apt-get only grabs
+          # the top-level .deb and lets apt resolve the rest at install
+          # time, which means ~17 native deps still need to be fetched
+          # on-device. Bundling the whole closure here means installPython()
+          # can install fully offline from the bundle.
+          #
+          # The script parses the Termux apt repo's Packages.gz metadata
+          # and recursively walks Depends/Pre-Depends, then curls each .deb.
+          bundle_dir="$RUNNER_TEMP/python-bundle"
+          rm -rf "$bundle_dir"
+          python3 scripts/fetch-python-bundle.py --arch "$TERMUX_ARCH" --out "$bundle_dir"
+          echo "---"
+          echo "Bundle contents:"
+          ls -1 "$bundle_dir"
+          echo "..."
+          echo "Total deb files: $(ls -1 "$bundle_dir"/*.deb 2>/dev/null | wc -l)"
+
+      - name: Package Python bundle as tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir="$RUNNER_TEMP/python-bundle"
+          if [ ! -d "$bundle_dir" ] || [ -z "$(ls -A "$bundle_dir"/*.deb 2>/dev/null)" ]; then
+            echo "WARNING: python bundle is empty — APK will fall back to apt-get download at first launch"
+            exit 0
+          fi
+          mkdir -p app/src/main/assets
+          tar -czf app/src/main/assets/python-bundle.tar.gz -C "$RUNNER_TEMP" python-bundle
+          ls -la app/src/main/assets/python-bundle.tar.gz
+          echo "Python bundle size: $(du -h app/src/main/assets/python-bundle.tar.gz | cut -f1)"
+
       - name: Detect signing keystore
         id: has_keystore
         # `secrets` context IS available in `env:` value position (just not in
