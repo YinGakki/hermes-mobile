@@ -118,9 +118,19 @@ class MainActivity : AppCompatActivity() {
             // resume) rather than restarting from scratch.
             val maxAttempts = 3
             var lastError: Exception? = null
+            // Track the last 30 log lines so we can include them in the
+            // final error dialog. Without this the user only sees "Failed
+            // to install Hermes Agent" with no clue WHY it failed.
+            val recentLog = java.util.ArrayDeque<String>(30)
+            val onProgressCapture = { msg: String ->
+                synchronized(recentLog) {
+                    recentLog.addLast(msg)
+                    while (recentLog.size > 30) recentLog.pollFirst()
+                }
+            }
             for (attempt in 1..maxAttempts) {
                 try {
-                    runSetup()
+                    runSetup(onProgressCapture)
                     return@Thread
                 } catch (e: Exception) {
                     lastError = e
@@ -139,13 +149,28 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             val e = lastError!!
+            // Build a detailed error message with the last 30 log lines so
+            // the user can see WHY the install failed (e.g. which pip package
+            // couldn't be built, or that git clone failed, etc.) without
+            // having to scroll through the full logView.
+            val tail = synchronized(recentLog) { recentLog.joinToString("\n") }
+            val msg = buildString {
+                append("Failed after $maxAttempts attempts.\n\n")
+                append("Last error: ${e.message ?: "Unknown"}\n\n")
+                append("Last log lines:\n")
+                if (tail.isBlank()) {
+                    append("  (no log output captured)")
+                } else {
+                    tail.lines().forEach { append("  ").append(it).append('\n') }
+                }
+            }
             runOnUiThread {
-                showError("Failed after $maxAttempts attempts.\n\nLast error: ${e.message ?: "Unknown"}")
+                showError(msg)
             }
         }.start()
     }
 
-    private fun runSetup() {
+    private fun runSetup(onProgressCapture: (String) -> Unit) {
         // Step 1: Extract bootstrap
         if (!BootstrapInstaller.isBootstrapInstalled(this)) {
             updateStatus("Extracting environment…")
@@ -195,7 +220,10 @@ class MainActivity : AppCompatActivity() {
         if (!serverManager.isHermesInstalled()) {
             updateStatus("Installing Hermes Agent…", "git clone + pip install -e .[termux]")
             val hermesOk = serverManager.installHermes(
-                onProgress = { msg -> updateDetail(msg) },
+                onProgress = { msg ->
+                    updateDetail(msg)
+                    onProgressCapture(msg)
+                },
                 onNeedCompile = {
                     // Called from the setup thread when Phase 1 (wheel cache)
                     // failed and Phase 2 (download rust+clang + source compile)
