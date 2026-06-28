@@ -159,7 +159,7 @@ class HermesServerManager(private val context: Context) {
                 onProgress("Downloading proot…")
                 val downloadCmd = """
                     cd $prefix/tmp &&
-                    apt-get update --allow-insecure-repositories 2>&1;
+                    apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\|is not signed\|cannot be authenticated\|apt-key\|Ign:' || true;
                     apt-get download --allow-unauthenticated proot libtalloc 2>&1
                 """.trimIndent()
                 val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
@@ -233,7 +233,7 @@ class HermesServerManager(private val context: Context) {
                 onProgress("No bundled debs — downloading via apt-get…")
                 val downloadCmd = """
                     cd $prefix/tmp &&
-                    apt-get update --allow-insecure-repositories 2>&1;
+                    apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\|is not signed\|cannot be authenticated\|apt-key\|Ign:' || true;
                     apt-get download --allow-unauthenticated python python-pip 2>&1
                 """.trimIndent()
                 val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
@@ -250,8 +250,8 @@ class HermesServerManager(private val context: Context) {
             val extractCmd = """
                 cd $prefix/tmp &&
                 mkdir -p _python_stage &&
-                shopt -s nullglob &&
                 for deb in *.deb; do
+                    [ -f "${'$'}deb" ] || continue
                     echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _python_stage/ 2>&1
                 done &&
                 if [ -d "_python_stage$termuxPrefix" ]; then
@@ -366,7 +366,7 @@ class HermesServerManager(private val context: Context) {
                 onProgress("Downloading Node.js packages…")
                 val downloadCmd = """
                     cd $prefix/tmp &&
-                    apt-get update --allow-insecure-repositories 2>&1;
+                    apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\|is not signed\|cannot be authenticated\|apt-key\|Ign:' || true;
                     apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs npm 2>&1
                 """.trimIndent()
                 val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
@@ -465,7 +465,7 @@ WEOF
                 what = "apt-get update",
             ) {
                 runInPrefix(
-                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
                     onOutput = { onProgress(it) },
                 ) == 0
             }
@@ -987,7 +987,7 @@ WEOF
             what = "apt-get update (for rust/clang)",
         ) {
             runInPrefix(
-                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
                 onOutput = { onProgress(it) },
             ) == 0
         }
@@ -1018,9 +1018,9 @@ WEOF
         val extractCmd = """
             cd $prefix/tmp &&
             mkdir -p _compile_stage &&
-            shopt -s nullglob &&
             for deb in rust*.deb clang*.deb clang-*.deb ffmpeg*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb libcompiler-rt*.deb; do
-                [ -f "${'$'}deb" ] && echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _compile_stage/ 2>&1
+                [ -f "${'$'}deb" ] || continue
+                echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _compile_stage/ 2>&1
             done &&
             if [ -d "_compile_stage$termuxPrefix" ]; then
                 cp -a _compile_stage$termuxPrefix/* "$prefix/" 2>&1
