@@ -51,6 +51,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var openShellButton: Button
     private lateinit var chatButton: Button
     private lateinit var retryButton: Button
+    private lateinit var installProgressContainer: View
+    private lateinit var installProgressBar: ProgressBar
+    private lateinit var progressPercentText: TextView
+    private lateinit var progressStepLabel: TextView
 
     // Managers
     private lateinit var serverManager: HermesServerManager
@@ -85,6 +89,10 @@ class MainActivity : AppCompatActivity() {
         openShellButton = findViewById(R.id.openShellButton)
         chatButton = findViewById(R.id.chatButton)
         retryButton = findViewById(R.id.retryButton)
+        installProgressContainer = findViewById(R.id.installProgressContainer)
+        installProgressBar = findViewById(R.id.installProgressBar)
+        progressPercentText = findViewById(R.id.progressPercent)
+        progressStepLabel = findViewById(R.id.progressStepLabel)
 
         serverManager = HermesServerManager(this)
         studioInstaller = HermesStudioInstaller(this)
@@ -213,6 +221,15 @@ class MainActivity : AppCompatActivity() {
         btnBuildDeps.isEnabled = false
         btnHermes.isEnabled = false
         btnInstallAll.isEnabled = false
+        // Show the overall progress bar, seeded with however many of the 4
+        // steps are already complete before this run begins.
+        installProgressContainer.visibility = View.VISIBLE
+        installProgressBar.isIndeterminate = false
+        installProgressBar.max = 100
+        val initialPct = computeOverallProgress() * 100 / 4
+        installProgressBar.progress = initialPct
+        progressPercentText.text = "$initialPct%"
+        progressStepLabel.text = getString(R.string.progress_starting)
         return true
     }
 
@@ -222,6 +239,7 @@ class MainActivity : AppCompatActivity() {
         // Flush any remaining pending logs
         logUpdateHandler.removeCallbacks(logFlushRunnable)
         logUpdateHandler.post(logFlushRunnable)
+        installProgressContainer.visibility = View.GONE
         refreshStepButtons()
     }
 
@@ -230,12 +248,14 @@ class MainActivity : AppCompatActivity() {
         setStepButtonState(step, true)
         activeThread = Thread {
             try {
+                updateProgress(stepLabel(step))
                 when (step) {
                     "proot" -> installProot()
                     "python" -> installPython()
                     "buildDeps" -> installBuildDeps()
                     "hermes" -> installHermes()
                 }
+                if (allStepsDone()) updateProgress(getString(R.string.progress_done))
                 runOnUiThread {
                     releaseInstallLock()
                     if (allStepsDone()) showDoneScreen()
@@ -258,21 +278,22 @@ class MainActivity : AppCompatActivity() {
         activeThread = Thread {
             try {
                 if (!serverManager.isProotInstalled()) {
-                    runOnUiThread { setStatus(getString(R.string.step_proot)) }
+                    updateProgress(getString(R.string.step_proot))
                     installProot()
                 }
                 if (!serverManager.isPythonInstalled()) {
-                    runOnUiThread { setStatus(getString(R.string.step_python)) }
+                    updateProgress(getString(R.string.step_python))
                     installPython()
                 }
                 if (!isBuildDepsInstalled()) {
-                    runOnUiThread { setStatus(getString(R.string.step_build_deps)) }
+                    updateProgress(getString(R.string.step_build_deps))
                     installBuildDeps()
                 }
                 if (!serverManager.isHermesInstalled()) {
-                    runOnUiThread { setStatus(getString(R.string.step_hermes)) }
+                    updateProgress(getString(R.string.step_hermes))
                     installHermes()
                 }
+                updateProgress(getString(R.string.progress_done))
                 runOnUiThread {
                     releaseInstallLock()
                     if (allStepsDone()) showDoneScreen()
@@ -635,6 +656,44 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             statusText.text = text
             statusText.visibility = View.VISIBLE
+        }
+    }
+
+    // ── Install progress ────────────────────────────────────────────────────
+
+    /** Count how many of the 4 install steps are complete (0..4). */
+    private fun computeOverallProgress(): Int {
+        var done = 0
+        if (serverManager.isProotInstalled()) done++
+        if (serverManager.isPythonInstalled()) done++
+        if (isBuildDepsInstalled()) done++
+        if (serverManager.isHermesInstalled()) done++
+        return done
+    }
+
+    private fun stepLabel(step: String): String = when (step) {
+        "proot" -> getString(R.string.step_proot)
+        "python" -> getString(R.string.step_python)
+        "buildDeps" -> getString(R.string.step_build_deps)
+        "hermes" -> getString(R.string.step_hermes)
+        else -> getString(R.string.progress_starting)
+    }
+
+    /**
+     * Refresh the overall install progress bar from the background install
+     * thread. Maps the 4 install steps to 0/25/50/75/100%. Safe to call off
+     * the main thread — UI mutations are posted to the main looper.
+     */
+    private fun updateProgress(label: String) {
+        val pct = computeOverallProgress() * 100 / 4
+        runOnUiThread {
+            if (!isInstallInProgress) return@runOnUiThread
+            installProgressContainer.visibility = View.VISIBLE
+            installProgressBar.isIndeterminate = false
+            installProgressBar.max = 100
+            installProgressBar.progress = pct
+            progressPercentText.text = "$pct%"
+            progressStepLabel.text = label
         }
     }
 
