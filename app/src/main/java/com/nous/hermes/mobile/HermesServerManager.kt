@@ -529,6 +529,26 @@ WEOF
                     Log.w(TAG, "apt-get download ($group) failed after retries (non-fatal)")
                 }
             }
+
+            // Verify downloaded debs are not corrupted. Large debs (rust ~96MB)
+            // may be truncated on unstable networks. `dpkg-deb --info` parses
+            // the control archive — if it fails, the deb is corrupted and
+            // must be re-downloaded.
+            onProgress("Verifying downloaded .deb files…")
+            val verifyCmd = """
+                cd $prefix/tmp
+                for deb in *.deb; do
+                    [ -f "${'$'}deb" ] || continue
+                    if ! dpkg-deb --info "${'$'}deb" >/dev/null 2>&1; then
+                        echo "CORRUPT: ${'$'}deb — re-downloading"
+                        rm -f "${'$'}deb"
+                        pkg=$(echo "${'$'}deb" | sed 's/_.*//')
+                        apt-get download --allow-unauthenticated "${'$'}pkg" 2>&1 || echo "RE-DOWNLOAD FAILED: ${'$'}pkg"
+                    fi
+                done
+                echo "Verification done"
+            """.trimIndent()
+            runInPrefix(verifyCmd, onOutput = { onProgress(it) })
         } else {
             // Bundle has most build deps, but rust/clang/ffmpeg were
             // excluded from the bundle (too big / too frequently updated).
@@ -544,10 +564,19 @@ WEOF
         val extractCmd = """
             cd $prefix/tmp &&
             mkdir -p _deps_stage &&
+            _failed=0
             for deb in *.deb; do
                 [ -f "${'$'}deb" ] || continue
-                echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _deps_stage/ 2>&1
-            done &&
+                echo "Extracting ${'$'}deb..." 
+                if ! dpkg-deb -x "${'$'}deb" _deps_stage/ 2>&1; then
+                    echo "FAILED to extract ${'$'}deb — file may be corrupted"
+                    _failed=1
+                fi
+            done
+            if [ "${'$'}_failed" = "1" ]; then
+                echo "EXTRACT_FAILED"
+                exit 1
+            fi
             if [ -d "_deps_stage$termuxPrefix" ]; then
                 cp -a _deps_stage$termuxPrefix/* "$prefix/" 2>&1
             elif [ -d "_deps_stage/usr" ]; then
@@ -558,7 +587,22 @@ WEOF
 
         val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
         if (extractCode != 0) {
-            Log.w(TAG, "Deps extract failed with code $extractCode (non-fatal)")
+            onProgress("Build deps extraction FAILED — some packages were corrupted during download")
+            onProgress("Cleaning up stale marker and corrupted debs…")
+            // Delete marker so next run re-downloads
+            depsMarker.delete()
+            // Clean up any partially extracted files
+            runInPrefix("rm -rf $prefix/tmp/*.deb $prefix/tmp/_deps_stage 2>/dev/null") {}
+            return false
+        }
+
+        // Verify critical binaries exist after extraction
+        val gitBin = File(prefix, "bin/git")
+        if (!gitBin.exists()) {
+            onProgress("ERROR: git binary not found after build deps extraction")
+            onProgress("The git .deb may have been corrupted or not downloaded")
+            depsMarker.delete()
+            return false
         }
 
         // Create symlinks for tools that expect different names
@@ -910,38 +954,52 @@ H3
                 ) {
                     // Download tarball via Java HttpURLConnection (completely
                     // bypasses Termux's libcurl, avoiding the libngtcp2 symbol
-                    // mismatch). GitHub's codeload URL serves a .tar.gz of the
-                    // default branch without needing git-remote-https.
-                    val tarballUrl = "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/heads/main"
+                    // mismatch). Try multiple URLs — codeload.github.com may be
+                    // blocked in some networks (e.g. GFW), but github.com archive
+                    // URL may route differently.
+                    val tarballUrls = listOf(
+                        "https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
+                        "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/heads/main",
+                    )
                     val tarballFile = File(paths.tmpDir, "hermes-agent.tar.gz")
-                    try {
-                        onProgress("Downloading tarball from $tarballUrl…")
-                        val conn = java.net.URL(tarballUrl).openConnection() as java.net.HttpURLConnection
-                        conn.connectTimeout = 15000
-                        conn.readTimeout = 60000
-                        conn.instanceFollowRedirects = true
-                        if (conn.responseCode != 200) {
-                            onProgress("HTTP ${conn.responseCode} from tarball URL")
+                    var downloaded = false
+                    for (url in tarballUrls) {
+                        try {
+                            onProgress("Downloading tarball from $url…")
+                            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                            conn.connectTimeout = 20000
+                            conn.readTimeout = 120000
+                            conn.instanceFollowRedirects = true
+                            conn.requestMethod = "GET"
+                            if (conn.responseCode != 200) {
+                                onProgress("HTTP ${conn.responseCode} from $url")
+                                conn.disconnect()
+                                continue
+                            }
+                            conn.inputStream.use { input ->
+                                tarballFile.outputStream().use { input.copyTo(it) }
+                            }
                             conn.disconnect()
-                            return@runWithRetry false
-                        }
-                        conn.inputStream.use { input ->
-                            tarballFile.outputStream().use { input.copyTo(it) }
-                        }
-                        conn.disconnect()
-                        val tarballSize = tarballFile.length()
-                        if (tarballSize < 1024) {
-                            onProgress("Tarball too small (${tarballSize} bytes) — likely an error page")
+                            val tarballSize = tarballFile.length()
+                            if (tarballSize < 1024) {
+                                onProgress("Tarball too small (${tarballSize} bytes) — likely an error page")
+                                tarballFile.delete()
+                                continue
+                            }
+                            onProgress("Tarball downloaded (${tarballSize / 1024}KB) from $url")
+                            downloaded = true
+                            break
+                        } catch (e: Exception) {
+                            onProgress("Download from $url failed: ${e.message}")
+                            Log.w(TAG, "Tarball download from $url failed: ${e.message}")
                             tarballFile.delete()
-                            return@runWithRetry false
                         }
-                        onProgress("Tarball downloaded (${tarballSize / 1024}KB), extracting…")
-                    } catch (e: Exception) {
-                        onProgress("Tarball download error: ${e.message}")
-                        Log.e(TAG, "Tarball download failed: ${e.message}")
-                        tarballFile.delete()
+                    }
+                    if (!downloaded) {
+                        onProgress("All tarball download URLs failed")
                         return@runWithRetry false
                     }
+                    onProgress("Extracting tarball…")
                     // Extract with prefix's tar (doesn't need libcurl)
                     val extractCode = runInPrefix(
                         "cd ${homeDir} && rm -rf hermes-agent && tar -xzf ${tarballFile.absolutePath} -C ${homeDir} 2>&1 && mv hermes-agent-main hermes-agent 2>/dev/null || true",
