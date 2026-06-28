@@ -4,5 +4,29 @@
         <item name="android:statusBarColor">#020617</item>
         <item name="android:navigationBarColor">#020617</item>
         <item name="android:windowBackground">#020617</item>
+        <!-- All AlertDialogs created via AlertDialog.Builder will inherit this theme. -->
+        <item name="alertDialogTheme">@style/Theme.Hermes.Dialog</item>
+    </style>
+
+    <!-- Dark neon dialog theme: matches the main app's deep-navy + purple accent. -->
+    <style name="Theme.Hermes.Dialog" parent="ThemeOverlay.MaterialComponents.Dialog.Alert">
+        <!-- Background of the dialog panel -->
+        <item name="android:colorBackground">#0f172a</item>
+        <item name="colorBackground">#0f172a</item>
+        <!-- Title text color (slate-200) -->
+        <item name="android:textColorPrimary">#e2e8f0</item>
+        <!-- Message body text color (slate-400, dimmer) -->
+        <item name="android:textColorSecondary">#94a3b8</item>
+        <!-- Accent color used for buttons + selection (indigo-400) -->
+        <item name="colorAccent">#818cf8</item>
+        <item name="colorPrimary">#818cf8</item>
+        <!-- Use accent color for button text (instead of default Material blue) -->
+        <item name="android:buttonBarButtonStyle">@style/Widget.Hermes.DialogButton</item>
+    </style>
+
+    <!-- Button bar buttons: transparent background, accent-colored uppercase text. -->
+    <style name="Widget.Hermes.DialogButton" parent="Widget.MaterialComponents.Button.TextButton.Dialog">
+        <item name="android:textColor">#818cf8</item>
+        <item name="rippleColor">#22ffffff</item>
     </style>
 </resources>
