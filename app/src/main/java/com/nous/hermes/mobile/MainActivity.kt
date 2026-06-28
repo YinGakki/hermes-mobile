@@ -522,16 +522,20 @@ class MainActivity : AppCompatActivity() {
             |Hermes Agent is installed at:
             |${paths.prefixDir}
             |
-            |To start chatting, install Termux from F-Droid, then run:
+            |To use it, open any terminal app (e.g. Termux from F-Droid)
+            |and run:
             |
             |    export PATH=${paths.prefixDir}/bin:${'$'}PATH
             |    export HOME=${paths.homeDir}
+            |    export LD_LIBRARY_PATH=${paths.prefixDir}/lib
             |    cd ${paths.homeDir}/hermes-agent
             |    . .venv/bin/activate
             |    hermes setup
             |    hermes
             |
             |Or run `hermes setup --portal` to use Nous Portal (free OAuth).
+            |
+            |Tip: You can also use the Chat UI button above — no terminal needed.
         """.trimMargin()
         MaterialAlertDialogBuilder(this)
             .setTitle("How to use Hermes")

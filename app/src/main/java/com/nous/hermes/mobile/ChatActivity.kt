@@ -1,9 +1,12 @@
 package com.nous.hermes.mobile
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import android.view.KeyEvent
 import android.webkit.PermissionRequest
@@ -34,10 +37,12 @@ class ChatActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "ChatActivity"
         const val EXTRA_BASE_URL = "base_url"
+        private const val FILE_CHOOSER_REQUEST = 10042
     }
 
     private lateinit var webView: WebView
     private var baseUrl: String = HermesStudioInstaller.STUDIO_BASE_URL
+    private var filePathCallback: android.webkit.ValueCallback<Array<Uri>>? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,9 +98,20 @@ class ChatActivity : AppCompatActivity() {
                     filePathCallback: android.webkit.ValueCallback<Array<Uri>>?,
                     fileChooserParams: FileChooserParams?,
                 ): Boolean {
-                    // TODO: implement file chooser if needed. For now,
-                    // return false so the WebView shows the default behavior.
-                    return false
+                    this@ChatActivity.filePathCallback?.onReceiveValue(null)
+                    this@ChatActivity.filePathCallback = filePathCallback
+                    try {
+                        val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                            type = "*/*"
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                        }
+                        startActivityForResult(intent, FILE_CHOOSER_REQUEST)
+                        return true
+                    } catch (e: Exception) {
+                        Log.e(TAG, "File chooser failed: ${e.message}")
+                        this@ChatActivity.filePathCallback = null
+                        return false
+                    }
                 }
 
                 override fun onPermissionRequest(request: PermissionRequest?) {
@@ -122,6 +138,25 @@ class ChatActivity : AppCompatActivity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    @Deprecated("Deprecated in API 34, but required for file chooser on older APIs")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == FILE_CHOOSER_REQUEST) {
+            val callback = filePathCallback ?: return
+            filePathCallback = null
+            val uris = when {
+                resultCode != Activity.RESULT_OK -> null
+                data?.data != null -> arrayOf(data.data!!)
+                data?.clipData != null -> {
+                    val clip = data.clipData!!
+                    Array(clip.itemCount) { i -> clip.getItemAt(i).uri }
+                }
+                else -> null
+            }
+            callback.onReceiveValue(uris)
+        }
     }
 
     override fun onDestroy() {

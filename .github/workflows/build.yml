@@ -184,7 +184,7 @@ jobs:
             --extra git \
             --extra make --extra pkg-config --extra binutils \
             --extra libxml2 --extra libarchive --extra libcurl \
-            --extra libuv --extra libnghttp2 --extra libnghttp3 \
+            --extra libuv --extra libnghttp2 --extra libnghttp3 --extra libngtcp2 \
             --extra ripgrep --extra rhash --extra jsoncpp \
             --extra libedit --extra ndk-sysroot --extra ndk-multilib --extra libcompiler-rt \
             --extra nodejs --extra npm --extra c-ares --extra libicu \
@@ -279,6 +279,7 @@ jobs:
           SIGNING_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          HAS_KEYSTORE: ${{ steps.has_keystore.outputs.has_keystore == 'true' }}
         shell: bash
         run: |
           ./gradlew :app:assembleFullRelease :app:assembleLiteRelease \
