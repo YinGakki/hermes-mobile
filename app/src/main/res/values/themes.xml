@@ -10,9 +10,11 @@
 
     <!-- Dark neon dialog theme: matches the main app's deep-navy + purple accent. -->
     <style name="Theme.Hermes.Dialog" parent="ThemeOverlay.MaterialComponents.Dialog.Alert">
-        <!-- Background of the dialog panel -->
+        <!-- Background of the dialog panel.
+             Note: only android:colorBackground exists on ThemeOverlay; the
+             non-prefixed colorBackground attribute is only valid on full Theme
+             parents (not ThemeOverlay) and triggers an AAPT linking error. -->
         <item name="android:colorBackground">#0f172a</item>
-        <item name="colorBackground">#0f172a</item>
         <!-- Title text color (slate-200) -->
         <item name="android:textColorPrimary">#e2e8f0</item>
         <!-- Message body text color (slate-400, dimmer) -->
