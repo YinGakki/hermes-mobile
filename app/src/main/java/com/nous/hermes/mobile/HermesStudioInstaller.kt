@@ -151,8 +151,14 @@ class HermesStudioInstaller(private val context: Context) {
         pb.environment().clear()
         pb.environment().putAll(env)
         pb.directory(File(homeDir))
+        // Redirect stdin from /dev/null to prevent blocking on read.
+        // Redirect stdout/stderr to /dev/null too — the CLI daemonizes
+        // itself, so we don't need its output (logs go to
+        // ~/.hermes-web-ui/server.log via the CLI's own logging).
+        // NOTE: ProcessBuilder.Redirect.DISCARD is Java 9+ and not
+        // available on Android; use to(File("/dev/null")) instead.
         pb.redirectInput(ProcessBuilder.Redirect.from(File("/dev/null")))
-        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        pb.redirectOutput(ProcessBuilder.Redirect.to(File("/dev/null")))
         pb.redirectErrorStream(true)
 
         return try {
