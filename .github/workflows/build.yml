@@ -154,41 +154,96 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Fetch the full closure of `python` + `python-pip` plus ALL
-          # transitive Termux deps (libffi, openssl, libsqlite, ncurses,
-          # libbz2, liblzma, libcrypt, libexpat, readline, zlib, ...).
+          # Fetch the full closure of ALL Termux packages the APK needs at
+          # first launch, with their entire transitive dependency tree:
           #
-          # This is what would otherwise be downloaded by `apt-get download
-          # python python-pip` at first launch — except apt-get only grabs
-          # the top-level .deb and lets apt resolve the rest at install
-          # time, which means ~17 native deps still need to be fetched
-          # on-device. Bundling the whole closure here means installPython()
-          # can install fully offline from the bundle.
+          #   - python + python-pip + 15 native deps (libffi/openssl/...)
+          #   - proot + libtalloc (path remapping for dpkg)
+          #   - git (hermes-agent clone)
+          #   - make, pkg-config, binutils (build tools)
+          #   - libxml2, libarchive, libcurl, libuv, libnghttp2/3 (rust/cmake links)
+          #   - ripgrep, rhash, jsoncpp (Hermes search/misc)
+          #   - libedit, ndk-sysroot, ndk-multilib, libcompiler-rt (rust toolchain)
+          #   - nodejs-lts, npm, c-ares, libicu (Hermes optional JS runtime)
+          #   - cmake, libllvm, lld (native wheel compile)
           #
-          # The script parses the Termux apt repo's Packages.gz metadata
-          # and recursively walks Depends/Pre-Depends, then curls each .deb.
-          bundle_dir="$RUNNER_TEMP/python-bundle"
+          # Excluded (too big / too frequently updated):
+          #   - rust toolchain (~300MB, every 6 weeks)
+          #   - clang/llvm full (~300MB, every 6 weeks) — libllvm alone is OK
+          #   - ffmpeg (~30MB, optional)
+          #
+          # The script parses Packages.gz and recursively walks Depends, so
+          # we get the full closure (~55 packages, ~165MB deb / ~61MB tar.gz)
+          # without ever running apt-get itself.
+          bundle_dir="$RUNNER_TEMP/deb-bundle"
           rm -rf "$bundle_dir"
-          python3 scripts/fetch-python-bundle.py --arch "$TERMUX_ARCH" --out "$bundle_dir"
+          python3 scripts/fetch-python-bundle.py \
+            --arch "$TERMUX_ARCH" \
+            --out "$bundle_dir" \
+            --extra proot --extra libtalloc \
+            --extra git \
+            --extra make --extra pkg-config --extra binutils \
+            --extra libxml2 --extra libarchive --extra libcurl \
+            --extra libuv --extra libnghttp2 --extra libnghttp3 \
+            --extra ripgrep --extra rhash --extra jsoncpp \
+            --extra libedit --extra ndk-sysroot --extra ndk-multilib --extra libcompiler-rt \
+            --extra nodejs-lts --extra npm --extra c-ares --extra libicu \
+            --extra cmake --extra libllvm --extra lld
           echo "---"
           echo "Bundle contents:"
-          ls -1 "$bundle_dir"
+          ls -1 "$bundle_dir" | head -30
           echo "..."
           echo "Total deb files: $(ls -1 "$bundle_dir"/*.deb 2>/dev/null | wc -l)"
 
-      - name: Package Python bundle as tarball
+      - name: Package deb bundle as tarball
         shell: bash
         run: |
           set -euo pipefail
-          bundle_dir="$RUNNER_TEMP/python-bundle"
+          bundle_dir="$RUNNER_TEMP/deb-bundle"
           if [ ! -d "$bundle_dir" ] || [ -z "$(ls -A "$bundle_dir"/*.deb 2>/dev/null)" ]; then
-            echo "WARNING: python bundle is empty — APK will fall back to apt-get download at first launch"
+            echo "WARNING: deb bundle is empty — APK will fall back to apt-get download at first launch"
             exit 0
           fi
           mkdir -p app/src/main/assets
-          tar -czf app/src/main/assets/python-bundle.tar.gz -C "$RUNNER_TEMP" python-bundle
-          ls -la app/src/main/assets/python-bundle.tar.gz
-          echo "Python bundle size: $(du -h app/src/main/assets/python-bundle.tar.gz | cut -f1)"
+          tar -czf app/src/main/assets/deb-bundle.tar.gz -C "$RUNNER_TEMP" deb-bundle
+          ls -la app/src/main/assets/deb-bundle.tar.gz
+          echo "Deb bundle size: $(du -h app/src/main/assets/deb-bundle.tar.gz | cut -f1)"
+
+      - name: Pre-fetch aarch64 manylinux wheels (best-effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # BEST-EFFORT: try to fetch aarch64 manylinux wheels for Hermes's
+          # native deps (cryptography, cffi, pydantic-core, jiter, uvloop,
+          # httptools, watchfiles, etc.).
+          #
+          # CAVEAT: manylinux wheels are built against glibc, but Android
+          # uses bionic libc. Even if pip can install them (platform tag
+          # matches aarch64), they will likely FAIL AT RUNTIME with missing
+          # symbols. pip's --find-links without --no-index means pip will
+          # try the cached wheel first; if it segfaults on import, the user
+          # has to manually uninstall + reinstall from source.
+          #
+          # Despite this risk, we fetch them anyway because:
+          #   1. Some pure-C wheels (no glibc-specific symbols) may work.
+          #   2. pip skips incompatible wheels at install time, so the
+          #      cache doesn't BREAK anything — worst case it's dead weight.
+          #   3. If a wheel works, it saves ~5-10 min of on-device compile.
+          #
+          # If this proves problematic in practice, delete this step — the
+          # x86_64 manylinux wheels fetched earlier already cover pure-python
+          # deps, and on-device compile remains the fallback for native ones.
+          wheelhouse="$RUNNER_TEMP/wheels"
+          mkdir -p "$wheelhouse"
+          cd "$hermes_dir"
+          echo "Fetching aarch64 manylinux wheels (best-effort, may not work on Android)…"
+          pip download --dest "$wheelhouse" \
+            '.[termux]' \
+            -c constraints-termux.txt \
+            --platform manylinux2014_aarch64 \
+            --python-version 311 \
+            --only-binary=:all: 2>&1 | tail -20 || true
+          echo "Total wheels after aarch64 fetch: $(ls -1 "$wheelhouse" | wc -l)"
 
       - name: Detect signing keystore
         id: has_keystore

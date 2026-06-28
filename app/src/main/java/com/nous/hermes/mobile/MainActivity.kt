@@ -152,6 +152,16 @@ class MainActivity : AppCompatActivity() {
         }
         updateStatus("Environment ready")
 
+        // Step 1b: Extract bundled deb cache (if present) into $prefix/tmp/.
+        // This stages ALL .deb files the APK ships (python + proot + node +
+        // build deps + transitive native deps) so every subsequent
+        // install*() step can skip apt-get download and run fully offline.
+        // If no bundle is bundled (local dev build), each step falls back
+        // to apt-get download on its own.
+        if (serverManager.extractDebBundleIfPresent { msg -> updateDetail(msg) }) {
+            updateStatus("Bundled deps staged", "Skipping apt-get downloads")
+        }
+
         // Step 2: Install proot (needed for dpkg/apt-get path remapping)
         if (!serverManager.isProotInstalled()) {
             updateStatus("Installing proot…", "Needed for package management")

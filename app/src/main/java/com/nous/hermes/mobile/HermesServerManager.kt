@@ -115,16 +115,21 @@ class HermesServerManager(private val context: Context) {
             onProgress = onProgress,
             what = "install proot",
         ) {
-            onProgress("Downloading proot…")
-            val downloadCmd = """
-                cd $prefix/tmp &&
-                apt-get update --allow-insecure-repositories 2>&1;
-                apt-get download --allow-unauthenticated proot libtalloc 2>&1
-            """.trimIndent()
-            val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-            if (dlCode != 0) {
-                Log.e(TAG, "apt-get download proot failed with code $dlCode")
-                return@runWithRetry false
+            // Skip apt-get download if the bundle already staged debs in tmp/.
+            if (!bundledDebsPresent()) {
+                onProgress("Downloading proot…")
+                val downloadCmd = """
+                    cd $prefix/tmp &&
+                    apt-get update --allow-insecure-repositories 2>&1;
+                    apt-get download --allow-unauthenticated proot libtalloc 2>&1
+                """.trimIndent()
+                val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
+                if (dlCode != 0) {
+                    Log.e(TAG, "apt-get download proot failed with code $dlCode")
+                    return@runWithRetry false
+                }
+            } else {
+                onProgress("Using bundled proot debs…")
             }
 
             onProgress("Extracting proot…")
@@ -182,16 +187,11 @@ class HermesServerManager(private val context: Context) {
             onProgress = onProgress,
             what = "install python",
         ) {
-            // Try bundled deb cache first (assets/python-bundle.tar.gz).
-            val bundleReady = setupPythonBundleIfPresent(prefix, onProgress)
-
-            if (!bundleReady) {
-                // Fallback: apt-get download python + python-pip.
-                // NOTE: this only grabs the top-level .deb; transitive deps
-                // (libffi, openssl, ...) still need to be fetched by apt at
-                // install time — slower and needs network. The bundled path
-                // above avoids this entirely.
-                onProgress("No bundled Python — downloading via apt-get…")
+            // If extractDebBundleIfPresent() already staged debs in tmp/
+            // (called once at setup start), skip apt-get download entirely.
+            // Otherwise fall back to apt-get download python + python-pip.
+            if (!bundledDebsPresent()) {
+                onProgress("No bundled debs — downloading via apt-get…")
                 val downloadCmd = """
                     cd $prefix/tmp &&
                     apt-get update --allow-insecure-repositories 2>&1;
@@ -206,8 +206,7 @@ class HermesServerManager(private val context: Context) {
 
             // Extract every .deb in $prefix/tmp into the prefix.
             // Works for both bundled (17 debs incl. transitive deps) and
-            // apt-get-fetched (2 debs, transitive deps already in prefix
-            // from apt install — though we use download, so only 2 here).
+            // apt-get-fetched (2 debs).
             onProgress("Extracting Python…")
             val extractCmd = """
                 cd $prefix/tmp &&
@@ -245,14 +244,19 @@ class HermesServerManager(private val context: Context) {
     }
 
     /**
-     * Extract the bundled Python deb cache (assets/python-bundle.tar.gz)
-     * to $prefix/tmp/ so installPython()'s extract loop picks them up.
+     * Extract the bundled deb cache (assets/deb-bundle.tar.gz) to $prefix/tmp/.
+     * Called ONCE at the start of setup, before any install*() function runs.
+     * After this returns true, every install*() function will find its .deb
+     * files already in tmp/ and can skip the apt-get download phase entirely.
+     *
      * Returns true if the bundle was extracted successfully, false if no
-     * bundle is bundled (caller should fall back to apt-get download).
+     * bundle is bundled (each install*() function will fall back to apt-get).
      */
-    private fun setupPythonBundleIfPresent(prefix: String, onProgress: (String) -> Unit): Boolean {
+    fun extractDebBundleIfPresent(onProgress: (String) -> Unit): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        val prefix = paths.prefixDir
         val assetManager = context.assets
-        val tarballAsset = "python-bundle.tar.gz"
+        val tarballAsset = "deb-bundle.tar.gz"
         val hasTarball = try {
             assetManager.list("")?.any { it == tarballAsset } == true
         } catch (e: Exception) {
@@ -260,7 +264,7 @@ class HermesServerManager(private val context: Context) {
         }
         if (!hasTarball) return false
 
-        onProgress("Extracting bundled Python deb cache (python-bundle.tar.gz)…")
+        onProgress("Extracting bundled deb cache (deb-bundle.tar.gz)…")
         val tmpDir = File(prefix, "tmp")
         tmpDir.mkdirs()
         val outFile = File(tmpDir, tarballAsset)
@@ -268,27 +272,37 @@ class HermesServerManager(private val context: Context) {
             assetManager.open(tarballAsset).use { input ->
                 outFile.outputStream().use { input.copyTo(it) }
             }
-            // Extract into tmp/ — the deb files will be picked up by
-            // installPython()'s `for deb in *.deb` loop right after.
-            // --strip-components=1 drops the top-level "python-bundle/" dir
-            // created by `tar -czf ... -C $RUNNER_TEMP python-bundle`.
+            // Extract into tmp/ — all install*() functions' `for deb in *.deb`
+            // loops will pick these up. --strip-components=1 drops the
+            // top-level "deb-bundle/" dir created by `tar -czf ... -C $RUNNER_TEMP deb-bundle`.
             val code = runInPrefix(
                 "cd $prefix/tmp && tar -xzf $tarballAsset --strip-components=1 2>&1",
                 onOutput = { onProgress(it) },
             )
             outFile.delete()
             if (code != 0) {
-                Log.w(TAG, "tar -xzf python-bundle failed (code=$code) — falling back to apt-get")
+                Log.w(TAG, "tar -xzf deb-bundle failed (code=$code) — falling back to apt-get per-step")
                 return false
             }
             val debCount = tmpDir.listFiles { _, n -> n.endsWith(".deb") }?.size ?: 0
-            onProgress("Python bundle: $debCount debs staged in tmp/")
+            onProgress("Deb bundle: $debCount debs staged in tmp/")
             debCount > 0
         } catch (e: Exception) {
-            Log.w(TAG, "Could not extract bundled python-bundle.tar.gz: ${e.message}")
+            Log.w(TAG, "Could not extract bundled deb-bundle.tar.gz: ${e.message}")
             outFile.delete()
             false
         }
+    }
+
+    /**
+     * Check whether $prefix/tmp/ already contains .deb files (from a
+     * previously-extracted bundle). Used by each install*() function to
+     * decide whether to skip the apt-get download phase.
+     */
+    private fun bundledDebsPresent(): Boolean {
+        val prefix = BootstrapInstaller.getPaths(context).prefixDir
+        val tmpDir = File(prefix, "tmp")
+        return tmpDir.listFiles { _, n -> n.endsWith(".deb") }?.isNotEmpty() == true
     }
 
     // ── Node.js ───────────────────────────────────────────────────────────
@@ -308,16 +322,21 @@ class HermesServerManager(private val context: Context) {
             onProgress = onProgress,
             what = "install node",
         ) {
-            onProgress("Downloading Node.js packages…")
-            val downloadCmd = """
-                cd $prefix/tmp &&
-                apt-get update --allow-insecure-repositories 2>&1;
-                apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs-lts npm 2>&1
-            """.trimIndent()
-            val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-            if (dlCode != 0) {
-                Log.e(TAG, "apt-get download failed with code $dlCode")
-                return@runWithRetry false
+            // Skip apt-get download if the bundle already staged debs in tmp/.
+            if (!bundledDebsPresent()) {
+                onProgress("Downloading Node.js packages…")
+                val downloadCmd = """
+                    cd $prefix/tmp &&
+                    apt-get update --allow-insecure-repositories 2>&1;
+                    apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs-lts npm 2>&1
+                """.trimIndent()
+                val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
+                if (dlCode != 0) {
+                    Log.e(TAG, "apt-get download failed with code $dlCode")
+                    return@runWithRetry false
+                }
+            } else {
+                onProgress("Using bundled node debs…")
             }
 
             onProgress("Extracting Node.js packages…")
@@ -392,54 +411,101 @@ WEOF
             return true
         }
 
-        onProgress("Downloading build dependencies…")
+        // If the bundle already staged debs in tmp/, skip the entire
+        // apt-get update + download phase — just go to extract.
+        // Otherwise fall back to the original apt-get download path.
+        if (!bundledDebsPresent()) {
+            onProgress("Downloading build dependencies…")
 
-        // apt-get update can fail transiently (Termux repo mirror flakiness).
-        // Retry up to 3 times with exponential backoff before giving up.
-        val updateOk = runWithRetry(
-            maxAttempts = 3,
-            baseDelayMs = 2000L,
-            onProgress = onProgress,
-            what = "apt-get update",
-        ) {
-            runInPrefix(
-                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
-                onOutput = { onProgress(it) },
-            ) == 0
-        }
-        if (!updateOk) {
-            Log.w(TAG, "apt-get update failed after 3 retries (non-fatal — proceeding with apt-get download anyway)")
-        }
-
-        // Official Hermes pkg list + transitive build tools needed to
-        // compile native Python wheels (cryptography, cffi, etc).
-        val pkgGroups = listOf(
-            // Hermes official Termux pkg list
-            "git python clang rust make pkg-config libffi openssl nodejs ripgrep ffmpeg",
-            // Transitive native build toolchain (needed by rust + cffi + cryptography)
-            "cmake binutils lld libllvm libedit ndk-sysroot ndk-multilib libcompiler-rt",
-            // Shared libs that some Hermes extras link against
-            "libarchive libxml2 liblzma libcurl libuv libnghttp2 libnghttp3",
-            // Misc
-            "rhash jsoncpp",
-        )
-
-        // Download each pkg group with its own retry — one group failing
-        // shouldn't force the whole step to restart from scratch.
-        for (group in pkgGroups) {
-            val groupOk = runWithRetry(
+            // apt-get update can fail transiently (Termux repo mirror flakiness).
+            // Retry up to 3 times with exponential backoff before giving up.
+            val updateOk = runWithRetry(
                 maxAttempts = 3,
                 baseDelayMs = 2000L,
                 onProgress = onProgress,
-                what = "apt-get download $group",
+                what = "apt-get update",
             ) {
                 runInPrefix(
-                    "cd $prefix/tmp && apt-get download --allow-unauthenticated $group 2>&1",
+                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
                     onOutput = { onProgress(it) },
                 ) == 0
             }
-            if (!groupOk) {
-                Log.w(TAG, "apt-get download ($group) failed after retries (non-fatal)")
+            if (!updateOk) {
+                Log.w(TAG, "apt-get update failed after 3 retries (non-fatal — proceeding with apt-get download anyway)")
+            }
+
+            // Official Hermes pkg list + transitive build tools needed to
+            // compile native Python wheels (cryptography, cffi, etc).
+            val pkgGroups = listOf(
+                // Hermes official Termux pkg list
+                "git python clang rust make pkg-config libffi openssl nodejs ripgrep ffmpeg",
+                // Transitive native build toolchain (needed by rust + cffi + cryptography)
+                "cmake binutils lld libllvm libedit ndk-sysroot ndk-multilib libcompiler-rt",
+                // Shared libs that some Hermes extras link against
+                "libarchive libxml2 liblzma libcurl libuv libnghttp2 libnghttp3",
+                // Misc
+                "rhash jsoncpp",
+            )
+
+            // Download each pkg group with its own retry — one group failing
+            // shouldn't force the whole step to restart from scratch.
+            for (group in pkgGroups) {
+                val groupOk = runWithRetry(
+                    maxAttempts = 3,
+                    baseDelayMs = 2000L,
+                    onProgress = onProgress,
+                    what = "apt-get download $group",
+                ) {
+                    runInPrefix(
+                        "cd $prefix/tmp && apt-get download --allow-unauthenticated $group 2>&1",
+                        onOutput = { onProgress(it) },
+                    ) == 0
+                }
+                if (!groupOk) {
+                    Log.w(TAG, "apt-get download ($group) failed after retries (non-fatal)")
+                }
+            }
+        } else {
+            // Bundle has most build deps, but rust/clang/ffmpeg were
+            // excluded from the bundle (too big / too frequently updated).
+            // Still need to download just these three from apt.
+            onProgress("Using bundled build deps + downloading rust/clang/ffmpeg…")
+            val updateOk = runWithRetry(
+                maxAttempts = 3,
+                baseDelayMs = 2000L,
+                onProgress = onProgress,
+                what = "apt-get update (for rust/clang/ffmpeg)",
+            ) {
+                runInPrefix(
+                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                    onOutput = { onProgress(it) },
+                ) == 0
+            }
+            if (!updateOk) {
+                Log.w(TAG, "apt-get update failed (non-fatal — proceeding with download anyway)")
+            }
+            // rust is huge (~300MB) — only download if not already extracted.
+            // clang + ffmpeg are smaller but still worth skipping if present.
+            val missingPkgs = mutableListOf<String>()
+            if (!File("$prefix/bin/rustc").exists()) missingPkgs.add("rust")
+            if (!File("$prefix/bin/clang").exists()) missingPkgs.add("clang")
+            // ffmpeg is optional — don't fail setup if it can't be downloaded.
+            if (missingPkgs.isNotEmpty()) {
+                val pkgs = (missingPkgs + listOf("ffmpeg")).joinToString(" ")
+                val dlOk = runWithRetry(
+                    maxAttempts = 3,
+                    baseDelayMs = 3000L,
+                    onProgress = onProgress,
+                    what = "apt-get download $pkgs",
+                ) {
+                    runInPrefix(
+                        "cd $prefix/tmp && apt-get download --allow-unauthenticated $pkgs 2>&1",
+                        onOutput = { onProgress(it) },
+                    ) == 0
+                }
+                if (!dlOk) {
+                    Log.w(TAG, "apt-get download ($pkgs) failed after retries (non-fatal — Hermes may still work without them)")
+                }
             }
         }
 
