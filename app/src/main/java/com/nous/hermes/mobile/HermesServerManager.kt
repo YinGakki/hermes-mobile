@@ -468,45 +468,12 @@ WEOF
         } else {
             // Bundle has most build deps, but rust/clang/ffmpeg were
             // excluded from the bundle (too big / too frequently updated).
-            // Still need to download just these three from apt.
-            onProgress("Using bundled build deps + downloading rust/clang/ffmpeg…")
-            val updateOk = runWithRetry(
-                maxAttempts = 3,
-                baseDelayMs = 2000L,
-                onProgress = onProgress,
-                what = "apt-get update (for rust/clang/ffmpeg)",
-            ) {
-                runInPrefix(
-                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
-                    onOutput = { onProgress(it) },
-                ) == 0
-            }
-            if (!updateOk) {
-                Log.w(TAG, "apt-get update failed (non-fatal — proceeding with download anyway)")
-            }
-            // rust is huge (~300MB) — only download if not already extracted.
-            // clang + ffmpeg are smaller but still worth skipping if present.
-            val missingPkgs = mutableListOf<String>()
-            if (!File("$prefix/bin/rustc").exists()) missingPkgs.add("rust")
-            if (!File("$prefix/bin/clang").exists()) missingPkgs.add("clang")
-            // ffmpeg is optional — don't fail setup if it can't be downloaded.
-            if (missingPkgs.isNotEmpty()) {
-                val pkgs = (missingPkgs + listOf("ffmpeg")).joinToString(" ")
-                val dlOk = runWithRetry(
-                    maxAttempts = 3,
-                    baseDelayMs = 3000L,
-                    onProgress = onProgress,
-                    what = "apt-get download $pkgs",
-                ) {
-                    runInPrefix(
-                        "cd $prefix/tmp && apt-get download --allow-unauthenticated $pkgs 2>&1",
-                        onOutput = { onProgress(it) },
-                    ) == 0
-                }
-                if (!dlOk) {
-                    Log.w(TAG, "apt-get download ($pkgs) failed after retries (non-fatal — Hermes may still work without them)")
-                }
-            }
+            // They are now downloaded ON-DEMAND by installHermes() only if
+            // the wheel-cache install path fails (i.e. a package couldn't
+            // be installed from the pre-fetched manylinux wheels and needs
+            // to be compiled from source). This avoids the ~600MB rust+clang
+            // download in the common case where wheels work.
+            onProgress("Using bundled build deps (rust/clang deferred to installHermes)")
         }
 
         onProgress("Extracting build dependencies…")
@@ -766,7 +733,10 @@ H3
      * The constraints file pins versions known to build cleanly on
      * Android. We rely on the in-repo constraints-termux.txt.
      */
-    fun installHermes(onProgress: (String) -> Unit): Boolean {
+    fun installHermes(
+        onProgress: (String) -> Unit,
+        onNeedCompile: () -> Boolean = { true },
+    ): Boolean {
         val paths = BootstrapInstaller.getPaths(context)
         val prefix = paths.prefixDir
         val homeDir = paths.homeDir
@@ -844,13 +814,14 @@ H3
         } else {
             ""
         }
+        onProgress("Phase 1: try installing from wheel cache (no compile needed)…")
         val installOk = runWithRetry(
             maxAttempts = 3,
             baseDelayMs = 5000L,
             onProgress = onProgress,
             what = "pip install hermes (termux)",
         ) {
-            onProgress("Installing Hermes (pip install -e .[termux]) — this may take several minutes…")
+            onProgress("Installing Hermes (pip install -e .[termux]) — this may take a minute…")
             val cmd = """
                 cd ${homeDir}/hermes-agent &&
                 . .venv/bin/activate &&
@@ -859,9 +830,53 @@ H3
             """.trimIndent()
             runInPrefix(cmd, onOutput = { onProgress(it) }) == 0
         }
+
+        // Phase 2 fallback: if wheel install failed, ask the user whether
+        // to download rust+clang (~600MB) and compile from source. This is
+        // needed when the pre-fetched aarch64 manylinux wheels don't work
+        // on Android's bionic libc (they may segfault at runtime because
+        // they're built against glibc). The user should know which path
+        // they're on before burning 600MB of data.
         if (!installOk) {
-            Log.e(TAG, "pip install hermes failed after 3 retries")
-            return false
+            onProgress("Phase 1 (wheel cache) failed — needs source compile")
+            Log.w(TAG, "pip install from wheel cache failed — asking user about source compile")
+
+            // Ask the user via callback. Default lambda returns true
+            // (auto-approve) for headless/CI runs where no UI is present.
+            val approved = onNeedCompile()
+            if (!approved) {
+                Log.e(TAG, "User declined source compile — install aborted")
+                return false
+            }
+
+            onProgress("Phase 2: downloading rust+clang + compiling from source…")
+            val compileDepsOk = downloadAndInstallCompileToolchain(prefix, onProgress)
+            if (!compileDepsOk) {
+                Log.e(TAG, "Failed to download rust/clang — cannot compile")
+                return false
+            }
+
+            // Retry pip install, this time forcing sdist compile for the
+            // native packages that failed before. --no-binary ensures pip
+            // won't reuse the (broken) manylinux wheels.
+            onProgress("Compiling native packages from source (may take 5-10 min)…")
+            val compileOk = runWithRetry(
+                maxAttempts = 2,
+                baseDelayMs = 5000L,
+                onProgress = onProgress,
+                what = "pip install (source compile)",
+            ) {
+                val cmd = """
+                    cd ${homeDir}/hermes-agent &&
+                    . .venv/bin/activate &&
+                    pip install $pipArgs --no-binary=:all: -e '.[termux]' -c constraints-termux.txt 2>&1
+                """.trimIndent()
+                runInPrefix(cmd, onOutput = { onProgress(it) }) == 0
+            }
+            if (!compileOk) {
+                Log.e(TAG, "pip install (source compile) failed after retries")
+                return false
+            }
         }
 
         // Link hermes binary onto PATH so it's discoverable from any shell
@@ -884,6 +899,85 @@ WEOF
         runInPrefix(linkCmd, onOutput = { onProgress(it) })
 
         return isHermesInstalled()
+    }
+
+    /**
+     * Download + install rust + clang + ffmpeg via apt-get. Used ONLY as
+     * a fallback when the wheel-cache install path fails and the user
+     * approves the ~600MB download. Returns true on success.
+     */
+    private fun downloadAndInstallCompileToolchain(
+        prefix: String,
+        onProgress: (String) -> Unit,
+    ): Boolean {
+        val termuxPrefix = "/data/data/com.termux/files/usr"
+
+        // apt-get update (with retry)
+        val updateOk = runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 2000L,
+            onProgress = onProgress,
+            what = "apt-get update (for rust/clang)",
+        ) {
+            runInPrefix(
+                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                onOutput = { onProgress(it) },
+            ) == 0
+        }
+        if (!updateOk) {
+            Log.w(TAG, "apt-get update failed (non-fatal — proceeding with download anyway)")
+        }
+
+        // Download rust + clang + ffmpeg. These are big (~600MB) so retry.
+        val pkgs = if (File("$prefix/bin/ffmpeg").exists()) "rust clang" else "rust clang ffmpeg"
+        val dlOk = runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 3000L,
+            onProgress = onProgress,
+            what = "apt-get download $pkgs",
+        ) {
+            runInPrefix(
+                "cd $prefix/tmp && apt-get download --allow-unauthenticated $pkgs 2>&1",
+                onOutput = { onProgress(it) },
+            ) == 0
+        }
+        if (!dlOk) {
+            Log.e(TAG, "apt-get download ($pkgs) failed after retries")
+            return false
+        }
+
+        // Extract them into the prefix
+        onProgress("Extracting rust/clang/ffmpeg…")
+        val extractCmd = """
+            cd $prefix/tmp &&
+            mkdir -p _compile_stage &&
+            shopt -s nullglob &&
+            for deb in rust*.deb clang*.deb clang-*.deb ffmpeg*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb libcompiler-rt*.deb; do
+                [ -f "${'$'}deb" ] && echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _compile_stage/ 2>&1
+            done &&
+            if [ -d "_compile_stage$termuxPrefix" ]; then
+                cp -a _compile_stage$termuxPrefix/* "$prefix/" 2>&1
+            elif [ -d "_compile_stage/usr" ]; then
+                cp -a _compile_stage/usr/* "$prefix/" 2>&1
+            fi &&
+            rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb ffmpeg*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null
+            echo "Compile toolchain installed"
+        """.trimIndent()
+        val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
+        if (extractCode != 0) {
+            Log.e(TAG, "rust/clang extract failed with code $extractCode")
+            return false
+        }
+
+        // Verify
+        val rustOk = File(prefix, "bin/rustc").exists()
+        val clangOk = File(prefix, "bin/clang").exists()
+        if (!rustOk || !clangOk) {
+            Log.e(TAG, "rust/clang missing after extract (rust=$rustOk, clang=$clangOk)")
+            return false
+        }
+        onProgress("rust + clang ready")
+        return true
     }
 
     /**

@@ -15,4 +15,8 @@
     <string name="cancel">Cancel</string>
     <string name="error_title">Error</string>
     <string name="retry">Retry</string>
+    <string name="compile_needed_title">需要下载编译工具链</string>
+    <string name="compile_needed_message">预编译的 wheel 包在本机无法直接使用（Android 与 Linux glibc 不兼容），需要从源码编译。\n\n即将下载 rust + clang + ffmpeg（约 600 MB），然后编译 cryptography / cffi / pydantic-core 等 native 包，整个过程可能需要 5–10 分钟。\n\n是否继续？</string>
+    <string name="compile_continue">继续下载编译</string>
+    <string name="compile_abort">中止安装</string>
 </resources>

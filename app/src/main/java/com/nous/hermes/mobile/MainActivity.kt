@@ -14,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import java.util.concurrent.CountDownLatch
 
 class MainActivity : AppCompatActivity() {
 
@@ -193,7 +194,16 @@ class MainActivity : AppCompatActivity() {
         // Step 5: Install Hermes Agent
         if (!serverManager.isHermesInstalled()) {
             updateStatus("Installing Hermes Agent…", "git clone + pip install -e .[termux]")
-            val hermesOk = serverManager.installHermes { msg -> updateDetail(msg) }
+            val hermesOk = serverManager.installHermes(
+                onProgress = { msg -> updateDetail(msg) },
+                onNeedCompile = {
+                    // Called from the setup thread when Phase 1 (wheel cache)
+                    // failed and Phase 2 (download rust+clang + source compile)
+                    // is needed. Show a confirmation dialog and block until the
+                    // user responds. Return true to proceed, false to abort.
+                    askUserAboutCompile()
+                },
+            )
             if (!hermesOk) {
                 throw RuntimeException("Failed to install Hermes Agent")
             }
@@ -252,6 +262,42 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(R.string.cancel) { _, _ -> finish() }
             .setCancelable(false)
             .show()
+    }
+
+    /**
+     * Block the calling (setup) thread until the user responds to the
+     * "need source compile?" dialog. Returns true to proceed with the
+     * ~600MB rust+clang download + 5-10 min compile, false to abort.
+     *
+     * The dialog is NOT cancelable via tap-outside — the user must
+     * explicitly pick Continue or Abort. This is intentional: we're at
+     * a fork in the install flow and either choice has consequences.
+     */
+    private fun askUserAboutCompile(): Boolean {
+        val latch = CountDownLatch(1)
+        var approved = false
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.compile_needed_title)
+                .setMessage(R.string.compile_needed_message)
+                .setPositiveButton(R.string.compile_continue) { _, _ ->
+                    approved = true
+                    latch.countDown()
+                }
+                .setNegativeButton(R.string.compile_abort) { _, _ ->
+                    approved = false
+                    latch.countDown()
+                }
+                .setCancelable(false)
+                .show()
+        }
+        try {
+            latch.await()
+        } catch (e: InterruptedException) {
+            Log.w(TAG, "askUserAboutCompile interrupted — defaulting to abort")
+            return false
+        }
+        return approved
     }
 
     private fun showLoading(show: Boolean) {
