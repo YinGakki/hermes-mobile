@@ -176,15 +176,15 @@ class HermesServerManager(private val context: Context) {
                 cd $prefix/tmp &&
                 mkdir -p _proot_stage &&
                 for deb in proot*.deb libtalloc*.deb; do
-                    [ -f "${'$'}deb" ] && dpkg-deb -x "${'$'}deb" _proot_stage/ 2>&1
+                    [ -f "${'$'}deb" ] || continue
+                    dpkg-deb -x "${'$'}deb" _proot_stage/ 2>&1
                 done &&
                 if [ -d "_proot_stage$termuxPrefix" ]; then
                     cp -a _proot_stage$termuxPrefix/* "$prefix/" 2>&1
                 elif [ -d "_proot_stage/usr" ]; then
                     cp -a _proot_stage/usr/* "$prefix/" 2>&1
                 fi &&
-                chmod 700 "$prefix/bin/proot" 2>/dev/null
-                rm -rf _proot_stage proot*.deb libtalloc*.deb 2>/dev/null
+                chmod 700 "$prefix/bin/proot" 2>/dev/null; rm -rf _proot_stage proot*.deb libtalloc*.deb 2>/dev/null
                 echo "proot installed"
             """.trimIndent()
             val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
@@ -407,9 +407,9 @@ class HermesServerManager(private val context: Context) {
 
                 NPM_CLI="$prefix/lib/node_modules/npm/bin/npm-cli.js"
                 if [ -f "${'$'}NPM_CLI" ] && [ ! -f "$prefix/bin/npm" ]; then
-                    cat > "$prefix/bin/npm" << 'WEOF'
-#!/data/user/0/com.nous.hermes.mobile/files/usr/bin/sh
-exec /data/user/0/com.nous.hermes.mobile/files/usr/bin/node /data/user/0/com.nous.hermes.mobile/files/usr/lib/node_modules/npm/bin/npm-cli.js "${'$'}@"
+                    cat > "$prefix/bin/npm" << WEOF
+#!/system/bin/sh
+exec ${'$'}{PREFIX}/bin/node ${'$'}{PREFIX}/lib/node_modules/npm/bin/npm-cli.js "\$@"
 WEOF
                     chmod 700 "$prefix/bin/npm"
                 fi
@@ -853,7 +853,7 @@ H3
         val systemctlStub = File(prefix, "bin/systemctl")
         if (!systemctlStub.exists()) {
             systemctlStub.writeText(
-                "#!/data/user/0/com.nous.hermes.mobile/files/usr/bin/sh\nexit 0\n"
+                "#!/system/bin/sh\nexit 0\n"
             )
             systemctlStub.setExecutable(true)
         }
@@ -912,7 +912,13 @@ H3
                             tarballFile.outputStream().use { input.copyTo(it) }
                         }
                         conn.disconnect()
-                        onProgress("Tarball downloaded (${tarballFile.length() / 1024}KB), extracting…")
+                        val tarballSize = tarballFile.length()
+                        if (tarballSize < 1024) {
+                            onProgress("Tarball too small (${tarballSize} bytes) — likely an error page")
+                            tarballFile.delete()
+                            return@runWithRetry false
+                        }
+                        onProgress("Tarball downloaded (${tarballSize / 1024}KB), extracting…")
                     } catch (e: Exception) {
                         onProgress("Tarball download error: ${e.message}")
                         Log.e(TAG, "Tarball download failed: ${e.message}")
@@ -1067,8 +1073,8 @@ H3
             HERMES_BIN="${'$'}(which hermes 2>/dev/null)" &&
             if [ -n "${'$'}HERMES_BIN" ] && [ ! -f "$prefix/bin/hermes" ]; then
                 cat > "$prefix/bin/hermes" << WEOF
-#!/data/user/0/com.nous.hermes.mobile/files/usr/bin/sh
-exec ${'$'}HERMES_BIN "\${'$'}@"
+#!/system/bin/sh
+exec ${'$'}HERMES_BIN "\$@"
 WEOF
                 chmod 700 "$prefix/bin/hermes"
                 echo "hermes wrapper created at $prefix/bin/hermes"
@@ -1157,6 +1163,13 @@ WEOF
             return false
         }
         onProgress("rust + clang ready")
+
+        // Also ensure libngtcp2 is present — if the user is here, they went
+        // through the tarball fallback path (git clone failed due to
+        // libcurl/libngtcp2 mismatch). Installing rust/clang may have
+        // overwritten libcurl, so re-check.
+        ensureCurlDeps(prefix, onProgress)
+
         return true
     }
 

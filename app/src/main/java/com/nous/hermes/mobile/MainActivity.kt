@@ -392,7 +392,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun isBuildDepsInstalled(): Boolean {
         val prefix = BootstrapInstaller.getPaths(this).prefixDir
-        return File(prefix, "var/.hermes-deps-installed").exists()
+        val marker = File(prefix, "var/.hermes-deps-installed")
+        // Must exist AND match current version — old markers from previous
+        // APK versions (which had different package lists) are stale.
+        return marker.exists() && marker.readText().trim() == "v2"
     }
 
     private fun allStepsDone(): Boolean {
