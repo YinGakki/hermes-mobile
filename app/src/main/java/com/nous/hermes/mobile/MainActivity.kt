@@ -110,13 +110,36 @@ class MainActivity : AppCompatActivity() {
         setStatus("Initializing…")
 
         Thread {
-            try {
-                runSetup()
-            } catch (e: Exception) {
-                Log.e(TAG, "Setup failed", e)
-                runOnUiThread {
-                    showError(e.message ?: "Unknown error")
+            // Auto-retry the whole setup flow up to 3 times before showing
+            // the error dialog. Each attempt leverages the per-step
+            // is*Installed() checks in runSetup() to skip already-completed
+            // steps, so retries resume from where they left off (step-level
+            // resume) rather than restarting from scratch.
+            val maxAttempts = 3
+            var lastError: Exception? = null
+            for (attempt in 1..maxAttempts) {
+                try {
+                    runSetup()
+                    return@Thread
+                } catch (e: Exception) {
+                    lastError = e
+                    Log.e(TAG, "Setup attempt $attempt/$maxAttempts failed", e)
+                    if (attempt < maxAttempts) {
+                        val delayMs = 5000L * (1L shl (attempt - 1)) // 5s, 10s
+                        runOnUiThread {
+                            statusText.text = "Setup failed (attempt $attempt/$maxAttempts)"
+                            statusDetail.text = "${e.message ?: "Unknown error"} — retrying in ${delayMs / 1000}s…"
+                            statusDetail.visibility = View.VISIBLE
+                            logView.append("\n[auto-retry $attempt/$maxAttempts] ${e.message}\n")
+                            logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+                        }
+                        Thread.sleep(delayMs)
+                    }
                 }
+            }
+            val e = lastError!!
+            runOnUiThread {
+                showError("Failed after $maxAttempts attempts.\n\nLast error: ${e.message ?: "Unknown"}")
             }
         }.start()
     }

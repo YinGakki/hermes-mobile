@@ -107,44 +107,50 @@ class HermesServerManager(private val context: Context) {
         val prefix = paths.prefixDir
         val termuxPrefix = "/data/data/com.termux/files/usr"
 
-        onProgress("Downloading proot…")
+        // Retry the whole download+extract+verify cycle up to 3 times so a
+        // transient Termux mirror blip doesn't surface to the user.
+        return runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 3000L,
+            onProgress = onProgress,
+            what = "install proot",
+        ) {
+            onProgress("Downloading proot…")
+            val downloadCmd = """
+                cd $prefix/tmp &&
+                apt-get update --allow-insecure-repositories 2>&1;
+                apt-get download --allow-unauthenticated proot libtalloc 2>&1
+            """.trimIndent()
+            val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
+            if (dlCode != 0) {
+                Log.e(TAG, "apt-get download proot failed with code $dlCode")
+                return@runWithRetry false
+            }
 
-        val downloadCmd = """
-            cd $prefix/tmp &&
-            apt-get update --allow-insecure-repositories 2>&1;
-            apt-get download --allow-unauthenticated proot libtalloc 2>&1
-        """.trimIndent()
+            onProgress("Extracting proot…")
+            val extractCmd = """
+                cd $prefix/tmp &&
+                mkdir -p _proot_stage &&
+                for deb in proot*.deb libtalloc*.deb; do
+                    [ -f "${'$'}deb" ] && dpkg-deb -x "${'$'}deb" _proot_stage/ 2>&1
+                done &&
+                if [ -d "_proot_stage$termuxPrefix" ]; then
+                    cp -a _proot_stage$termuxPrefix/* "$prefix/" 2>&1
+                elif [ -d "_proot_stage/usr" ]; then
+                    cp -a _proot_stage/usr/* "$prefix/" 2>&1
+                fi &&
+                chmod 700 "$prefix/bin/proot" 2>/dev/null
+                rm -rf _proot_stage proot*.deb libtalloc*.deb 2>/dev/null
+                echo "proot installed"
+            """.trimIndent()
+            val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
+            if (extractCode != 0) {
+                Log.e(TAG, "proot extract failed with code $extractCode")
+                return@runWithRetry false
+            }
 
-        val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-        if (dlCode != 0) {
-            Log.e(TAG, "apt-get download proot failed with code $dlCode")
-            return false
+            isProotInstalled()
         }
-
-        onProgress("Extracting proot…")
-        val extractCmd = """
-            cd $prefix/tmp &&
-            mkdir -p _proot_stage &&
-            for deb in proot*.deb libtalloc*.deb; do
-                [ -f "${'$'}deb" ] && dpkg-deb -x "${'$'}deb" _proot_stage/ 2>&1
-            done &&
-            if [ -d "_proot_stage$termuxPrefix" ]; then
-                cp -a _proot_stage$termuxPrefix/* "$prefix/" 2>&1
-            elif [ -d "_proot_stage/usr" ]; then
-                cp -a _proot_stage/usr/* "$prefix/" 2>&1
-            fi &&
-            chmod 700 "$prefix/bin/proot" 2>/dev/null
-            rm -rf _proot_stage proot*.deb libtalloc*.deb 2>/dev/null
-            echo "proot installed"
-        """.trimIndent()
-
-        val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-        if (extractCode != 0) {
-            Log.e(TAG, "proot extract failed with code $extractCode")
-            return false
-        }
-
-        return isProotInstalled()
     }
 
     // ── Python ─────────────────────────────────────────────────────────────
@@ -159,52 +165,57 @@ class HermesServerManager(private val context: Context) {
         val prefix = paths.prefixDir
         val termuxPrefix = "/data/data/com.termux/files/usr"
 
-        onProgress("Downloading Python packages…")
+        return runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 3000L,
+            onProgress = onProgress,
+            what = "install python",
+        ) {
+            onProgress("Downloading Python packages…")
+            val downloadCmd = """
+                cd $prefix/tmp &&
+                apt-get update --allow-insecure-repositories 2>&1;
+                apt-get download --allow-unauthenticated python python-pip 2>&1
+            """.trimIndent()
+            val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
+            if (dlCode != 0) {
+                Log.e(TAG, "apt-get download python failed with code $dlCode")
+                return@runWithRetry false
+            }
 
-        val downloadCmd = """
-            cd $prefix/tmp &&
-            apt-get update --allow-insecure-repositories 2>&1;
-            apt-get download --allow-unauthenticated python python-pip 2>&1
-        """.trimIndent()
+            onProgress("Extracting Python…")
+            val extractCmd = """
+                cd $prefix/tmp &&
+                mkdir -p _python_stage &&
+                for deb in python*.deb; do
+                    [ -f "${'$'}deb" ] && echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _python_stage/ 2>&1
+                done &&
+                if [ -d "_python_stage$termuxPrefix" ]; then
+                    cp -a _python_stage$termuxPrefix/* "$prefix/" 2>&1
+                elif [ -d "_python_stage/usr" ]; then
+                    cp -a _python_stage/usr/* "$prefix/" 2>&1
+                fi &&
+                chmod 700 "$prefix/bin/python"* 2>/dev/null
+                chmod 700 "$prefix/bin/pip"* 2>/dev/null
+                rm -rf _python_stage python*.deb 2>/dev/null
+                echo "Python installed"
+            """.trimIndent()
+            val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
+            if (extractCode != 0) {
+                Log.e(TAG, "Python extract failed with code $extractCode")
+                return@runWithRetry false
+            }
 
-        val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-        if (dlCode != 0) {
-            Log.e(TAG, "apt-get download python failed with code $dlCode")
+            val fixCmd = """
+                if [ -f "$prefix/bin/python3" ] && [ ! -f "$prefix/bin/python" ]; then
+                    ln -sf python3 "$prefix/bin/python"
+                fi
+                echo "Python ready"
+            """.trimIndent()
+            runInPrefix(fixCmd, onOutput = { onProgress(it) })
+
+            isPythonInstalled()
         }
-
-        onProgress("Extracting Python…")
-        val extractCmd = """
-            cd $prefix/tmp &&
-            mkdir -p _python_stage &&
-            for deb in python*.deb; do
-                [ -f "${'$'}deb" ] && echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _python_stage/ 2>&1
-            done &&
-            if [ -d "_python_stage$termuxPrefix" ]; then
-                cp -a _python_stage$termuxPrefix/* "$prefix/" 2>&1
-            elif [ -d "_python_stage/usr" ]; then
-                cp -a _python_stage/usr/* "$prefix/" 2>&1
-            fi &&
-            chmod 700 "$prefix/bin/python"* 2>/dev/null
-            chmod 700 "$prefix/bin/pip"* 2>/dev/null
-            rm -rf _python_stage python*.deb 2>/dev/null
-            echo "Python installed"
-        """.trimIndent()
-
-        val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-        if (extractCode != 0) {
-            Log.e(TAG, "Python extract failed with code $extractCode")
-            return false
-        }
-
-        val fixCmd = """
-            if [ -f "$prefix/bin/python3" ] && [ ! -f "$prefix/bin/python" ]; then
-                ln -sf python3 "$prefix/bin/python"
-            fi
-            echo "Python ready"
-        """.trimIndent()
-        runInPrefix(fixCmd, onOutput = { onProgress(it) })
-
-        return isPythonInstalled()
     }
 
     // ── Node.js ───────────────────────────────────────────────────────────
@@ -218,61 +229,66 @@ class HermesServerManager(private val context: Context) {
         val paths = BootstrapInstaller.getPaths(context)
         val prefix = paths.prefixDir
 
-        onProgress("Downloading Node.js packages…")
+        return runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 3000L,
+            onProgress = onProgress,
+            what = "install node",
+        ) {
+            onProgress("Downloading Node.js packages…")
+            val downloadCmd = """
+                cd $prefix/tmp &&
+                apt-get update --allow-insecure-repositories 2>&1;
+                apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs-lts npm 2>&1
+            """.trimIndent()
+            val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
+            if (dlCode != 0) {
+                Log.e(TAG, "apt-get download failed with code $dlCode")
+                return@runWithRetry false
+            }
 
-        val downloadCmd = """
-            cd $prefix/tmp &&
-            apt-get update --allow-insecure-repositories 2>&1;
-            apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs-lts npm 2>&1
-        """.trimIndent()
+            onProgress("Extracting Node.js packages…")
+            val termuxPrefix = "/data/data/com.termux/files/usr"
+            val extractCmd = """
+                cd $prefix/tmp &&
+                mkdir -p _stage &&
+                for deb in *.deb; do
+                    echo "Extracting ${'$'}deb..." &&
+                    dpkg-deb -x "${'$'}deb" _stage/ 2>&1
+                done &&
+                if [ -d "_stage$termuxPrefix" ]; then
+                    cp -a _stage$termuxPrefix/* "$prefix/" 2>&1
+                elif [ -d "_stage/usr" ]; then
+                    cp -a _stage/usr/* "$prefix/" 2>&1
+                fi &&
+                rm -rf _stage *.deb 2>/dev/null
+                echo "done"
+            """.trimIndent()
+            val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
+            if (extractCode != 0) {
+                Log.e(TAG, "dpkg-deb extract failed with code $extractCode")
+                return@runWithRetry false
+            }
 
-        val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-        if (dlCode != 0) {
-            Log.e(TAG, "apt-get download failed with code $dlCode")
-        }
+            onProgress("Fixing npm wrapper script…")
+            val fixCmd = """
+                chmod 700 "$prefix/bin/node" 2>/dev/null
 
-        onProgress("Extracting Node.js packages…")
-        val termuxPrefix = "/data/data/com.termux/files/usr"
-        val extractCmd = """
-            cd $prefix/tmp &&
-            mkdir -p _stage &&
-            for deb in *.deb; do
-                echo "Extracting ${'$'}deb..." &&
-                dpkg-deb -x "${'$'}deb" _stage/ 2>&1
-            done &&
-            if [ -d "_stage$termuxPrefix" ]; then
-                cp -a _stage$termuxPrefix/* "$prefix/" 2>&1
-            elif [ -d "_stage/usr" ]; then
-                cp -a _stage/usr/* "$prefix/" 2>&1
-            fi &&
-            rm -rf _stage *.deb 2>/dev/null
-            echo "done"
-        """.trimIndent()
-
-        val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-        if (extractCode != 0) {
-            Log.e(TAG, "dpkg-deb extract failed with code $extractCode")
-            return false
-        }
-
-        onProgress("Fixing npm wrapper script…")
-        val fixCmd = """
-            chmod 700 "$prefix/bin/node" 2>/dev/null
-
-            NPM_CLI="$prefix/lib/node_modules/npm/bin/npm-cli.js"
-            if [ -f "${'$'}NPM_CLI" ] && [ ! -f "$prefix/bin/npm" ]; then
-                cat > "$prefix/bin/npm" << 'WEOF'
+                NPM_CLI="$prefix/lib/node_modules/npm/bin/npm-cli.js"
+                if [ -f "${'$'}NPM_CLI" ] && [ ! -f "$prefix/bin/npm" ]; then
+                    cat > "$prefix/bin/npm" << 'WEOF'
 #!/data/user/0/com.nous.hermes.mobile/files/usr/bin/sh
 exec /data/user/0/com.nous.hermes.mobile/files/usr/bin/node /data/user/0/com.nous.hermes.mobile/files/usr/lib/node_modules/npm/bin/npm-cli.js "${'$'}@"
 WEOF
-                chmod 700 "$prefix/bin/npm"
-            fi
+                    chmod 700 "$prefix/bin/npm"
+                fi
 
-            echo "Wrapper scripts created"
-        """.trimIndent()
-        runInPrefix(fixCmd, onOutput = { onProgress(it) })
+                echo "Wrapper scripts created"
+            """.trimIndent()
+            runInPrefix(fixCmd, onOutput = { onProgress(it) })
 
-        return isNodeInstalled()
+            isNodeInstalled()
+        }
     }
 
     // ── Hermes build dependencies ─────────────────────────────────────────
@@ -655,14 +671,22 @@ H3
             runInPrefix("cd ${homeDir}/hermes-agent && git pull --ff-only 2>&1") { onProgress(it) }
         }
 
-        // Create venv (Hermes recommends isolation). Idempotent — if the
-        // venv dir already exists from a previous partial run, recreate it
-        // to avoid stale .venv state from a half-finished install.
-        onProgress("Creating Python venv…")
-        runInPrefix(
-            "cd ${homeDir}/hermes-agent && rm -rf .venv && python -m venv .venv 2>&1",
-            onOutput = { onProgress(it) },
-        )
+        // Reuse existing venv if it looks healthy. Recreating it would
+        // throw away packages already installed by a previous (possibly
+        // partial) run and force pip to redownload everything. pip install
+        // is idempotent on an existing venv — already-installed packages
+        // are skipped, so resuming on the existing venv is both safe and
+        // faster. Only (re)create when the activate script is missing.
+        val venvActivate = File("${homeDir}/hermes-agent/.venv/bin/activate")
+        if (venvActivate.exists()) {
+            onProgress("Python venv already exists, reusing…")
+        } else {
+            onProgress("Creating Python venv…")
+            runInPrefix(
+                "cd ${homeDir}/hermes-agent && rm -rf .venv && python -m venv .venv 2>&1",
+                onOutput = { onProgress(it) },
+            )
+        }
 
         // Try installing from bundled wheel cache first (if the APK
         // shipped assets/wheels/), else fall back to PyPI download.
