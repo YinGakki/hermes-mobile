@@ -25,6 +25,37 @@ android {
         }
     }
 
+    // Two flavors that differ ONLY in which assets are bundled:
+    //
+    //   full — offline-complete: ships deb-bundle.tar.gz (~162MB) +
+    //          wheels.tar.gz (~50MB) in assets. First launch works fully
+    //          offline (except rust/clang/hermes-agent clone).
+    //          APK size ~225MB.
+    //
+    //   lite — self-download: ships only the bootstrap (~30MB) in main
+    //          assets. First launch downloads everything via apt-get +
+    //          pip from PyPI. APK size ~34MB.
+    //
+    // Both flavors share the exact same Kotlin/Java code — the
+    // install functions already check for the presence of bundled
+    // assets and fall back to apt-get/pip when they're absent.
+    // So the ONLY difference is app/src/{full,lite}/assets/.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("full") {
+            dimension = "distribution"
+            // applicationIdSuffix keeps both flavors installable side-by-side
+            // on the same device (otherwise they'd clash on the package name).
+            applicationIdSuffix = ".full"
+            versionNameSuffix = "-full"
+        }
+        create("lite") {
+            dimension = "distribution"
+            applicationIdSuffix = ".lite"
+            versionNameSuffix = "-lite"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

@@ -145,10 +145,10 @@ jobs:
             echo "WARNING: wheel cache is empty — APK will fall back to PyPI at first launch"
             exit 0
           fi
-          mkdir -p app/src/main/assets
-          tar -czf app/src/main/assets/wheels.tar.gz -C "$RUNNER_TEMP" wheels
-          ls -la app/src/main/assets/wheels.tar.gz
-          echo "Wheel cache size: $(du -h app/src/main/assets/wheels.tar.gz | cut -f1)"
+          mkdir -p app/src/full/assets
+          tar -czf app/src/full/assets/wheels.tar.gz -C "$RUNNER_TEMP" wheels
+          ls -la app/src/full/assets/wheels.tar.gz
+          echo "Wheel cache size: $(du -h app/src/full/assets/wheels.tar.gz | cut -f1)"
 
       - name: Pre-fetch Python + native deps deb bundle (aarch64)
         shell: bash
@@ -204,10 +204,10 @@ jobs:
             echo "WARNING: deb bundle is empty — APK will fall back to apt-get download at first launch"
             exit 0
           fi
-          mkdir -p app/src/main/assets
-          tar -czf app/src/main/assets/deb-bundle.tar.gz -C "$RUNNER_TEMP" deb-bundle
-          ls -la app/src/main/assets/deb-bundle.tar.gz
-          echo "Deb bundle size: $(du -h app/src/main/assets/deb-bundle.tar.gz | cut -f1)"
+          mkdir -p app/src/full/assets
+          tar -czf app/src/full/assets/deb-bundle.tar.gz -C "$RUNNER_TEMP" deb-bundle
+          ls -la app/src/full/assets/deb-bundle.tar.gz
+          echo "Deb bundle size: $(du -h app/src/full/assets/deb-bundle.tar.gz | cut -f1)"
 
       - name: Pre-fetch aarch64 manylinux wheels (best-effort)
         shell: bash
@@ -273,7 +273,7 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/release.jks"
           echo "Keystore decoded ($(wc -c < "$RUNNER_TEMP/keystore/release.jks") bytes)"
 
-      - name: Build release APK
+      - name: Build release APK (both flavors)
         env:
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/keystore/release.jks
           SIGNING_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -281,46 +281,55 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         shell: bash
         run: |
-          ./gradlew :app:assembleRelease \
+          ./gradlew :app:assembleFullRelease :app:assembleLiteRelease \
             --no-daemon \
             --stacktrace \
             -Pandroid.builder.sdkDownload=false
 
-      - name: Locate built APK
+      - name: Locate built APKs
         id: apk
         shell: bash
         run: |
           set -euo pipefail
-          apk=$(find app/build/outputs/apk/release -name '*.apk' | head -n1)
-          if [ -z "$apk" ]; then
-            echo "ERROR: no APK produced"
+          full_apk=$(find app/build/outputs/apk/full/release -name '*.apk' | head -n1)
+          lite_apk=$(find app/build/outputs/apk/lite/release -name '*.apk' | head -n1)
+          if [ -z "$full_apk" ] || [ -z "$lite_apk" ]; then
+            echo "ERROR: expected 2 APKs, got full=[$full_apk] lite=[$lite_apk]"
             exit 1
           fi
-          echo "path=$apk" >> "$GITHUB_OUTPUT"
-          echo "name=$(basename "$apk")" >> "$GITHUB_OUTPUT"
-          echo "Found APK: $apk ($(wc -c < "$apk") bytes)"
+          echo "Full APK: $full_apk ($(wc -c < "$full_apk") bytes)"
+          echo "Lite APK: $lite_apk ($(wc -c < "$lite_apk") bytes)"
 
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: hermes-agent-arm64-release
-          path: ${{ steps.apk.outputs.path }}
+          path: |
+            app/build/outputs/apk/full/release/*.apk
+            app/build/outputs/apk/lite/release/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Rename APK to include short SHA
+      - name: Rename APKs to include short SHA + flavor
         shell: bash
         run: |
           set -euo pipefail
-          src="${{ steps.apk.outputs.path }}"
-          dst="hermes-${GITHUB_SHA::7}-arm64.apk"
-          cp "$src" "$dst"
-          echo "dst=$dst" >> "$GITHUB_ENV"
+          full_src=$(find app/build/outputs/apk/full/release -name '*.apk' | head -n1)
+          lite_src=$(find app/build/outputs/apk/lite/release -name '*.apk' | head -n1)
+          full_dst="hermes-${GITHUB_SHA::7}-arm64-full.apk"
+          lite_dst="hermes-${GITHUB_SHA::7}-arm64-lite.apk"
+          cp "$full_src" "$full_dst"
+          cp "$lite_src" "$lite_dst"
+          echo "full_dst=$full_dst" >> "$GITHUB_ENV"
+          echo "lite_dst=$lite_dst" >> "$GITHUB_ENV"
+          echo "Renamed: $full_dst ($(du -h "$full_dst" | cut -f1)), $lite_dst ($(du -h "$lite_dst" | cut -f1))"
 
-      - name: Upload APK to "latest" pre-release
+      - name: Upload both APKs to "latest" pre-release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.dst }}
+          files: |
+            ${{ env.full_dst }}
+            ${{ env.lite_dst }}
           # Rolling pre-release: always overwrite the same "latest" tag,
           # never a real published release (prerelease=true).
           tag_name: latest
@@ -328,13 +337,22 @@ jobs:
           body: |
             Rolling pre-release built from `${{ github.sha }}` on `${{ github.run_id }}`.
 
-            - APK: `${{ env.dst }}`
+            ## Two flavors
+
+            | Flavor | Size | Description |
+            |--------|------|-------------|
+            | `*-full.apk` | ~225 MB | Offline-complete: bundled debs + wheels. First launch needs only rust/clang + hermes-agent clone (~600MB). |
+            | `*-lite.apk` | ~34 MB | Self-download: bootstrap only. First launch downloads everything via apt-get + pip (~1GB). |
+
+            Both flavors have identical functionality — the only difference is which assets are bundled in the APK.
+
             - Arch: arm64-v8a only
             - Min Android: 7.0 (API 24)
             - targetSdk: 28 (intentional, see README → W^X bypass)
             - Signed: ${{ env.HAS_KEYSTORE == '1' }}
 
-            Install: `adb install ${{ env.dst }}` (or sideload from file manager).
+            Install: `adb install hermes-XXXXXXX-arm64-full.apk` (or `-lite.apk`, or sideload from file manager).
+            Both flavors can be installed side-by-side (different applicationId suffix).
           prerelease: true
           make_latest: 'false'
           fail_on_unmatched_files: true
