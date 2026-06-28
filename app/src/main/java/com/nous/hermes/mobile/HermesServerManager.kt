@@ -96,6 +96,7 @@ class HermesServerManager(private val context: Context) {
     fun runInPrefix(
         command: String,
         onOutput: ((String) -> Unit)? = null,
+        timeoutMs: Long = 0,
     ): Int {
         val paths = BootstrapInstaller.getPaths(context)
         val env = buildEnvironment(paths)
@@ -108,6 +109,25 @@ class HermesServerManager(private val context: Context) {
         pb.redirectErrorStream(true)
 
         val proc = pb.start()
+
+        // If timeout is set, start a watchdog thread that destroys the
+        // process after the timeout. This prevents indefinite hangs on
+        // DNS resolution, network timeouts, etc.
+        var watchdog: Thread? = null
+        if (timeoutMs > 0) {
+            watchdog = Thread {
+                try {
+                    Thread.sleep(timeoutMs)
+                    if (proc.isAlive) {
+                        Log.w(TAG, "runInPrefix timed out after ${timeoutMs}ms, killing process")
+                        proc.destroyForcibly()
+                    }
+                } catch (_: InterruptedException) {
+                    // Normal — command finished before timeout
+                }
+            }.also { it.isDaemon = true; it.start() }
+        }
+
         val reader = BufferedReader(InputStreamReader(proc.inputStream))
         var line = reader.readLine()
         while (line != null) {
@@ -115,7 +135,9 @@ class HermesServerManager(private val context: Context) {
             onOutput?.invoke(line)
             line = reader.readLine()
         }
-        return proc.waitFor()
+        val code = proc.waitFor()
+        watchdog?.interrupt()
+        return code
     }
 
     @Suppress("unused")
@@ -523,6 +545,7 @@ WEOF
                     runInPrefix(
                         "cd $prefix/tmp && apt-get download --allow-unauthenticated $group 2>&1",
                         onOutput = { onProgress(it) },
+                        timeoutMs = 300000, // 5 min for large debs (rust ~96MB)
                     ) == 0
                 }
                 if (!groupOk) {

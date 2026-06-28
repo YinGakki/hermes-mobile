@@ -200,6 +200,8 @@ class MainActivity : AppCompatActivity() {
             return false
         }
         isInstallInProgress = true
+        lastProgressTime = System.currentTimeMillis()
+        startHeartbeat()
         // Dim ALL buttons (alpha, NOT isEnabled=false, so they stay visible)
         btnProot.alpha = 0.35f
         btnPython.alpha = 0.35f
@@ -216,6 +218,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun releaseInstallLock() {
         isInstallInProgress = false
+        stopHeartbeat()
+        // Flush any remaining pending logs
+        logUpdateHandler.removeCallbacks(logFlushRunnable)
+        logUpdateHandler.post(logFlushRunnable)
         refreshStepButtons()
     }
 
@@ -632,14 +638,65 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val logUpdateHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val pendingLogs = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    private val logFlushRunnable = object : Runnable {
+        override fun run() {
+            if (pendingLogs.isEmpty()) {
+                return
+            }
+            val sb = StringBuilder()
+            var line = pendingLogs.poll()
+            while (line != null) {
+                sb.append(line).append('\n')
+                line = pendingLogs.poll()
+            }
+            val text = sb.toString()
+            logView.append(text)
+            logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        }
+    }
+
+    private val heartbeatHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var heartbeatRunnable: Runnable? = null
+    private var lastProgressTime = 0L
+
+    private fun startHeartbeat() {
+        heartbeatRunnable?.let { heartbeatHandler.removeCallbacks(it) }
+        heartbeatRunnable = object : Runnable {
+            override fun run() {
+                val now = System.currentTimeMillis()
+                if (now - lastProgressTime > 5000 && isInstallInProgress) {
+                    val secs = (now - lastProgressTime) / 1000
+                    logView.append("… 仍在运行中 (${secs}s)\n")
+                    logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+                }
+                heartbeatHandler.postDelayed(this, 5000)
+            }
+        }
+        heartbeatHandler.postDelayed(heartbeatRunnable!!, 5000)
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatRunnable?.let { heartbeatHandler.removeCallbacks(it) }
+        heartbeatRunnable = null
+    }
+
     private fun appendLog(text: String) {
         synchronized(recentLog) {
             recentLog.addLast(text)
             while (recentLog.size > 30) recentLog.pollFirst()
         }
-        runOnUiThread {
-            logView.append("$text\n")
-            logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        lastProgressTime = System.currentTimeMillis()
+        pendingLogs.add(text)
+        // Batch flush every 200ms instead of per-line to avoid
+        // flooding the main thread with UI updates
+        if (pendingLogs.size >= 5) {
+            logUpdateHandler.removeCallbacks(logFlushRunnable)
+            logUpdateHandler.post(logFlushRunnable)
+        } else {
+            logUpdateHandler.removeCallbacks(logFlushRunnable)
+            logUpdateHandler.postDelayed(logFlushRunnable, 200)
         }
     }
 
