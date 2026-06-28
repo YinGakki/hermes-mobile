@@ -95,8 +95,8 @@ class HermesServerManager(private val context: Context) {
      */
     fun runInPrefix(
         command: String,
-        onOutput: ((String) -> Unit)? = null,
         timeoutMs: Long = 0,
+        onOutput: ((String) -> Unit)? = null,
     ): Int {
         val paths = BootstrapInstaller.getPaths(context)
         val env = buildEnvironment(paths)
@@ -544,8 +544,8 @@ WEOF
                 ) {
                     runInPrefix(
                         "cd $prefix/tmp && apt-get download --allow-unauthenticated $group 2>&1",
-                        onOutput = { onProgress(it) },
                         timeoutMs = 300000, // 5 min for large debs (rust ~96MB)
+                        onOutput = { onProgress(it) },
                     ) == 0
                 }
                 if (!groupOk) {
