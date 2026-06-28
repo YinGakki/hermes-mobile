@@ -239,7 +239,14 @@ class MainActivity : AppCompatActivity() {
     private fun installHermes() {
         val ok = serverManager.installHermes(
             onProgress = { msg -> runOnUiThread { appendLog(msg) } },
-            onNeedCompile = { runOnUiThread { askUserAboutCompile() } },
+            onNeedCompile = {
+                // Called from a background thread inside installHermes().
+                // The dialog must be shown on the UI thread, but the
+                // lambda itself must return Boolean.
+                var approved = false
+                runOnUiThread { approved = askUserAboutCompile() }
+                approved
+            },
         )
         if (!ok) throw RuntimeException("Failed to install Hermes Agent")
         // Skeleton config + health check (best-effort)
