@@ -398,7 +398,7 @@ class HermesStudioInstaller(private val context: Context) {
             // Fallback: ss (socket statistics, may be available)
             if (!killed) {
                 serverMgr.runInPrefix(
-                    "kill -9 ${'$'}(ss -tlnp 2>/dev/null | grep ':$STUDIO_PORT ' | grep -oP 'pid=\K[0-9]+') 2>/dev/null || true",
+                    "kill -9 ${'$'}(ss -tlnp 2>/dev/null | grep ':$STUDIO_PORT ' | sed -n 's/.*pid=\\([0-9]*\\).*/\\1/p') 2>/dev/null || true",
                     onOutput = { Log.d(TAG, "[forcekill] $it") },
                 )
             }
