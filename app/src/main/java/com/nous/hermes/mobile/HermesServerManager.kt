@@ -532,8 +532,8 @@ H3
     }
 
     /**
-     * If the APK ships a bundled wheel cache (assets/wheels/*.whl or
-     * assets/wheels.tar.gz), extract it to a local directory and return
+     * If the APK ships a bundled wheel cache (assets/wheels/ dir of .whl
+     * files, or assets/wheels.tar.gz), extract it to a local directory and return
      * that path so installHermes can pass `--no-index --find-links=<dir>`
      * to pip. This lets the install run fully offline for Hermes deps.
      *
