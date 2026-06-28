@@ -18,6 +18,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -31,7 +32,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Views
-    private lateinit var loadingOverlay: View
+    private lateinit var installPage: View
+    private lateinit var dashboardPage: View
+    private lateinit var logsPage: View
+    private lateinit var settingsPage: View
+    private lateinit var bottomNav: BottomNavigationView
     private lateinit var progressBar: ProgressBar
     private lateinit var statusText: TextView
     private lateinit var statusDetail: TextView
@@ -47,13 +52,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spinnerHermes: ProgressBar
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
-    private lateinit var doneLayout: View
+    private lateinit var btnClearLogs: Button
+    private lateinit var btnCopyLogs: Button
+    private lateinit var dashboardReady: View
+    private lateinit var dashboardNotReady: View
     private lateinit var openShellButton: View
     private lateinit var chatButton: View
     private lateinit var retryButton: View
     private lateinit var chatCardTitle: TextView
     private lateinit var chatCardSubtitle: TextView
     private lateinit var versionFooter: TextView
+    private lateinit var settingsVersionValue: TextView
+    private lateinit var settingsRerun: View
+    private lateinit var settingsBattery: View
     private lateinit var installProgressContainer: View
     private lateinit var installProgressBar: ProgressBar
     private lateinit var progressPercentText: TextView
@@ -72,7 +83,11 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        loadingOverlay = findViewById(R.id.loadingOverlay)
+        installPage = findViewById(R.id.installPage)
+        dashboardPage = findViewById(R.id.dashboardPage)
+        logsPage = findViewById(R.id.logsPage)
+        settingsPage = findViewById(R.id.settingsPage)
+        bottomNav = findViewById(R.id.bottomNav)
         progressBar = findViewById(R.id.progressBar)
         statusText = findViewById(R.id.statusText)
         statusDetail = findViewById(R.id.statusDetail)
@@ -88,7 +103,10 @@ class MainActivity : AppCompatActivity() {
         spinnerHermes = findViewById(R.id.spinnerHermes)
         logView = findViewById(R.id.logView)
         logScroll = findViewById(R.id.logScroll)
-        doneLayout = findViewById(R.id.doneLayout)
+        btnClearLogs = findViewById(R.id.btnClearLogs)
+        btnCopyLogs = findViewById(R.id.btnCopyLogs)
+        dashboardReady = findViewById(R.id.dashboardReady)
+        dashboardNotReady = findViewById(R.id.dashboardNotReady)
         openShellButton = findViewById(R.id.openShellButton)
         chatButton = findViewById(R.id.chatButton)
         retryButton = findViewById(R.id.retryButton)
@@ -96,10 +114,27 @@ class MainActivity : AppCompatActivity() {
         chatCardSubtitle = findViewById(R.id.chatCardSubtitle)
         versionFooter = findViewById(R.id.versionFooter)
         versionFooter.text = getString(R.string.dashboard_version, getVersionName())
+        settingsVersionValue = findViewById(R.id.settingsVersionValue)
+        settingsVersionValue.text = getVersionName()
+        settingsRerun = findViewById(R.id.settingsRerun)
+        settingsBattery = findViewById(R.id.settingsBattery)
         installProgressContainer = findViewById(R.id.installProgressContainer)
         installProgressBar = findViewById(R.id.installProgressBar)
         progressPercentText = findViewById(R.id.progressPercent)
         progressStepLabel = findViewById(R.id.progressStepLabel)
+
+        // Bottom navigation: switch pages by toggling visibility.
+        bottomNav.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.nav_install -> switchPage(installPage)
+                R.id.nav_dashboard -> switchPage(dashboardPage)
+                R.id.nav_logs -> switchPage(logsPage)
+                R.id.nav_settings -> switchPage(settingsPage)
+            }
+            true
+        }
+        // Show install page by default.
+        switchPage(installPage)
 
         serverManager = HermesServerManager(this)
         studioInstaller = HermesStudioInstaller(this)
@@ -123,6 +158,26 @@ class MainActivity : AppCompatActivity() {
         }
         chatButton.setOnClickListener { onChatButtonClicked() }
         retryButton.setOnClickListener { restartFromBootstrap() }
+
+        // Logs page actions
+        btnClearLogs.setOnClickListener {
+            logView.text = ""
+            Toast.makeText(this, R.string.logs_clear, Toast.LENGTH_SHORT).show()
+        }
+        btnCopyLogs.setOnClickListener {
+            val text = logView.text?.toString() ?: ""
+            if (text.isBlank()) {
+                Toast.makeText(this, R.string.logs_empty, Toast.LENGTH_SHORT).show()
+            } else {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("hermes_logs", text))
+                Toast.makeText(this, R.string.settings_copied, Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // Settings page actions
+        settingsRerun.setOnClickListener { restartFromBootstrap() }
+        settingsBattery.setOnClickListener { requestBatteryOptimizationExemption() }
 
         extractBootstrap()
     }
@@ -159,6 +214,33 @@ class MainActivity : AppCompatActivity() {
 
     // ── Bootstrap ───────────────────────────────────────────────────────────
 
+    /**
+     * Switch the visible page. Called from BottomNavigationView selection.
+     * Hides all pages, shows the requested one, and refreshes dashboard
+     * state (ready/not-ready placeholder) when navigating to the dashboard.
+     */
+    private fun switchPage(page: View) {
+        installPage.visibility = if (page == installPage) View.VISIBLE else View.GONE
+        dashboardPage.visibility = if (page == dashboardPage) View.VISIBLE else View.GONE
+        logsPage.visibility = if (page == logsPage) View.VISIBLE else View.GONE
+        settingsPage.visibility = if (page == settingsPage) View.VISIBLE else View.GONE
+        if (page == dashboardPage) refreshDashboardState()
+    }
+
+    /**
+     * Show the "ready" header if Hermes is installed, otherwise the
+     * "not ready" placeholder. The quick-action cards are hidden until
+     * installation completes so users don't tap actions that can't work.
+     */
+    private fun refreshDashboardState() {
+        val installed = serverManager.isHermesInstalled()
+        dashboardReady.visibility = if (installed) View.VISIBLE else View.GONE
+        dashboardNotReady.visibility = if (installed) View.GONE else View.VISIBLE
+        openShellButton.visibility = if (installed) View.VISIBLE else View.GONE
+        chatButton.visibility = if (installed) View.VISIBLE else View.GONE
+        retryButton.visibility = if (installed) View.VISIBLE else View.GONE
+    }
+
     private fun extractBootstrap() {
         logView.text = ""
         activeThread = Thread {
@@ -185,7 +267,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restartFromBootstrap() {
-        doneLayout.visibility = View.GONE
+        // Switch to install page to show bootstrap progress.
+        switchPage(installPage)
+        bottomNav.selectedItemId = R.id.nav_install
         stepsContainer.visibility = View.GONE
         progressBar.visibility = View.VISIBLE
         statusText.visibility = View.VISIBLE
@@ -217,6 +301,9 @@ class MainActivity : AppCompatActivity() {
         isInstallInProgress = true
         lastProgressTime = System.currentTimeMillis()
         startHeartbeat()
+        // Switch to install page so the progress bar is visible.
+        switchPage(installPage)
+        bottomNav.selectedItemId = R.id.nav_install
         // Dim ALL buttons (alpha, NOT isEnabled=false, so they stay visible)
         btnProot.alpha = 0.35f
         btnPython.alpha = 0.35f
@@ -442,9 +529,12 @@ class MainActivity : AppCompatActivity() {
     // ── Screen transitions ──────────────────────────────────────────────────
 
     private fun showDoneScreen() {
+        // Auto-switch to the Dashboard page after install completes.
         stepsContainer.visibility = View.GONE
-        doneLayout.visibility = View.VISIBLE
+        refreshDashboardState()
         updateChatButtonLabel()
+        bottomNav.selectedItemId = R.id.nav_dashboard
+        switchPage(dashboardPage)
     }
 
     // ── Chat UI ─────────────────────────────────────────────────────────────
