@@ -35,4 +35,11 @@
     <string name="step_install_all">一键安装全部</string>
     <string name="step_done">✓ 已安装</string>
     <string name="step_installing">安装中…</string>
+    <string name="action_copy_error">复制错误</string>
+    <string name="copied_to_clipboard">已复制到剪贴板</string>
+    <string name="install_in_progress_title">安装进行中</string>
+    <string name="install_in_progress_msg">请等待当前步骤完成后再点击其他按钮。</string>
+    <string name="confirm_exit_title">确认退出？</string>
+    <string name="confirm_exit_msg">安装正在进行中，退出可能导致状态损坏。确定要退出吗？</string>
+    <string name="action_exit">退出</string>
 </resources>

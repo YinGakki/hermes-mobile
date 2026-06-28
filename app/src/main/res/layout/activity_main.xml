@@ -61,40 +61,112 @@
                 android:textStyle="bold"
                 android:layout_marginBottom="8dp" />
 
-            <Button
-                android:id="@+id/btnProot"
-                android:layout_width="wrap_content"
+            <!-- Step 1: proot -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/step_proot"
-                android:layout_marginTop="4dp" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="4dp">
 
-            <Button
-                android:id="@+id/btnPython"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/step_python"
-                android:layout_marginTop="4dp" />
+                <Button
+                    android:id="@+id/btnProot"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_proot"
+                    android:layout_marginEnd="8dp" />
 
-            <Button
-                android:id="@+id/btnBuildDeps"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/step_build_deps"
-                android:layout_marginTop="4dp" />
+                <ProgressBar
+                    android:id="@+id/spinnerProot"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:indeterminate="true"
+                    android:indeterminateTint="#818cf8"
+                    android:visibility="gone" />
+            </LinearLayout>
 
-            <Button
-                android:id="@+id/btnHermes"
-                android:layout_width="wrap_content"
+            <!-- Step 2: python -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="@string/step_hermes"
-                android:layout_marginTop="4dp" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="4dp">
+
+                <Button
+                    android:id="@+id/btnPython"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_python"
+                    android:layout_marginEnd="8dp" />
+
+                <ProgressBar
+                    android:id="@+id/spinnerPython"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:indeterminate="true"
+                    android:indeterminateTint="#818cf8"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- Step 3: build deps -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="4dp">
+
+                <Button
+                    android:id="@+id/btnBuildDeps"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_build_deps"
+                    android:layout_marginEnd="8dp" />
+
+                <ProgressBar
+                    android:id="@+id/spinnerBuildDeps"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:indeterminate="true"
+                    android:indeterminateTint="#818cf8"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- Step 4: hermes -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="4dp">
+
+                <Button
+                    android:id="@+id/btnHermes"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:text="@string/step_hermes"
+                    android:layout_marginEnd="8dp" />
+
+                <ProgressBar
+                    android:id="@+id/spinnerHermes"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:indeterminate="true"
+                    android:indeterminateTint="#818cf8"
+                    android:visibility="gone" />
+            </LinearLayout>
 
             <Button
                 android:id="@+id/btnInstallAll"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/step_install_all"
                 android:layout_marginTop="16dp"
+                android:text="@string/step_install_all"
                 android:backgroundTint="#10b981" />
 
         </LinearLayout>

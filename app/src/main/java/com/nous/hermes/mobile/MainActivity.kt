@@ -1,5 +1,8 @@
 package com.nous.hermes.mobile
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -13,8 +16,9 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.appcompat.app.AlertDialog
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -37,6 +41,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnBuildDeps: Button
     private lateinit var btnHermes: Button
     private lateinit var btnInstallAll: Button
+    private lateinit var spinnerProot: ProgressBar
+    private lateinit var spinnerPython: ProgressBar
+    private lateinit var spinnerBuildDeps: ProgressBar
+    private lateinit var spinnerHermes: ProgressBar
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private lateinit var doneLayout: View
@@ -48,21 +56,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serverManager: HermesServerManager
     private lateinit var studioInstaller: HermesStudioInstaller
 
-    // Concurrency: only one install operation (step or install-all) may
-    // run at a time. Without this, the user could tap "Install proot"
-    // and immediately tap "Install Python", causing two apt-get processes
-    // to race for the dpkg lock and corrupt the prefix.
     @Volatile private var isInstallInProgress = false
-
-    // Track the active background thread so we can warn the user before
-    // exiting via BACK, and interrupt it in onDestroy().
     @Volatile private var activeThread: Thread? = null
-
-    // Active progress dialog (for chat install/start). Kept as a field
-    // so it can be dismissed in onDestroy() to avoid leaking the Activity.
     private var activeProgressDialog: android.app.ProgressDialog? = null
-
-    // Log capture for error dialogs (last 30 lines).
     private val recentLog = java.util.ArrayDeque<String>(30)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,6 +75,10 @@ class MainActivity : AppCompatActivity() {
         btnBuildDeps = findViewById(R.id.btnBuildDeps)
         btnHermes = findViewById(R.id.btnHermes)
         btnInstallAll = findViewById(R.id.btnInstallAll)
+        spinnerProot = findViewById(R.id.spinnerProot)
+        spinnerPython = findViewById(R.id.spinnerPython)
+        spinnerBuildDeps = findViewById(R.id.spinnerBuildDeps)
+        spinnerHermes = findViewById(R.id.spinnerHermes)
         logView = findViewById(R.id.logView)
         logScroll = findViewById(R.id.logScroll)
         doneLayout = findViewById(R.id.doneLayout)
@@ -92,15 +92,12 @@ class MainActivity : AppCompatActivity() {
         requestBatteryOptimizationExemption()
         startForegroundService()
 
-        // Step buttons — all routed through runStep(), which checks the
-        // isInstallInProgress guard before dispatching.
         btnProot.setOnClickListener { runStep("proot") }
         btnPython.setOnClickListener { runStep("python") }
         btnBuildDeps.setOnClickListener { runStep("buildDeps") }
         btnHermes.setOnClickListener { runStep("hermes") }
         btnInstallAll.setOnClickListener { runInstallAll() }
 
-        // Done-screen buttons
         openShellButton.setOnClickListener {
             try {
                 val intent = packageManager.getLaunchIntentForPackage("com.termux")
@@ -112,18 +109,13 @@ class MainActivity : AppCompatActivity() {
         chatButton.setOnClickListener { onChatButtonClicked() }
         retryButton.setOnClickListener { restartFromBootstrap() }
 
-        // Start only bootstrap extraction; steps are manual after that.
         extractBootstrap()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // Interrupt the active thread (if any) so it doesn't outlive the
-        // Activity and leak. The install* helpers will get an InterruptedException
-        // and exit cleanly.
         activeThread?.interrupt()
         activeThread = null
-        // Dismiss any active progress dialog to prevent WindowLeaked leaks.
         activeProgressDialog?.dismiss()
         activeProgressDialog = null
         serverManager.stopHermes()
@@ -133,15 +125,12 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Suppress deprecation warning for onBackPressed")
     override fun onBackPressed() {
-        // If an install is in progress, ask the user to confirm before
-        // exiting. Otherwise the background thread keeps running with a
-        // dead Activity reference.
         if (isInstallInProgress) {
-            AlertDialog.Builder(this)
-                .setTitle("确认退出？")
-                .setMessage("安装正在进行中，退出可能导致状态损坏。确定要退出吗？")
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.confirm_exit_title)
+                .setMessage(R.string.confirm_exit_msg)
                 .setPositiveButton(R.string.cancel, null)
-                .setNegativeButton("退出") { _, _ ->
+                .setNegativeButton(R.string.action_exit) { _, _ ->
                     activeThread?.interrupt()
                     activeProgressDialog?.dismiss()
                     super.onBackPressed()
@@ -165,10 +154,7 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread { statusText.text = msg }
                     }
                 }
-                // Stage bundled debs (if APK ships them)
-                serverManager.extractDebBundleIfPresent { msg ->
-                    appendLog(msg)
-                }
+                serverManager.extractDebBundleIfPresent { msg -> appendLog(msg) }
                 runOnUiThread { showSteps() }
             } catch (e: Exception) {
                 Log.e(TAG, "Bootstrap failed", e)
@@ -197,24 +183,25 @@ class MainActivity : AppCompatActivity() {
         refreshStepButtons()
     }
 
-    // ── Step runner (individual or all-in-one) ──────────────────────────────
+    // ── Step runner ─────────────────────────────────────────────────────────
 
-    /**
-     * Returns false (and shows a toast-like dialog) if another install
-     * is already running. Callers must check this before starting work.
-     */
     private fun tryAcquireInstallLock(): Boolean {
         if (isInstallInProgress) {
-            AlertDialog.Builder(this)
-                .setTitle("安装进行中")
-                .setMessage("请等待当前步骤完成后再点击其他按钮。")
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.install_in_progress_title)
+                .setMessage(R.string.install_in_progress_msg)
                 .setPositiveButton(R.string.ok, null)
                 .setCancelable(false)
                 .show()
             return false
         }
         isInstallInProgress = true
-        // Disable ALL step buttons while any install is running.
+        // Dim ALL buttons (alpha, NOT isEnabled=false, so they stay visible)
+        btnProot.alpha = 0.35f
+        btnPython.alpha = 0.35f
+        btnBuildDeps.alpha = 0.35f
+        btnHermes.alpha = 0.35f
+        btnInstallAll.alpha = 0.35f
         btnProot.isEnabled = false
         btnPython.isEnabled = false
         btnBuildDeps.isEnabled = false
@@ -225,7 +212,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun releaseInstallLock() {
         isInstallInProgress = false
-        // refreshStepButtons() will re-enable buttons based on current state.
         refreshStepButtons()
     }
 
@@ -285,7 +271,7 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "Install-all failed", e)
                 val tail = synchronized(recentLog) { recentLog.joinToString("\n") }
                 runOnUiThread {
-                    releaseInstallLock()  // also calls refreshStepButtons()
+                    releaseInstallLock()
                     showStepError("install-all", e.message ?: "Unknown error", tail)
                 }
             }
@@ -320,15 +306,12 @@ class MainActivity : AppCompatActivity() {
         val ok = serverManager.installHermes(
             onProgress = { msg -> appendLog(msg) },
             onNeedCompile = {
-                // Called from a background thread. The dialog must be
-                // shown on the UI thread, but the lambda must return Boolean.
                 var approved = false
                 runOnUiThread { approved = askUserAboutCompile() }
                 approved
             },
         )
         if (!ok) throw RuntimeException("Failed to install Hermes Agent")
-        // Skeleton config + health check (best-effort)
         serverManager.configureHermesSkeleton()
         serverManager.healthCheck { msg -> appendLog(msg) }
         appendLog("✓ Hermes Agent 已安装")
@@ -340,38 +323,66 @@ class MainActivity : AppCompatActivity() {
         val prootDone = serverManager.isProotInstalled()
         btnProot.text = if (prootDone) getString(R.string.step_done) else getString(R.string.step_proot)
         btnProot.isEnabled = !prootDone && !isInstallInProgress
+        btnProot.alpha = when {
+            prootDone -> 0.6f
+            isInstallInProgress -> 0.35f
+            else -> 1f
+        }
+        spinnerProot.visibility = View.GONE
 
         val pythonDone = serverManager.isPythonInstalled()
         btnPython.text = if (pythonDone) getString(R.string.step_done) else getString(R.string.step_python)
         btnPython.isEnabled = !pythonDone && !isInstallInProgress
+        btnPython.alpha = when {
+            pythonDone -> 0.6f
+            isInstallInProgress -> 0.35f
+            else -> 1f
+        }
+        spinnerPython.visibility = View.GONE
 
         val depsDone = isBuildDepsInstalled()
         btnBuildDeps.text = if (depsDone) getString(R.string.step_done) else getString(R.string.step_build_deps)
         btnBuildDeps.isEnabled = !depsDone && !isInstallInProgress
+        btnBuildDeps.alpha = when {
+            depsDone -> 0.6f
+            isInstallInProgress -> 0.35f
+            else -> 1f
+        }
+        spinnerBuildDeps.visibility = View.GONE
 
         val hermesDone = serverManager.isHermesInstalled()
         btnHermes.text = if (hermesDone) getString(R.string.step_done) else getString(R.string.step_hermes)
         btnHermes.isEnabled = !hermesDone && !isInstallInProgress
+        btnHermes.alpha = when {
+            hermesDone -> 0.6f
+            isInstallInProgress -> 0.35f
+            else -> 1f
+        }
+        spinnerHermes.visibility = View.GONE
 
         val allDone = prootDone && pythonDone && depsDone && hermesDone
         btnInstallAll.isEnabled = !allDone && !isInstallInProgress
         btnInstallAll.text = if (allDone) getString(R.string.step_done) else getString(R.string.step_install_all)
+        btnInstallAll.alpha = when {
+            allDone -> 0.6f
+            isInstallInProgress -> 0.35f
+            else -> 1f
+        }
     }
 
     private fun setStepButtonState(step: String, installing: Boolean) {
-        val btn = when (step) {
-            "proot" -> btnProot
-            "python" -> btnPython
-            "buildDeps" -> btnBuildDeps
-            "hermes" -> btnHermes
+        val (btn, spinner) = when (step) {
+            "proot" -> btnProot to spinnerProot
+            "python" -> btnPython to spinnerPython
+            "buildDeps" -> btnBuildDeps to spinnerBuildDeps
+            "hermes" -> btnHermes to spinnerHermes
             else -> return
         }
         btn.isEnabled = !installing
-        // Only change text while installing; on success/failure
-        // refreshStepButtons() restores the correct label based on
-        // is*Installed() state.
         if (installing) {
             btn.text = getString(R.string.step_installing)
+            btn.alpha = 1f  // keep fully visible
+            spinner.visibility = View.VISIBLE
         }
     }
 
@@ -395,7 +406,7 @@ class MainActivity : AppCompatActivity() {
         updateChatButtonLabel()
     }
 
-    // ── Chat UI (hermes-web-ui) ─────────────────────────────────────────────
+    // ── Chat UI ─────────────────────────────────────────────────────────────
 
     private fun updateChatButtonLabel() {
         chatButton.text = if (studioInstaller.isInstalled()) {
@@ -439,7 +450,7 @@ class MainActivity : AppCompatActivity() {
                         updateChatButtonLabel()
                         startChatServerAndOpen()
                     } else {
-                        AlertDialog.Builder(this)
+                        MaterialAlertDialogBuilder(this)
                             .setTitle(R.string.error_title)
                             .setMessage(getString(R.string.chat_install_failed))
                             .setPositiveButton(R.string.retry) { _, _ -> installChatUi() }
@@ -476,7 +487,7 @@ class MainActivity : AppCompatActivity() {
                     dialog.dismiss()
                     activeProgressDialog = null
                     if (ok) openChatWebView() else {
-                        AlertDialog.Builder(this)
+                        MaterialAlertDialogBuilder(this)
                             .setTitle(R.string.error_title)
                             .setMessage(getString(R.string.chat_start_failed))
                             .setPositiveButton(R.string.retry) { _, _ -> startChatServerAndOpen() }
@@ -496,7 +507,7 @@ class MainActivity : AppCompatActivity() {
         startActivity(intent)
     }
 
-    // ── Dialogs & UI helpers ────────────────────────────────────────────────
+    // ── Dialogs ──────────────────────────────────────────────────────────────
 
     private fun showShellInstructions() {
         val paths = BootstrapInstaller.getPaths(this)
@@ -515,7 +526,7 @@ class MainActivity : AppCompatActivity() {
             |
             |Or run `hermes setup --portal` to use Nous Portal (free OAuth).
         """.trimMargin()
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle("How to use Hermes")
             .setMessage(msg)
             .setPositiveButton(R.string.ok, null)
@@ -531,7 +542,7 @@ class MainActivity : AppCompatActivity() {
             "install-all" -> "一键安装"
             else -> step
         }
-        val msg = buildString {
+        val fullError = buildString {
             append("步骤 [$stepName] 失败\n\n")
             append("错误: $error\n\n")
             append("最后日志:\n")
@@ -541,20 +552,22 @@ class MainActivity : AppCompatActivity() {
                 tail.lines().forEach { append("  ").append(it).append('\n') }
             }
         }
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.error_title)
-            .setMessage(msg)
+            .setMessage(fullError)
             .setPositiveButton(R.string.retry) { _, _ ->
-                // Dispatch to the correct runner: install-all vs single step.
                 if (step == "install-all") runInstallAll() else runStep(step)
             }
             .setNegativeButton(R.string.cancel, null)
-            .setCancelable(false)  // prevent accidental dismissal
+            .setNeutralButton(R.string.action_copy_error) { _, _ ->
+                copyToClipboard(fullError)
+            }
+            .setCancelable(false)
             .show()
     }
 
     private fun showError(message: String) {
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle(R.string.error_title)
             .setMessage(message)
             .setPositiveButton(R.string.retry) { _, _ -> restartFromBootstrap() }
@@ -563,24 +576,21 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Block the calling (setup) thread until the user responds to the
-     * "need source compile?" dialog. Returns true to proceed, false to abort.
-     *
-     * Has a timeout to prevent permanent deadlock if the Activity is
-     * destroyed while the dialog is showing (in which case runOnUiThread
-     * Runnable never executes).
-     */
+    private fun copyToClipboard(text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("hermes_error", text))
+        Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+    }
+
     private fun askUserAboutCompile(): Boolean {
         val latch = CountDownLatch(1)
         var approved = false
         runOnUiThread {
-            // If the Activity is already finishing, abort immediately.
             if (isFinishing) {
                 latch.countDown()
                 return@runOnUiThread
             }
-            AlertDialog.Builder(this)
+            MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.compile_needed_title)
                 .setMessage(R.string.compile_needed_message)
                 .setPositiveButton(R.string.compile_continue) { _, _ ->
@@ -595,7 +605,6 @@ class MainActivity : AppCompatActivity() {
                 .show()
         }
         return try {
-            // 2-minute timeout — pip install retry shouldn't take longer.
             latch.await(COMPILE_DIALOG_TIMEOUT_SEC, TimeUnit.SECONDS) && approved
         } catch (e: InterruptedException) {
             Log.w(TAG, "askUserAboutCompile interrupted — defaulting to abort")
@@ -603,7 +612,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ── Progress / log helpers ──────────────────────────────────────────────
+    // ── Log helpers ────────────────────────────────────────────────────────
 
     private fun setStatus(text: String) {
         runOnUiThread {
@@ -612,11 +621,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Append a line to logView AND capture it for error dialogs.
-     * No nested runOnUiThread — callers should NOT wrap this in
-     * runOnUiThread; this method handles threading internally.
-     */
     private fun appendLog(text: String) {
         synchronized(recentLog) {
             recentLog.addLast(text)
