@@ -322,8 +322,12 @@ object BootstrapInstaller {
                 localtimeFile.delete()
                 Os.symlink(zoneinfoUtc.absolutePath, localtimeFile.absolutePath)
             } else {
-                // No zoneinfo — just write a stub so Python doesn't error
-                localtimeFile.writeText("TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\n")
+                // No zoneinfo — write a minimal TZif2 stub (44-byte header
+                // + newline) so Python's tzset() doesn't crash. Kotlin
+                // doesn't support \0 in string literals, so build via
+                // ByteArray.
+                val stub = ByteArray(44) { 0 }.also { it[0] = 'T'.code.toByte() }
+                localtimeFile.writeBytes(stub)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not configure timezone: ${e.message}")
