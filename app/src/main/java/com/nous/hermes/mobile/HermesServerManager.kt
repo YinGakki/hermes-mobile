@@ -25,6 +25,16 @@ class HermesServerManager(private val context: Context) {
         private const val HERMES_REPO = "https://github.com/NousResearch/hermes-agent.git"
 
         /**
+         * Return the LD_PRELOAD path if libtermux-exec.so exists, or empty
+         * string if not. Setting LD_PRELOAD to a non-existent path causes
+         * every process to fail with "cannot locate executable".
+         */
+        private fun libTermuxExecPath(prefixDir: String): String {
+            val lib = File(prefixDir, "lib/libtermux-exec.so")
+            return if (lib.exists()) lib.absolutePath else ""
+        }
+
+        /**
          * Build the Termux-prefix environment map for use by other classes
          * (e.g. HermesStudioInstaller) that need to spawn processes in the
          * prefix without going through runInPrefix (e.g. for long-running
@@ -36,7 +46,13 @@ class HermesServerManager(private val context: Context) {
                 "HOME" to paths.homeDir,
                 "PATH" to "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin",
                 "LD_LIBRARY_PATH" to "${paths.prefixDir}/lib",
-                "LD_PRELOAD" to "${paths.prefixDir}/lib/libtermux-exec.so",
+                // Only set LD_PRELOAD if libtermux-exec.so actually exists.
+                // Setting it to a non-existent path causes EVERY process to
+                // fail with "cannot locate executable". We check at init time
+                // and set it to empty string if the file doesn't exist.
+                // (Termux's libtermux-exec.so provides command-not-found handler
+                // and aliases — non-critical for Hermes.)
+                "LD_PRELOAD" to libTermuxExecPath(paths.prefixDir),
                 "TERMUX_PREFIX" to paths.prefixDir,
                 "TERMUX__PREFIX" to paths.prefixDir,
                 "LANG" to "en_US.UTF-8",
@@ -384,6 +400,7 @@ class HermesServerManager(private val context: Context) {
                 cd $prefix/tmp &&
                 mkdir -p _stage &&
                 for deb in *.deb; do
+                    [ -f "${'$'}deb" ] || continue
                     echo "Extracting ${'$'}deb..." &&
                     dpkg-deb -x "${'$'}deb" _stage/ 2>&1
                 done &&
@@ -391,8 +408,7 @@ class HermesServerManager(private val context: Context) {
                     cp -a _stage$termuxPrefix/* "$prefix/" 2>&1
                 elif [ -d "_stage/usr" ]; then
                     cp -a _stage/usr/* "$prefix/" 2>&1
-                fi &&
-                rm -rf _stage *.deb 2>/dev/null
+                fi; rm -rf _stage *.deb 2>/dev/null
                 echo "done"
             """.trimIndent()
             val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
@@ -529,14 +545,14 @@ WEOF
             cd $prefix/tmp &&
             mkdir -p _deps_stage &&
             for deb in *.deb; do
-                [ -f "${'$'}deb" ] && echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _deps_stage/ 2>&1
+                [ -f "${'$'}deb" ] || continue
+                echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _deps_stage/ 2>&1
             done &&
             if [ -d "_deps_stage$termuxPrefix" ]; then
                 cp -a _deps_stage$termuxPrefix/* "$prefix/" 2>&1
             elif [ -d "_deps_stage/usr" ]; then
                 cp -a _deps_stage/usr/* "$prefix/" 2>&1
-            fi &&
-            rm -rf _deps_stage *.deb 2>/dev/null
+            fi; rm -rf _deps_stage *.deb 2>/dev/null
             echo "Build deps installed"
         """.trimIndent()
 
@@ -630,7 +646,8 @@ with open(sys.argv[1], "wb") as f:
 print("patched " + sys.argv[1])
 PYEOF
             for bin in "$prefix/bin/make" "$prefix/bin/cmake"; do
-                [ -f "${'$'}bin" ] && python3 "$prefix/tmp/_patchbin.py" "${'$'}bin" && chmod 700 "${'$'}bin"
+                [ -f "${'$'}bin" ] || continue
+                python3 "$prefix/tmp/_patchbin.py" "${'$'}bin" 2>&1 && chmod 700 "${'$'}bin" 2>/dev/null
             done
             rm -f "$prefix/tmp/_patchbin.py"
         """.trimIndent()
@@ -1254,8 +1271,11 @@ WEOF
             Log.i(TAG, "Hermes gateway exited with code: ${proc.waitFor()}")
         }.start()
 
+        // Wait briefly and verify the process is still alive.
+        // If it crashed immediately (e.g. missing shared lib, bad venv),
+        // return false so the caller knows.
         Thread.sleep(3000)
-        return true
+        return isRunning
     }
 
     fun stopHermes() {

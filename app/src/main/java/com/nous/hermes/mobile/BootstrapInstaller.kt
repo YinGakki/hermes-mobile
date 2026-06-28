@@ -259,11 +259,14 @@ object BootstrapInstaller {
         val sourcesList = File(prefix, "etc/apt/sources.list")
         if (sourcesList.exists()) {
             val content = sourcesList.readText()
-            sourcesList.writeText(
-                content
-                    .replace("https://", "http://")
-                    .replace("com.termux", "com.nous.hermes.mobile")
-            )
+            // Only downgrade https→http (Termux bootstrap's curl may not
+            // have modern TLS). Do NOT replace com.termux in the URL —
+            // Termux package repository URLs don't contain the applicationId;
+            // they use packages.termux.dev which is applicationId-agnostic.
+            sourcesList.writeText(content.replace("https://", "http://"))
+        } else {
+            // Write a default sources.list if missing
+            sourcesList.writeText("deb http://packages.termux.dev/apt/termux-main/ stable main\n")
         }
 
         val dpkgStatus = File(prefix, "var/lib/dpkg/status")

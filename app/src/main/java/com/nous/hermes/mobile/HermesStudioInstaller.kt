@@ -377,13 +377,31 @@ class HermesStudioInstaller(private val context: Context) {
 
     /**
      * Last resort: find PID listening on STUDIO_PORT and kill -9 it.
+     * Tries lsof first, falls back to fuser (busybox), then ss.
      */
     private fun forceKillByPort() {
         try {
-            serverMgr.runInPrefix(
+            // Try lsof first (most precise — checks TCP LISTEN state)
+            var killed = serverMgr.runInPrefix(
                 "kill -9 ${'$'}(lsof -tiTCP:$STUDIO_PORT -sTCP:LISTEN 2>/dev/null) 2>/dev/null || true",
                 onOutput = { Log.d(TAG, "[forcekill] $it") },
-            )
+            ) == 0
+
+            // Fallback: fuser (busybox applet, usually available)
+            if (!killed) {
+                killed = serverMgr.runInPrefix(
+                    "fuser -k $STUDIO_PORT/tcp 2>/dev/null || true",
+                    onOutput = { Log.d(TAG, "[forcekill] $it") },
+                ) == 0
+            }
+
+            // Fallback: ss (socket statistics, may be available)
+            if (!killed) {
+                serverMgr.runInPrefix(
+                    "kill -9 ${'$'}(ss -tlnp 2>/dev/null | grep ':$STUDIO_PORT ' | grep -oP 'pid=\K[0-9]+') 2>/dev/null || true",
+                    onOutput = { Log.d(TAG, "[forcekill] $it") },
+                )
+            }
         } catch (e: Exception) {
             Log.w(TAG, "forceKillByPort failed: ${e.message}")
         }
