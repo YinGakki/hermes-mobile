@@ -681,13 +681,27 @@ H3
                 assetManager.open(tarballAsset).use { input ->
                     outFile.outputStream().use { input.copyTo(it) }
                 }
-                runInPrefix(
-                    "cd ${wheelsDir.parentFile.absolutePath} && tar -xzf ${'$'}(basename ${'$'}outFile) -C wheels 2>&1",
+                // NOTE: outFile is a Kotlin File object, NOT a shell variable.
+                // Earlier code used $outFile in the shell string, which expanded
+                // to empty string and made tar fail silently. Use Kotlin string
+                // interpolation to pass the absolute path directly.
+                val tarCode = runInPrefix(
+                    "tar -xzf ${outFile.absolutePath} -C ${wheelsDir.absolutePath} 2>&1",
                     onOutput = { onProgress(it) },
                 )
                 outFile.delete()
+                if (tarCode != 0) {
+                    Log.w(TAG, "tar -xzf wheels.tar.gz failed (code=$tarCode) — falling back to PyPI")
+                    wheelsDir.deleteRecursively()
+                    return null
+                }
                 val wheelCount = wheelsDir.listFiles { _, n -> n.endsWith(".whl") }?.size ?: 0
                 onProgress("Wheel cache: $wheelCount wheels extracted")
+                if (wheelCount == 0) {
+                    Log.w(TAG, "Wheel cache extracted but contains 0 .whl files — ignoring")
+                    wheelsDir.deleteRecursively()
+                    return null
+                }
                 return wheelsDir.absolutePath
             } catch (e: Exception) {
                 Log.w(TAG, "Could not extract bundled wheels.tar.gz: ${e.message}")
@@ -815,6 +829,7 @@ H3
             ""
         }
         onProgress("Phase 1: try installing from wheel cache (no compile needed)…")
+        val phase1Output = StringBuilder()
         val installOk = runWithRetry(
             maxAttempts = 3,
             baseDelayMs = 5000L,
@@ -822,13 +837,17 @@ H3
             what = "pip install hermes (termux)",
         ) {
             onProgress("Installing Hermes (pip install -e .[termux]) — this may take a minute…")
+            phase1Output.clear()
             val cmd = """
                 cd ${homeDir}/hermes-agent &&
                 . .venv/bin/activate &&
                 pip install --upgrade pip 2>&1 | tail -1 &&
                 pip install $pipArgs -e '.[termux]' -c constraints-termux.txt 2>&1
             """.trimIndent()
-            runInPrefix(cmd, onOutput = { onProgress(it) }) == 0
+            runInPrefix(cmd, onOutput = {
+                onProgress(it)
+                phase1Output.appendLine(it)
+            }) == 0
         }
 
         // Phase 2 fallback: if wheel install failed, ask the user whether
@@ -838,7 +857,16 @@ H3
         // they're built against glibc). The user should know which path
         // they're on before burning 600MB of data.
         if (!installOk) {
-            onProgress("Phase 1 (wheel cache) failed — needs source compile")
+            // Surface the last few pip error lines so the user can see
+            // WHY Phase 1 failed (e.g. "ERROR: Could not build wheel for
+            // cryptography" or "no matching distribution for ...").
+            val tailLines = phase1Output.lines()
+                .takeLast(15)
+                .filter { it.isNotBlank() }
+            onProgress("════════════════════════════════════════")
+            onProgress("Phase 1 (wheel cache) FAILED. Last pip output:")
+            tailLines.forEach { onProgress("  $it") }
+            onProgress("════════════════════════════════════════")
             Log.w(TAG, "pip install from wheel cache failed — asking user about source compile")
 
             // Ask the user via callback. Default lambda returns true
