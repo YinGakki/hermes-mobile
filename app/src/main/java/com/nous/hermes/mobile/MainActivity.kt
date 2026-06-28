@@ -154,6 +154,10 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread { statusText.text = msg }
                     }
                 }
+                // Always refresh system config (resolv.conf, passwd, timezone)
+                // even if bootstrap was already installed — Android may have
+                // cleared these files between launches.
+                BootstrapInstaller.ensureSystemConfig(this)
                 serverManager.extractDebBundleIfPresent { msg -> appendLog(msg) }
                 runOnUiThread { showSteps() }
             } catch (e: Exception) {

@@ -124,14 +124,29 @@ class HermesStudioInstaller(private val context: Context) {
      * Returns true if server became healthy within timeout.
      */
     fun start(onProgress: (String) -> Unit): Boolean {
+        // Reconnect: if server is already running (from a previous app
+        // launch), adopt it instead of starting a duplicate. Based on
+        // openclaw-termux's "isGatewayRunning → adopt" pattern.
         if (checkServerHealth()) {
-            onProgress("hermes-web-ui already running")
+            onProgress("hermes-web-ui already running — reconnecting")
+            serverStartTime = System.currentTimeMillis()
+            restartCount = 0
             startWatchdog(onProgress)
             return true
         }
         if (!isInstalled()) {
             Log.e(TAG, "Cannot start — hermes-web-ui not installed")
             return false
+        }
+
+        // Port occupancy detection — if port is in use but health check
+        // fails, another process is squatting our port. Report error
+        // instead of silently failing to bind.
+        if (isPortInUse(STUDIO_PORT)) {
+            onProgress("Port $STUDIO_PORT is in use by another process")
+            // Force kill stale process before retrying
+            forceKillByPort()
+            try { Thread.sleep(1000) } catch (_: InterruptedException) {}
         }
 
         // Ensure bionic bypass is extracted
@@ -144,11 +159,20 @@ class HermesStudioInstaller(private val context: Context) {
         // Build environment with Bionic Bypass injection.
         // NODE_OPTIONS=--require ensures the bypass runs before any
         // other code, patching os.networkInterfaces() etc.
+        val npmCacheDir = File(paths.tmpDir, "npm-cache").apply { mkdirs() }
         val env = serverMgr.buildEnvironment(paths).toMutableMap().apply {
             put("PORT", STUDIO_PORT.toString())
             put("NODE_ENV", "production")
             put("HOME", homeDir)
             put("HERMES_WEB_UI_HOME", "$homeDir/.hermes-web-ui")
+            // Disable io_uring — not available on Android Bionic libc.
+            // Without this, libuv may crash trying to set up io_uring.
+            put("UV_USE_IO_URING", "0")
+            // Use polling instead of inotify — inotify may fail on
+            // Android filesystems (especially emulated storage).
+            put("CHOKIDAR_USEPOLLING", "true")
+            // npm cache in prefix tmp/ (mkdir may fail elsewhere on Android)
+            put("npm_config_cache", npmCacheDir.absolutePath)
             // Bionic Bypass — critical for Android
             bypassScriptPath?.let { path ->
                 put("NODE_OPTIONS", "--require $path")
@@ -275,11 +299,15 @@ class HermesStudioInstaller(private val context: Context) {
         val prefix = paths.prefixDir
         val homeDir = paths.homeDir
 
+        val npmCacheDir = File(paths.tmpDir, "npm-cache").apply { mkdirs() }
         val env = serverMgr.buildEnvironment(paths).toMutableMap().apply {
             put("PORT", STUDIO_PORT.toString())
             put("NODE_ENV", "production")
             put("HOME", homeDir)
             put("HERMES_WEB_UI_HOME", "$homeDir/.hermes-web-ui")
+            put("UV_USE_IO_URING", "0")
+            put("CHOKIDAR_USEPOLLING", "true")
+            put("npm_config_cache", npmCacheDir.absolutePath)
             bypassScriptPath?.let { put("NODE_OPTIONS", "--require $it") }
         }
 
@@ -362,6 +390,23 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     // ── Health check ────────────────────────────────────────────────────────
+
+    /**
+     * Check if a TCP port is in use (regardless of whether it's our server).
+     * Uses a raw socket connect — faster than HTTP health check and
+     * detects non-HTTP processes squatting on the port.
+     * Based on openclaw-termux's port occupancy detection.
+     */
+    private fun isPortInUse(port: Int): Boolean {
+        return try {
+            val socket = java.net.Socket()
+            socket.connect(java.net.InetSocketAddress("localhost", port), 500)
+            socket.close()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     /**
      * Poll /health until 200 or timeout.

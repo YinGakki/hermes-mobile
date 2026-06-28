@@ -51,6 +51,60 @@ object BootstrapInstaller {
     }
 
     /**
+     * Ensure critical system config files exist on every app launch.
+     * Android may clear files in the app's filesDir between launches
+     * (especially on low-memory devices), so resolv.conf and timezone
+     * files might be missing even when the bootstrap is installed.
+     *
+     * Based on openclaw-termux's "rebuild resolv.conf on every start" pattern.
+     */
+    fun ensureSystemConfig(context: Context) {
+        val paths = getPaths(context)
+        val prefix = paths.prefixDir
+
+        // Refresh resolv.conf if missing (DNS lookups will fail without it)
+        val resolvConf = File(prefix, "etc/resolv.conf")
+        if (!resolvConf.exists()) {
+            try {
+                resolvConf.parentFile?.mkdirs()
+                resolvConf.writeText(
+                    "nameserver 8.8.8.8\n" +
+                    "nameserver 8.8.4.4\n" +
+                    "nameserver 1.1.1.1\n" +
+                    "options timeout:2 attempts:1\n"
+                )
+                Log.i(TAG, "Refreshed resolv.conf")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not refresh resolv.conf: ${e.message}")
+            }
+        }
+
+        // Refresh timezone if missing (prevents interactive tzdata prompt)
+        val timezoneFile = File(prefix, "etc/timezone")
+        if (!timezoneFile.exists()) {
+            try {
+                timezoneFile.writeText("Etc/UTC\n")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not refresh timezone: ${e.message}")
+            }
+        }
+
+        // Refresh /etc/passwd if missing (dpkg/apt need it)
+        val passwdFile = File(prefix, "etc/passwd")
+        if (!passwdFile.exists()) {
+            try {
+                passwdFile.writeText(
+                    "root:x:0:0:root:${paths.homeDir}:/bin/sh\n" +
+                    "_apt:x:1:1:apt:/nonexistent:/bin/sh\n" +
+                    "daemon:x:2:2:daemon:/nonexistent:/bin/sh\n"
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not refresh passwd: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Extract bootstrap-aarch64.zip from assets into the prefix directory.
      * Idempotent: if the prefix already exists, returns immediately.
      */
@@ -191,7 +245,12 @@ object BootstrapInstaller {
             Dpkg::Options:: "--force-configure-any";
             Dpkg::Options:: "--force-bad-path";
             Dpkg::Options:: "--instdir=$prefix";
+            Dpkg::Options:: "--force-not-root";
             Acquire::AllowInsecureRepositories "true";
+            APT::Sandbox::Seccomp "false";
+            APT::Sandbox::User "root";
+            APT::Get::Assume-Yes "true";
+            APT::Get::Allow-Unauthenticated "true";
             """.trimIndent() + "\n"
         )
 
@@ -235,7 +294,82 @@ object BootstrapInstaller {
             }
         }
 
+        configureRootfsExtras(paths)
+
         Log.i(TAG, "Fixed Termux paths -> $prefix")
+    }
+
+    /**
+     * Write tzdata, /etc/passwd, /etc/group, /etc/resolv.conf so that
+     * dpkg/apt/pip don't hang on interactive prompts or fail DNS lookups.
+     * Based on openclaw-termux BootstrapManager.configureRootfs().
+     */
+    private fun configureRootfsExtras(paths: Paths) {
+        val prefix = paths.prefixDir
+
+        // ── tzdata ──────────────────────────────────────────────────────
+        // Without timezone config, Python3's tzdata package triggers an
+        // interactive prompt during pip install, which hangs forever in
+        // a non-interactive shell. Pre-set to UTC.
+        try {
+            val timezoneFile = File(prefix, "etc/timezone")
+            timezoneFile.writeText("Etc/UTC\n")
+            File(prefix, "etc/TZ").writeText("UTC0\n")
+            // Link localtime if zoneinfo data exists in prefix
+            val zoneinfoUtc = File(prefix, "share/zoneinfo/Etc/UTC")
+            val localtimeFile = File(prefix, "etc/localtime")
+            if (zoneinfoUtc.exists()) {
+                localtimeFile.delete()
+                Os.symlink(zoneinfoUtc.absolutePath, localtimeFile.absolutePath)
+            } else {
+                // No zoneinfo — just write a stub so Python doesn't error
+                localtimeFile.writeText("TZif2\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\n")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not configure timezone: ${e.message}")
+        }
+
+        // ── /etc/passwd + /etc/group ──────────────────────────────────
+        // dpkg/apt need to resolve the current user. Without /etc/passwd,
+        // getpwuid_r fails and apt tries to drop to _apt user, which
+        // doesn't exist, causing "Operation not permitted" errors.
+        try {
+            val passwdFile = File(prefix, "etc/passwd")
+            if (!passwdFile.exists()) {
+                passwdFile.writeText(
+                    "root:x:0:0:root:${paths.homeDir}:/bin/sh\n" +
+                    "_apt:x:1:1:apt:/nonexistent:/bin/sh\n" +
+                    "daemon:x:2:2:daemon:/nonexistent:/bin/sh\n"
+                )
+            }
+            val groupFile = File(prefix, "etc/group")
+            if (!groupFile.exists()) {
+                groupFile.writeText(
+                    "root:x:0:\n" +
+                    "_apt:x:1:\n" +
+                    "daemon:x:2:\n"
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not write passwd/group: ${e.message}")
+        }
+
+        // ── /etc/resolv.conf ───────────────────────────────────────────
+        // Android doesn't have /etc/resolv.conf. Without it, DNS lookups
+        // fail with "Temporary failure in name resolution". Write common
+        // public DNS servers as a fallback — the app can also update this
+        // later with the device's actual DNS servers.
+        try {
+            val resolvConf = File(prefix, "etc/resolv.conf")
+            resolvConf.writeText(
+                "nameserver 8.8.8.8\n" +
+                "nameserver 8.8.4.4\n" +
+                "nameserver 1.1.1.1\n" +
+                "options timeout:2 attempts:1\n"
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not write resolv.conf: ${e.message}")
+        }
     }
 
     private fun shouldBeExecutable(entryName: String): Boolean {
@@ -270,6 +404,20 @@ object BootstrapInstaller {
     }
 
     private fun deleteRecursive(fileOrDir: File) {
+        // Safety: don't follow symlinks that might point outside the prefix.
+        // If a symlink points to /sdcard or /storage, deleting it recursively
+        // would delete the user's files. Just delete the link itself.
+        // Based on openclaw-termux's symlink-safe deletion guard.
+        val isSymlink = try {
+            Os.readlink(fileOrDir.absolutePath)
+            true  // readlink succeeded, so it's a symlink
+        } catch (_: Exception) {
+            false  // not a symlink
+        }
+        if (isSymlink) {
+            fileOrDir.delete()
+            return
+        }
         if (fileOrDir.isDirectory) {
             fileOrDir.listFiles()?.forEach { child ->
                 deleteRecursive(child)

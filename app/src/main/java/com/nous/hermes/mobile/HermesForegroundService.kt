@@ -9,13 +9,26 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 
+/**
+ * Foreground service that keeps the Hermes Agent runtime alive in the
+ * background. Acquires a PARTIAL_WAKE_LOCK to prevent the CPU from
+ * sleeping during long install operations (pip, npm, rust compile).
+ *
+ * Based on openclaw-termux's GatewayService.kt wake lock pattern:
+ *   - PARTIAL_WAKE_LOCK keeps CPU running even when screen is off
+ *   - START_STICKY ensures service restarts after system kills it
+ *   - Foreground notification keeps the process priority high
+ */
 class HermesForegroundService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "hermes_running"
         private const val NOTIFICATION_ID = 1
     }
+
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -24,7 +37,6 @@ class HermesForegroundService : Service() {
         createNotificationChannel()
         val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14+ requires explicit foreground service type
             startForeground(
                 NOTIFICATION_ID,
                 notification,
@@ -33,10 +45,48 @@ class HermesForegroundService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        acquireWakeLock()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        releaseWakeLock()
+        super.onDestroy()
+    }
+
+    /**
+     * Acquire a PARTIAL_WAKE_LOCK to prevent Doze from killing the
+     * process during long-running operations (install, compile).
+     * Uses a 24h upper bound (matches openclaw-termux's limit).
+     */
+    private fun acquireWakeLock() {
+        try {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "HermesAgent::InstallWakeLock",
+            ).apply {
+                setReferenceCounted(false)
+                acquire(24 * 60 * 60 * 1000L) // 24h max
+            }
+        } catch (e: Exception) {
+            // Non-fatal — Doze may still kill us, but the foreground
+            // notification provides some protection on its own.
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (e: Exception) {
+            // Ignore
+        }
+        wakeLock = null
     }
 
     private fun createNotificationChannel() {
