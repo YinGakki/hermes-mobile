@@ -8,7 +8,7 @@
     <string name="status_installing_hermes">Installing Hermes Agent…</string>
     <string name="status_verifying">Verifying install…</string>
     <string name="done_title">Hermes Agent is ready</string>
-    <string name="done_subtitle">Launch a shell to start chatting.</string>
+    <string name="done_subtitle">All steps completed.</string>
     <string name="action_open_shell">Open Shell</string>
     <string name="action_install_chat">Install Chat UI</string>
     <string name="action_open_chat">Open Chat UI</string>
@@ -25,4 +25,14 @@
     <string name="compile_needed_message">预编译的 wheel 包在本机无法直接使用（Android 与 Linux glibc 不兼容），需要从源码编译。\n\n即将下载 rust + clang + ffmpeg（约 600 MB），然后编译 cryptography / cffi / pydantic-core 等 native 包，整个过程可能需要 5–10 分钟。\n\n是否继续？</string>
     <string name="compile_continue">继续下载编译</string>
     <string name="compile_abort">中止安装</string>
+
+    <!-- Step buttons -->
+    <string name="steps_title">安装步骤</string>
+    <string name="step_proot">1. 安装 proot</string>
+    <string name="step_python">2. 安装 Python</string>
+    <string name="step_build_deps">3. 安装 build deps</string>
+    <string name="step_hermes">4. 安装 Hermes Agent</string>
+    <string name="step_install_all">一键安装全部</string>
+    <string name="step_done">✓ 已安装</string>
+    <string name="step_installing">安装中…</string>
 </resources>

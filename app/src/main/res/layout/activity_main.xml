@@ -4,19 +4,21 @@
     android:layout_height="match_parent"
     android:background="#020617">
 
-    <!-- Setup overlay: shown during bootstrap + installs -->
+    <!-- Main overlay: bootstrap progress + step buttons + logs -->
     <LinearLayout
         android:id="@+id/loadingOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:gravity="center"
+        android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:padding="32dp">
+        android:padding="24dp">
 
+        <!-- Bootstrap progress (hidden after bootstrap) -->
         <ProgressBar
             android:id="@+id/progressBar"
             android:layout_width="48dp"
             android:layout_height="48dp"
+            android:layout_marginTop="48dp"
             android:indeterminate="true"
             android:indeterminateTint="#818cf8" />
 
@@ -24,7 +26,7 @@
             android:id="@+id/statusText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="16dp"
             android:text="@string/status_initializing"
             android:textColor="#94a3b8"
             android:textSize="16sp"
@@ -34,18 +36,75 @@
             android:id="@+id/statusDetail"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="4dp"
             android:textColor="#64748b"
             android:textSize="13sp"
             android:gravity="center"
             android:visibility="gone" />
+
+        <!-- Step buttons (shown after bootstrap completes) -->
+        <LinearLayout
+            android:id="@+id/stepsContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginTop="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/steps_title"
+                android:textColor="#818cf8"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <Button
+                android:id="@+id/btnProot"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/step_proot"
+                android:layout_marginTop="4dp" />
+
+            <Button
+                android:id="@+id/btnPython"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/step_python"
+                android:layout_marginTop="4dp" />
+
+            <Button
+                android:id="@+id/btnBuildDeps"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/step_build_deps"
+                android:layout_marginTop="4dp" />
+
+            <Button
+                android:id="@+id/btnHermes"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/step_hermes"
+                android:layout_marginTop="4dp" />
+
+            <Button
+                android:id="@+id/btnInstallAll"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/step_install_all"
+                android:layout_marginTop="16dp"
+                android:backgroundTint="#10b981" />
+
+        </LinearLayout>
 
         <ScrollView
             android:id="@+id/logScroll"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="16dp"
             android:background="#0f172a"
             android:padding="8dp">
 
@@ -62,7 +121,7 @@
 
     </LinearLayout>
 
-    <!-- Done overlay: shown after setup completes -->
+    <!-- Done overlay: shown after all setup completes -->
     <LinearLayout
         android:id="@+id/doneLayout"
         android:layout_width="match_parent"
