@@ -441,13 +441,19 @@ WEOF
         val prefix = paths.prefixDir
         val termuxPrefix = "/data/data/com.termux/files/usr"
 
-        // Skip entirely if a previous run already finished this step.
-        // We write a marker file as the LAST action, so its presence
-        // guarantees the extract loop below also completed.
+        // Skip entirely if a previous run already finished this step
+        // AND the marker version matches (package list may change between
+        // releases — old marker without libngtcp2 must be invalidated).
         val depsMarker = File(prefix, "var/.hermes-deps-installed")
+        val depsMarkerVersion = "v2"  // bump when package list changes
         if (depsMarker.exists()) {
-            onProgress("Build dependencies already installed (cached)")
-            return true
+            val markerContent = depsMarker.readText().trim()
+            if (markerContent == depsMarkerVersion) {
+                onProgress("Build dependencies already installed (cached, $depsMarkerVersion)")
+                return true
+            } else {
+                onProgress("Build deps marker outdated ($markerContent → $depsMarkerVersion), re-downloading…")
+            }
         }
 
         // If the bundle already staged debs in tmp/, skip the entire
@@ -560,8 +566,8 @@ WEOF
         // the marker and skips the whole step.
         try {
             File(prefix, "var").mkdirs()
-            depsMarker.writeText("ok\n")
-            onProgress("Marked build deps as installed")
+            depsMarker.writeText(depsMarkerVersion)
+            onProgress("Marked build deps as installed ($depsMarkerVersion)")
         } catch (e: Exception) {
             Log.w(TAG, "Could not write deps marker: ${e.message}")
         }
@@ -676,6 +682,46 @@ H3
     }
 
     // ── Hermes Agent ───────────────────────────────────────────────────────
+
+    /**
+     * Ensure libngtcp2 (and other libcurl transitive deps) are present.
+     * If build deps were installed by an older APK that didn't include
+     * libngtcp2 in the package list, git-remote-https crashes with
+     * "cannot locate symbol ngtcp2_crypto_get_path_challenge_data2_cb".
+     *
+     * This function checks if libngtcp2.so exists in the prefix. If not,
+     * it downloads and extracts just that one package (plus libngtcp2-crypto
+     * if it exists as a separate package).
+     */
+    private fun ensureCurlDeps(prefix: String, onProgress: (String) -> Unit) {
+        // Quick filesystem check — if libngtcp2.so exists, we're good
+        val libngtcp2 = File(prefix, "lib/libngtcp2.so")
+        if (libngtcp2.exists()) return
+
+        onProgress("libngtcp2.so missing — downloading (libcurl HTTP/3 dependency)…")
+        val termuxPrefix = "/data/data/com.termux/files/usr"
+        val cmd = """
+            cd $prefix/tmp &&
+            apt-get download --allow-unauthenticated libngtcp2 2>&1 &&
+            for deb in libngtcp2*.deb; do
+                [ -f "${'$'}deb" ] || continue
+                dpkg-deb -x "${'$'}deb" _ngtcp2_stage/ 2>&1
+            done &&
+            if [ -d "_ngtcp2_stage$termuxPrefix" ]; then
+                cp -a _ngtcp2_stage$termuxPrefix/* "$prefix/" 2>&1
+            elif [ -d "_ngtcp2_stage/usr" ]; then
+                cp -a _ngtcp2_stage/usr/* "$prefix/" 2>&1
+            fi &&
+            rm -rf _ngtcp2_stage libngtcp2*.deb 2>/dev/null
+        """.trimIndent()
+        val code = runInPrefix(cmd, onOutput = { onProgress(it) })
+        if (code != 0) {
+            Log.w(TAG, "ensureCurlDeps: libngtcp2 download failed (code=$code)")
+            onProgress("Warning: libngtcp2 download failed — git clone may fail, will use tarball fallback")
+        } else {
+            onProgress("libngtcp2 installed")
+        }
+    }
 
     /**
      * Configure git to rewrite SSH GitHub URLs to HTTPS (we don't have ssh
@@ -812,6 +858,13 @@ H3
             systemctlStub.setExecutable(true)
         }
 
+        // Ensure libngtcp2 is present — libcurl.so depends on it for HTTP/3.
+        // If build deps were installed by an older APK version that didn't
+        // include libngtcp2 in the package list, git-remote-https will crash
+        // with "cannot locate symbol ngtcp2_crypto_get_path_challenge_data2_cb".
+        // This is a targeted fix that downloads just the missing lib.
+        ensureCurlDeps(prefix, onProgress)
+
         // Clone Hermes (idempotent + retry). GitHub clone can fail
         // transiently due to network blips; retry up to 3 times.
         // Falls back to tarball download if git-remote-https is broken
@@ -845,12 +898,25 @@ H3
                     val tarballUrl = "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/heads/main"
                     val tarballFile = File(paths.tmpDir, "hermes-agent.tar.gz")
                     try {
-                        java.net.URL(tarballUrl).openStream().use { input ->
+                        onProgress("Downloading tarball from $tarballUrl…")
+                        val conn = java.net.URL(tarballUrl).openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 15000
+                        conn.readTimeout = 60000
+                        conn.instanceFollowRedirects = true
+                        if (conn.responseCode != 200) {
+                            onProgress("HTTP ${conn.responseCode} from tarball URL")
+                            conn.disconnect()
+                            return@runWithRetry false
+                        }
+                        conn.inputStream.use { input ->
                             tarballFile.outputStream().use { input.copyTo(it) }
                         }
+                        conn.disconnect()
                         onProgress("Tarball downloaded (${tarballFile.length() / 1024}KB), extracting…")
                     } catch (e: Exception) {
+                        onProgress("Tarball download error: ${e.message}")
                         Log.e(TAG, "Tarball download failed: ${e.message}")
+                        tarballFile.delete()
                         return@runWithRetry false
                     }
                     // Extract with prefix's tar (doesn't need libcurl)
@@ -858,8 +924,16 @@ H3
                         "cd ${homeDir} && rm -rf hermes-agent && tar -xzf ${tarballFile.absolutePath} -C ${homeDir} 2>&1 && mv hermes-agent-main hermes-agent 2>/dev/null || true",
                         onOutput = { onProgress(it) },
                     )
+                    if (extractCode != 0) {
+                        onProgress("tar extract failed (code=$extractCode)")
+                    }
                     tarballFile.delete()
-                    extractCode == 0 && File(homeDir, "hermes-agent/pyproject.toml").exists()
+                    val pyprojectExists = File(homeDir, "hermes-agent/pyproject.toml").exists()
+                    if (!pyprojectExists) {
+                        onProgress("pyproject.toml not found after extraction — listing ${homeDir}:")
+                        runInPrefix("ls -la ${homeDir}/ 2>&1 | head -20") { onProgress(it) }
+                    }
+                    extractCode == 0 && pyprojectExists
                 }
                 if (!tarballOk) {
                     Log.e(TAG, "Both git clone and tarball download failed for hermes-agent")
