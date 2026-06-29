@@ -455,12 +455,17 @@ class MainActivity : AppCompatActivity() {
         val ok = serverManager.installHermes(
             onProgress = { msg -> appendLog(msg) },
             onNeedCompile = {
-                // Phase 1 failed and source compile is needed. Log this so
-                // the user sees WHY the install paused — without this, the
-                // 120s wait for the dialog looks like an ANR.
+                // Called on the background install thread. Log so the user
+                // sees WHY the install paused, then show the dialog.
+                // askUserAboutCompile() internally uses runOnUiThread to
+                // show the dialog and a CountDownLatch to block THIS thread
+                // until the user clicks. Do NOT wrap askUserAboutCompile in
+                // another runOnUiThread — runOnUiThread is async (it just
+                // posts to the main looper and returns immediately), so the
+                // outer block returns before the dialog is even shown, and
+                // the latch never gets counted down → 120s hang → ANR.
                 appendLog("⏳ Phase 1 失败，等待你确认是否下载工具链并从源码编译…")
-                var approved = false
-                runOnUiThread { approved = askUserAboutCompile() }
+                val approved = askUserAboutCompile()
                 if (approved) appendLog("已确认编译，开始下载工具链…") else appendLog("已取消编译")
                 approved
             },
