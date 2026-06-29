@@ -1274,12 +1274,22 @@ H3
         // incompatible platform (e.g. manylinux x86_64 wheels can't install
         // on Android aarch64 — pip skips those and fetches the right one).
         // --no-index would make pip fail hard on those, breaking the install.
+        //
+        // PyPI mirror: use Tsinghua's mirror (pypi.tuna.tsinghua.edu.cn/simple)
+        // by default. The default PyPI (pypi.org/simple) is slow / unreliable
+        // from mainland China — connections to fastly.net CDN nodes often
+        // time out or hang for minutes mid-download, which previously caused
+        // the 10-minute pip watchdog to fire and fail the install. The
+        // Tsinghua mirror is hosted inside China, fast, and pip-compatible.
+        // --trusted-host is required because pip refuses to send credentials
+        // to a non-HTTPS-default host (and the cert chain on Android's
+        // system trust store may not match if it's intercepted).
         val wheelCacheDir = setupWheelCacheIfPresent(prefix, onProgress)
-        val pipArgs = if (wheelCacheDir != null) {
-            "--find-links=$wheelCacheDir"
-        } else {
-            ""
-        }
+        val pipArgs = buildString {
+            if (wheelCacheDir != null) append("--find-links=$wheelCacheDir ")
+            append("-i https://pypi.tuna.tsinghua.edu.cn/simple ")
+            append("--trusted-host pypi.tuna.tsinghua.edu.cn")
+        }.trim()
         onProgress("Phase 1: try installing from wheel cache (no compile needed)…")
         val phase1Output = StringBuilder()
         val installOk = runWithRetry(
