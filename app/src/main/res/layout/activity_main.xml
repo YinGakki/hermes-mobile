@@ -243,6 +243,34 @@
                     android:text="@string/step_install_all"
                     android:backgroundTint="#10b981" />
 
+                <!-- 备份/还原环境：让用户跳过 10-30 分钟编译 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="20dp"
+                    android:gravity="center_vertical">
+
+                    <Button
+                        android:id="@+id/btnSaveEnv"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:text="@string/env_save"
+                        android:backgroundTint="#6366f1"
+                        android:textColor="#ffffff" />
+
+                    <Button
+                        android:id="@+id/btnRestoreEnv"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="@string/env_restore"
+                        android:backgroundTint="#f59e0b"
+                        android:textColor="#ffffff" />
+                </LinearLayout>
+
             </LinearLayout>
 
         </LinearLayout>

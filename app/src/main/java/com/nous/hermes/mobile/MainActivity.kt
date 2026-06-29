@@ -17,10 +17,15 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -46,6 +51,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnBuildDeps: Button
     private lateinit var btnHermes: Button
     private lateinit var btnInstallAll: Button
+    private lateinit var btnSaveEnv: Button
+    private lateinit var btnRestoreEnv: Button
     private lateinit var spinnerProot: ProgressBar
     private lateinit var spinnerPython: ProgressBar
     private lateinit var spinnerBuildDeps: ProgressBar
@@ -73,6 +80,12 @@ class MainActivity : AppCompatActivity() {
     // Managers
     private lateinit var serverManager: HermesServerManager
     private lateinit var studioInstaller: HermesStudioInstaller
+    private lateinit var envBackup: HermesEnvBackup
+
+    // SAF launchers — registered before onCreate completes so they can
+    // receive callbacks even if the activity is recreated by config change.
+    private lateinit var saveEnvLauncher: ActivityResultLauncher<String>
+    private lateinit var restoreEnvLauncher: ActivityResultLauncher<Array<String>>
 
     @Volatile private var isInstallInProgress = false
     @Volatile private var activeThread: Thread? = null
@@ -97,6 +110,8 @@ class MainActivity : AppCompatActivity() {
         btnBuildDeps = findViewById(R.id.btnBuildDeps)
         btnHermes = findViewById(R.id.btnHermes)
         btnInstallAll = findViewById(R.id.btnInstallAll)
+        btnSaveEnv = findViewById(R.id.btnSaveEnv)
+        btnRestoreEnv = findViewById(R.id.btnRestoreEnv)
         spinnerProot = findViewById(R.id.spinnerProot)
         spinnerPython = findViewById(R.id.spinnerPython)
         spinnerBuildDeps = findViewById(R.id.spinnerBuildDeps)
@@ -138,6 +153,22 @@ class MainActivity : AppCompatActivity() {
 
         serverManager = HermesServerManager(this)
         studioInstaller = HermesStudioInstaller(this)
+        envBackup = HermesEnvBackup(this)
+
+        // SAF launcher for "Save environment" — creates a new file at the
+        // user-chosen location. Registered before any button click so it
+        // survives activity recreation.
+        saveEnvLauncher = registerForActivityResult(
+            ActivityResultContracts.CreateDocument("application/gzip"),
+        ) { uri: Uri? ->
+            if (uri != null) runEnvBackup(uri)
+        }
+        // SAF launcher for "Restore environment" — opens an existing .tar.gz
+        restoreEnvLauncher = registerForActivityResult(
+            ActivityResultContracts.OpenDocument(),
+        ) { uri: Uri? ->
+            if (uri != null) runEnvRestore(uri)
+        }
 
         requestBatteryOptimizationExemption()
         startForegroundService()
@@ -150,6 +181,8 @@ class MainActivity : AppCompatActivity() {
         btnBuildDeps.setOnClickListener { runStep("buildDeps") }
         btnHermes.setOnClickListener { runStep("hermes") }
         btnInstallAll.setOnClickListener { runInstallAll() }
+        btnSaveEnv.setOnClickListener { onSaveEnvClicked() }
+        btnRestoreEnv.setOnClickListener { onRestoreEnvClicked() }
 
         openShellButton.setOnClickListener {
             try {
@@ -481,6 +514,146 @@ class MainActivity : AppCompatActivity() {
         appendLog("✓ Hermes Agent 已安装")
     }
 
+    // ── Environment backup / restore ───────────────────────────────────────
+
+    private fun onSaveEnvClicked() {
+        if (isInstallInProgress) {
+            Toast.makeText(this, R.string.install_in_progress_msg, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!serverManager.isHermesInstalled()) {
+            Toast.makeText(this, R.string.env_save_only_if_installed, Toast.LENGTH_LONG).show()
+            return
+        }
+        // 默认文件名带时间戳，避免覆盖旧备份
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val filename = getString(R.string.env_save_filename_template, timestamp)
+        saveEnvLauncher.launch(filename)
+    }
+
+    private fun onRestoreEnvClicked() {
+        if (isInstallInProgress) {
+            Toast.makeText(this, R.string.install_in_progress_msg, Toast.LENGTH_SHORT).show()
+            return
+        }
+        // 还原会清空当前环境，需要二次确认
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.env_confirm_restore_title)
+            .setMessage(R.string.env_confirm_restore_msg)
+            .setPositiveButton(R.string.action_exit) { _, _ ->
+                // 用户确认 → 打开 SAF 选择 .tar.gz 备份文件
+                restoreEnvLauncher.launch(arrayOf("application/gzip", "application/x-gzip", "application/x-tar"))
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /**
+     * 在后台线程执行环境备份。进度通过 indeterminate ProgressDialog +
+     * 日志页同步显示。完成后弹 toast 告知结果。
+     */
+    private fun runEnvBackup(targetUri: Uri) {
+        if (!tryAcquireInstallLock()) return
+        val dialog = android.app.ProgressDialog(this).apply {
+            setTitle(R.string.env_save_progress_title)
+            setMessage("正在打包环境…")
+            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
+            setCancelable(false)
+            setButton(android.app.ProgressDialog.BUTTON_NEGATIVE, getString(R.string.cancel)) { d, _ ->
+                activeThread?.interrupt()
+                d.dismiss()
+            }
+        }
+        dialog.show()
+        activeProgressDialog = dialog
+
+        activeThread = Thread {
+            try {
+                val ok = envBackup.backup(targetUri) { msg ->
+                    runOnUiThread { dialog.setMessage(msg) }
+                    appendLog("[backup] $msg")
+                }
+                runOnUiThread {
+                    dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    if (ok) {
+                        Toast.makeText(this, "✓ 环境已保存", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this, "保存失败，详见日志", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Env backup failed", e)
+                runOnUiThread {
+                    dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    Toast.makeText(this, "保存失败：${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.also { it.start() }
+    }
+
+    /**
+     * 在后台线程执行环境还原。还原成功后停掉 hermes 服务（如果正在
+     * 跑），因为还原替换了它的二进制和 venv。
+     */
+    private fun runEnvRestore(sourceUri: Uri) {
+        if (!tryAcquireInstallLock()) return
+        val dialog = android.app.ProgressDialog(this).apply {
+            setTitle(R.string.env_restore_progress_title)
+            setMessage("正在还原环境…")
+            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
+            setCancelable(false)
+            setButton(android.app.ProgressDialog.BUTTON_NEGATIVE, getString(R.string.cancel)) { d, _ ->
+                activeThread?.interrupt()
+                d.dismiss()
+            }
+        }
+        dialog.show()
+        activeProgressDialog = dialog
+
+        activeThread = Thread {
+            try {
+                // 还原前停掉 hermes / studio — 否则文件被占用
+                try {
+                    studioInstaller.stop()
+                    serverManager.stopHermes()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Pre-restore stop failed: ${e.message}")
+                }
+
+                val ok = envBackup.restore(sourceUri) { msg ->
+                    runOnUiThread { dialog.setMessage(msg) }
+                    appendLog("[restore] $msg")
+                }
+                runOnUiThread {
+                    dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    if (ok) {
+                        // 还原完成后刷新所有按钮 / nav tabs 状态
+                        refreshStepButtons()
+                        refreshNavTabs()
+                        refreshDashboardState()
+                        Toast.makeText(this, "✓ 环境已还原", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this, "还原失败，详见日志", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Env restore failed", e)
+                runOnUiThread {
+                    dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    Toast.makeText(this, "还原失败：${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.also { it.start() }
+    }
+
     // ── Button state helpers ────────────────────────────────────────────────
 
     private fun refreshStepButtons() {
@@ -532,6 +705,18 @@ class MainActivity : AppCompatActivity() {
             isInstallInProgress -> 0.35f
             else -> 1f
         }
+
+        // Save env: only when Hermes is fully installed (otherwise there's
+        // nothing meaningful to back up). Restore env: always available —
+        // user may want to restore to skip the install entirely.
+        btnSaveEnv.isEnabled = hermesDone && !isInstallInProgress
+        btnSaveEnv.alpha = when {
+            !hermesDone -> 0.35f
+            isInstallInProgress -> 0.35f
+            else -> 1f
+        }
+        btnRestoreEnv.isEnabled = !isInstallInProgress
+        btnRestoreEnv.alpha = if (isInstallInProgress) 0.35f else 1f
     }
 
     private fun setStepButtonState(step: String, installing: Boolean) {

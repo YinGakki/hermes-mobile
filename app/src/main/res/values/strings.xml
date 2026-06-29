@@ -35,6 +35,18 @@
     <string name="step_install_all">一键安装全部</string>
     <string name="step_done">✓ 已安装</string>
     <string name="step_installing">安装中…</string>
+
+    <!-- Environment backup / restore -->
+    <string name="env_save">保存环境</string>
+    <string name="env_restore">还原环境</string>
+    <string name="env_save_subtitle">将已安装的 Hermes 环境打包成 tar.gz，下次重装/换机时可直接还原，跳过 10–30 分钟编译</string>
+    <string name="env_restore_subtitle">从备份 tar.gz 还原环境（覆盖当前环境，会清空 prefix 与 home）</string>
+    <string name="env_save_progress_title">正在保存环境…</string>
+    <string name="env_restore_progress_title">正在还原环境…</string>
+    <string name="env_save_filename_template">hermes-env-%1$s.tar.gz</string>
+    <string name="env_confirm_restore_title">确认还原</string>
+    <string name="env_confirm_restore_msg">还原将清空当前环境并覆盖为备份内容。是否继续？</string>
+    <string name="env_save_only_if_installed">需先完成 Hermes 安装才能保存环境</string>
     <string name="action_copy_error">复制错误</string>
     <string name="copied_to_clipboard">已复制到剪贴板</string>
     <string name="install_in_progress_title">安装进行中</string>
