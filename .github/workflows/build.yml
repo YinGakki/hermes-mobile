@@ -332,6 +332,36 @@ jobs:
           echo "lite_dst=$lite_dst" >> "$GITHUB_ENV"
           echo "Renamed: $lite_dst ($(du -h "$lite_dst" | cut -f1))"
 
+      - name: Clear previous APKs from "latest" pre-release
+        # Rolling pre-release: delete ALL previously uploaded APK assets so
+        # the release only ever contains the latest build. Without this, every
+        # push accumulates a new `hermes-<sha>-arm64-lite.apk` and the release
+        # grows unbounded (we already had 20 stale APKs before adding this).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo='${{ github.repository }}'
+          release_id=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$repo/releases/tags/latest" | jq -r '.id // empty')
+          if [ -z "$release_id" ]; then
+            echo "No existing 'latest' release — nothing to clean"
+            exit 0
+          fi
+          echo "Cleaning assets of release $release_id…"
+          curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$repo/releases/$release_id/assets?per_page=100" \
+            | jq -r '.[] | "\(.id)\t\(.name)"' \
+            | while IFS=$'\t' read -r id name; do
+                echo "  deleting $name (asset id $id)"
+                curl -fsSL -o /dev/null -X DELETE \
+                  -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$repo/releases/assets/$id" \
+                  || echo "  WARN: failed to delete $name (continuing)"
+              done
+          echo "Cleanup done"
+
       - name: Upload Lite APK to "latest" pre-release
         uses: softprops/action-gh-release@v2
         with:
