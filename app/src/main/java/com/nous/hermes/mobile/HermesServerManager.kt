@@ -722,8 +722,8 @@ WEOF
         val cmd = """
             # Kill leftover apt-get / dpkg from a previous (failed) attempt.
             # `pgrep` is part of Termux's procps and is in the bootstrap.
-            for p in $(pgrep apt-get 2>/dev/null) $(pgrep dpkg 2>/dev/null); do
-                kill -9 "$p" 2>/dev/null
+            for p in ${'$'}(pgrep apt-get 2>/dev/null) ${'$'}(pgrep dpkg 2>/dev/null); do
+                kill -9 "${'$'}p" 2>/dev/null
             done
             # Remove lock files they may have left behind.
             rm -f "$prefix/var/cache/apt/archives/lock" \
