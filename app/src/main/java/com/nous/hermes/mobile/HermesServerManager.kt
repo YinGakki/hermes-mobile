@@ -269,10 +269,21 @@ class HermesServerManager(private val context: Context) {
             // Otherwise fall back to apt-get download python + python-pip.
             if (!bundledDebsPresent()) {
                 onProgress("No bundled debs — downloading via apt-get…")
+                // `apt-get download` does NOT resolve dependencies — every
+                // transitive native lib python3 needs at runtime must be
+                // listed explicitly. Missing any one causes an ImportError
+                // at first `python -m pip` (e.g. libexpat.so.1 missing →
+                // pyexpat.cpython-313-aarch64-linux-android.so fails to dlopen
+                // → pip can't even start). This list mirrors what the full
+                // flavor's fetch-python-bundle.py closure produces.
                 val downloadCmd = """
                     cd $prefix/tmp &&
                     apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\|is not signed\|cannot be authenticated\|apt-key\|Ign:' || true;
-                    apt-get download --allow-unauthenticated python python-pip 2>&1
+                    apt-get download --allow-unauthenticated \
+                        python python-pip \
+                        libffi openssl libsqlite ncurses \
+                        libbz2 liblzma libcrypt readline zlib \
+                        libexpat libandroid-shmem talloc 2>&1
                 """.trimIndent()
                 val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
                 if (dlCode != 0) {
@@ -536,7 +547,9 @@ WEOF
                 // libngtcp2 is a transitive dep of libcurl (HTTP/3 support) —
                 // must be explicitly listed because `apt-get download` does NOT
                 // resolve dependencies, unlike `apt-get install -d`.
-                "libarchive libxml2 liblzma libcurl libuv libnghttp2 libnghttp3 libngtcp2",
+                // libexpat is needed by Python's pyexpat (pip imports it) —
+                // without it `python -m pip` crashes with dlopen libexpat.so.1.
+                "libarchive libxml2 liblzma libcurl libuv libnghttp2 libnghttp3 libngtcp2 libexpat",
                 // Misc
                 "rhash jsoncpp",
             )
