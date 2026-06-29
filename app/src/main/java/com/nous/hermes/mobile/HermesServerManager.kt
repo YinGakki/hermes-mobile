@@ -298,7 +298,15 @@ class HermesServerManager(private val context: Context) {
                     cp -a _python_stage/usr/* "$prefix/" 2>&1
                 fi &&
                 chmod 700 "$prefix/bin/python"* 2>/dev/null
-                chmod 700 "$prefix/bin/pip"* 2>/dev/null
+                # Make every pip* binary executable. Use a for-loop with a
+                # nullglob-style guard (sh doesn't have nullglob, so check
+                # existence) — `chmod 700 pip*` silently does nothing if the
+                # glob doesn't expand, but the resulting `pip: Permission
+                # denied` at install time is hard to diagnose. Iterate so we
+                # also cover pip3, pip3.11, etc.
+                for b in "$prefix/bin/pip" "$prefix/bin/pip3" "$prefix/bin/pip3.11"; do
+                    [ -e "${'$'}b" ] && chmod 700 "${'$'}b" 2>/dev/null
+                done
                 rm -rf _python_stage *.deb 2>/dev/null
                 echo "Python installed"
             """.trimIndent()
@@ -1061,8 +1069,18 @@ H3
                 onProgress("Hermes Agent downloaded via tarball (git clone fallback)")
             }
         } else {
-            onProgress("Hermes repository already present, pulling latest…")
-            runInPrefix("cd ${homeDir}/hermes-agent && git pull --ff-only 2>&1") { onProgress(it) }
+            // The existing hermes-agent/ dir may have come from `git clone`
+            // (has a .git/) OR from a tarball fallback (no .git/). Only
+            // attempt `git pull` when it's actually a git repo — otherwise
+            // git prints "fatal: not a git repository" and the user thinks
+            // something is broken. Tarball dirs are left as-is; reinstall
+            // is handled by pip below.
+            if (File("${homeDir}/hermes-agent/.git").isDirectory) {
+                onProgress("Hermes repository already present, pulling latest…")
+                runInPrefix("cd ${homeDir}/hermes-agent && git pull --ff-only 2>&1") { onProgress(it) }
+            } else {
+                onProgress("Hermes Agent already present (tarball), skipping git pull…")
+            }
         }
 
         // Reuse existing venv if it looks healthy. Recreating it would
@@ -1157,11 +1175,21 @@ H3
         ) {
             onProgress("Installing Hermes (pip install -e .[termux]) — this may take a minute…")
             phase1Output.clear()
+            // Use `python -m pip` (NOT bare `pip`):
+            // - The venv was created with --without-pip, so there's no
+            //   `pip` binary inside .venv/bin/. Bare `pip` resolves via
+            //   PATH to the system $prefix/bin/pip, which may lack the
+            //   executable bit (chmod 700 pip* glob can miss it depending
+            //   on the deb's filename), giving "pip: Permission denied".
+            // - `python -m pip` invokes the pip *module* through the
+            //   python interpreter, which only needs python's executable
+            //   bit (always set correctly). It resolves pip from
+            //   sys.path — the venv's --system-site-packages picks up the
+            //   system pip module. Packages still install into the venv.
             val cmd = """
                 cd ${homeDir}/hermes-agent &&
                 . .venv/bin/activate &&
-                pip install --upgrade pip 2>&1 | tail -1 &&
-                pip install $pipArgs -e '.[termux]' -c constraints-termux.txt 2>&1
+                python -m pip install $pipArgs -e '.[termux]' -c constraints-termux.txt 2>&1
             """.trimIndent()
             runInPrefix(cmd, onOutput = {
                 onProgress(it)
@@ -1216,7 +1244,7 @@ H3
                 val cmd = """
                     cd ${homeDir}/hermes-agent &&
                     . .venv/bin/activate &&
-                    pip install $pipArgs --no-binary=:all: -e '.[termux]' -c constraints-termux.txt 2>&1
+                    python -m pip install $pipArgs --no-binary=:all: -e '.[termux]' -c constraints-termux.txt 2>&1
                 """.trimIndent()
                 runInPrefix(cmd, onOutput = { onProgress(it) }) == 0
             }
