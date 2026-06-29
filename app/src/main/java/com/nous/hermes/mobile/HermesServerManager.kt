@@ -1488,7 +1488,22 @@ WEOF
             elif [ -d "_compile_stage/usr" ]; then
                 cp -a _compile_stage/usr/* "$prefix/" 2>&1
             fi &&
-            rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null
+            rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null;
+            chmod 755 "$prefix/bin/clang" "$prefix/bin/clang++" \
+                "$prefix/bin/aarch64-linux-android-clang" \
+                "$prefix/bin/aarch64-linux-android-clang++" \
+                "$prefix/bin/rustc" "$prefix/bin/cargo" \
+                "$prefix/bin/rustfmt" "$prefix/bin/rustdoc" \
+                "$prefix/bin/lld" "$prefix/bin/lld-link" \
+                "$prefix/bin/ld.lld" "$prefix/bin/ld64.lld" \
+                "$prefix/bin/llvm-ar" "$prefix/bin/llvm-nm" \
+                "$prefix/bin/llvm-objcopy" "$prefix/bin/llvm-objdump" \
+                "$prefix/bin/llvm-strip" "$prefix/bin/llvm-ranlib" 2>/dev/null;
+            find "$prefix/libexec/rustlib" -type f -name 'rustc*' -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/libexec/rustlib" -type f -name 'rustfmt*' -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/libexec/rustlib" -type f -name 'miri*' -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/libexec/rustlib" -type f -name 'cargo*' -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/lib" -type f -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
             echo "Compile toolchain installed"
         """.trimIndent()
         val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
@@ -1503,6 +1518,33 @@ WEOF
         if (!rustOk || !clangOk) {
             Log.e(TAG, "rust/clang missing after extract (rust=$rustOk, clang=$clangOk)")
             return false
+        }
+        // Smoke-test executability — Android's `cp -a` does not always
+        // preserve mode bits from dpkg-deb -x, so even though the file
+        // exists it may still fail with EACCES when invoked. We catch
+        // this here (instead of letting pip die mid-build with a
+        // confusing "Permission denied" deep inside Cython) and retry
+        // chmod once more.
+        val clangTest = runInPrefix(
+            "$prefix/bin/clang --version 2>&1 | head -1",
+            onOutput = { onProgress(it) },
+        )
+        if (clangTest != 0) {
+            Log.w(TAG, "clang exists but not executable (exit=$clangTest) — retrying chmod")
+            onProgress("clang 权限异常，重新修复…")
+            runInPrefix(
+                "chmod 755 $prefix/bin/clang $prefix/bin/clang++ " +
+                    "$prefix/bin/aarch64-linux-android-clang " +
+                    "$prefix/bin/aarch64-linux-android-clang++ " +
+                    "$prefix/bin/rustc $prefix/bin/cargo 2>&1",
+                onOutput = { onProgress(it) },
+            )
+            val retest = runInPrefix("$prefix/bin/clang --version 2>&1 | head -1")
+            if (retest != 0) {
+                Log.e(TAG, "clang still not executable after chmod retry")
+                onProgress("错误：clang 无法执行（Permission denied）")
+                return false
+            }
         }
         onProgress("rust + clang ready")
 
