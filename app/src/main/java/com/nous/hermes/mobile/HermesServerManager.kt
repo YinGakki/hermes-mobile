@@ -539,8 +539,10 @@ WEOF
             // Official Hermes pkg list + transitive build tools needed to
             // compile native Python wheels (cryptography, cffi, etc).
             val pkgGroups = listOf(
-                // Hermes official Termux pkg list
-                "git python clang rust make pkg-config libffi openssl nodejs ripgrep ffmpeg",
+                // Hermes official Termux pkg list (ffmpeg skipped — Hermes core
+                // doesn't need it, only the optional audio/video extras do,
+                // and it's ~30MB we'd rather not download on lite).
+                "git python clang rust make pkg-config libffi openssl nodejs ripgrep",
                 // Transitive native build toolchain (needed by rust + cffi + cryptography)
                 "cmake binutils lld libllvm libedit ndk-sysroot ndk-multilib libcompiler-rt",
                 // Shared libs that some Hermes extras link against.
@@ -1452,8 +1454,10 @@ WEOF
             Log.w(TAG, "apt-get update failed (non-fatal — proceeding with download anyway)")
         }
 
-        // Download rust + clang + ffmpeg. These are big (~600MB) so retry.
-        val pkgs = if (File("$prefix/bin/ffmpeg").exists()) "rust clang" else "rust clang ffmpeg"
+        // Download rust + clang. (~570MB — ffmpeg intentionally excluded;
+        // Hermes core doesn't use it and it adds ~30MB. Users who need
+        // audio/video extras can `pkg install ffmpeg` manually later.)
+        val pkgs = "rust clang"
         val dlOk = runWithRetry(
             maxAttempts = 3,
             baseDelayMs = 3000L,
@@ -1471,11 +1475,11 @@ WEOF
         }
 
         // Extract them into the prefix
-        onProgress("Extracting rust/clang/ffmpeg…")
+        onProgress("Extracting rust/clang…")
         val extractCmd = """
             cd $prefix/tmp &&
             mkdir -p _compile_stage &&
-            for deb in rust*.deb clang*.deb clang-*.deb ffmpeg*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb libcompiler-rt*.deb; do
+            for deb in rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb libcompiler-rt*.deb; do
                 [ -f "${'$'}deb" ] || continue
                 echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _compile_stage/ 2>&1
             done &&
@@ -1484,7 +1488,7 @@ WEOF
             elif [ -d "_compile_stage/usr" ]; then
                 cp -a _compile_stage/usr/* "$prefix/" 2>&1
             fi &&
-            rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb ffmpeg*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null
+            rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null
             echo "Compile toolchain installed"
         """.trimIndent()
         val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
