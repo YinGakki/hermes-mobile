@@ -829,6 +829,68 @@ H3
     }
 
     /**
+     * Ensure Python's native runtime libraries are present.
+     *
+     * If Python was installed by an older APK version (or by a
+     * runInstallAll that skipped installPython because bin/python3
+     * already existed), critical .so files may be missing. The most
+     * common one is libexpat.so.1 — without it `python -m pip` crashes
+     * at startup because pip imports xmlrpc.client → pyexpat → libexpat.
+     *
+     * This checks each known-critical lib and downloads the matching
+     * Termux package on demand if the .so is absent. Safe to call
+     * repeatedly — it's a no-op once all libs are present.
+     */
+    private fun ensurePythonRuntimeDeps(prefix: String, onProgress: (String) -> Unit) {
+        // Map of (missing .so path) -> (Termux package name to download).
+        // These are the libs Python's stdlib dlopens at import time —
+        // missing any one makes `python -m pip` (and thus the whole
+        // Hermes install) fail before it can do anything useful.
+        val requiredLibs = listOf(
+            "lib/libexpat.so.1" to "libexpat",
+            "lib/libffi.so" to "libffi",
+            "lib/libssl.so" to "openssl",
+            "lib/libsqlite.so" to "libsqlite",
+            "lib/libcrypto.so" to "openssl",
+            "lib/libncursesw.so" to "ncurses",
+            "lib/libbz2.so.1.0" to "libbz2",
+            "lib/liblzma.so" to "liblzma",
+            "lib/libz.so.1" to "zlib",
+            "lib/libreadline.so" to "readline",
+        )
+        val missing = requiredLibs.filter { !File(prefix, it.first).exists() }.map { it.second }.distinct()
+        if (missing.isEmpty()) return
+
+        onProgress("Python native libs missing: ${missing.joinToString()} — downloading…")
+        val termuxPrefix = "/data/data/com.termux/files/usr"
+        val cmd = """
+            cd $prefix/tmp &&
+            apt-get download --allow-unauthenticated ${'$'}{missing.joinToString(" ")} 2>&1 &&
+            mkdir -p _pylibs_stage &&
+            for deb in *.deb; do
+                [ -f "${'$'}deb" ] || continue
+                case "${'$'}deb" in
+                    libexpat*|libffi*|openssl*|libsqlite*|ncurses*|libbz2*|liblzma*|zlib*|readline*) dpkg-deb -x "${'$'}deb" _pylibs_stage/ 2>&1 ;;
+                esac
+            done &&
+            if [ -d "_pylibs_stage$termuxPrefix" ]; then
+                cp -a _pylibs_stage$termuxPrefix/* "$prefix/" 2>&1
+            elif [ -d "_pylibs_stage/usr" ]; then
+                cp -a _pylibs_stage/usr/* "$prefix/" 2>&1
+            fi &&
+            rm -rf _pylibs_stage *.deb 2>/dev/null
+            echo "Python native libs installed"
+        """.trimIndent()
+        val rc = runInPrefix(cmd, onOutput = { onProgress(it) })
+        if (rc != 0) {
+            Log.w(TAG, "ensurePythonRuntimeDeps: download failed (code=$rc)")
+            onProgress("Warning: some Python native libs failed to install — pip may crash")
+        } else {
+            onProgress("Python native libs installed")
+        }
+    }
+
+    /**
      * Configure git to rewrite SSH GitHub URLs to HTTPS (we don't have ssh
      * in our prefix). Required because Hermes git clone may pull submodules
      * over SSH.
@@ -969,6 +1031,12 @@ H3
         // with "cannot locate symbol ngtcp2_crypto_get_path_challenge_data2_cb".
         // This is a targeted fix that downloads just the missing lib.
         ensureCurlDeps(prefix, onProgress)
+
+        // Ensure Python's native runtime libs are present. If Python was
+        // installed by an older APK (or skipped because bin/python3 already
+        // existed), libexpat.so.1 may be missing — and `python -m pip`
+        // crashes at startup importing pyexpat. Download on demand.
+        ensurePythonRuntimeDeps(prefix, onProgress)
 
         // Clone Hermes (idempotent + retry). GitHub may be blocked in some
         // networks (e.g. GFW in China), so we try multiple clone URLs
