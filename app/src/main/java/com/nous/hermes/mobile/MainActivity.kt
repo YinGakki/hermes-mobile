@@ -366,14 +366,15 @@ class MainActivity : AppCompatActivity() {
         setStepButtonState(step, true)
         activeThread = Thread {
             try {
-                updateProgress(stepLabel(step))
+                beginStepProgress(step)
                 when (step) {
                     "proot" -> installProot()
                     "python" -> installPython()
                     "buildDeps" -> installBuildDeps()
                     "hermes" -> installHermes()
                 }
-                if (allStepsDone()) updateProgress(getString(R.string.progress_done))
+                completeStepProgress(step)
+                if (allStepsDone()) applyProgressUi(100, getString(R.string.progress_done))
                 runOnUiThread {
                     releaseInstallLock()
                     if (allStepsDone()) showDoneScreen()
@@ -396,22 +397,26 @@ class MainActivity : AppCompatActivity() {
         activeThread = Thread {
             try {
                 if (!serverManager.isProotInstalled()) {
-                    updateProgress(getString(R.string.step_proot))
+                    beginStepProgress("proot")
                     installProot()
+                    completeStepProgress("proot")
                 }
                 if (!serverManager.isPythonInstalled()) {
-                    updateProgress(getString(R.string.step_python))
+                    beginStepProgress("python")
                     installPython()
+                    completeStepProgress("python")
                 }
                 if (!isBuildDepsInstalled()) {
-                    updateProgress(getString(R.string.step_build_deps))
+                    beginStepProgress("buildDeps")
                     installBuildDeps()
+                    completeStepProgress("buildDeps")
                 }
                 if (!serverManager.isHermesInstalled()) {
-                    updateProgress(getString(R.string.step_hermes))
+                    beginStepProgress("hermes")
                     installHermes()
+                    completeStepProgress("hermes")
                 }
-                updateProgress(getString(R.string.progress_done))
+                applyProgressUi(100, getString(R.string.progress_done))
                 runOnUiThread {
                     releaseInstallLock()
                     if (allStepsDone()) showDoneScreen()
@@ -822,24 +827,6 @@ class MainActivity : AppCompatActivity() {
         else -> getString(R.string.progress_starting)
     }
 
-    /**
-     * Refresh the overall install progress bar from the background install
-     * thread. Maps the 4 install steps to 0/25/50/75/100%. Safe to call off
-     * the main thread — UI mutations are posted to the main looper.
-     */
-    private fun updateProgress(label: String) {
-        val pct = computeOverallProgress() * 100 / 4
-        runOnUiThread {
-            if (!isInstallInProgress) return@runOnUiThread
-            installProgressContainer.visibility = View.VISIBLE
-            installProgressBar.isIndeterminate = false
-            installProgressBar.max = 100
-            installProgressBar.progress = pct
-            progressPercentText.text = "$pct%"
-            progressStepLabel.text = label
-        }
-    }
-
     private val logUpdateHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val pendingLogs = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val logFlushRunnable = object : Runnable {
@@ -863,22 +850,88 @@ class MainActivity : AppCompatActivity() {
     private var heartbeatRunnable: Runnable? = null
     private var lastProgressTime = 0L
 
+    // ── Sub-step progress (live progress bar within each step) ──────────────
+    // Each of the 4 install steps owns a 25%-wide band of the overall bar:
+    //   proot     [0, 25)
+    //   python    [25, 50)
+    //   buildDeps [50, 75)
+    //   hermes    [75, 100]
+    // On step start, the bar jumps to bandStart + 2 (visible "started"
+    // movement). The heartbeat tick below nudges it +1 every 3s, capping at
+    // bandEnd - 3 so the bar never reaches the step's full 25% until the
+    // step actually completes (avoiding the "100% but still installing"
+    // lie). On completion, completeStepProgress() snaps the bar to bandEnd.
+    @Volatile private var currentStepBandStart = 0
+    @Volatile private var currentStepBandEnd = 25
+    @Volatile private var currentStepPct = 0
+
+    private fun stepBand(step: String): Pair<Int, Int> = when (step) {
+        "proot" -> 0 to 25
+        "python" -> 25 to 50
+        "buildDeps" -> 50 to 75
+        "hermes" -> 75 to 100
+        else -> 0 to 100
+    }
+
+    /**
+     * Mark the start of an install step. Jumps the bar to the step's band
+     * start + 2% so the user immediately sees movement when a step begins.
+     */
+    private fun beginStepProgress(step: String) {
+        val (start, end) = stepBand(step)
+        currentStepBandStart = start
+        currentStepBandEnd = end
+        currentStepPct = start + 2
+        applyProgressUi(currentStepPct, stepLabel(step))
+    }
+
+    /**
+     * Mark a step as complete. Snaps the bar to the step's band end.
+     */
+    private fun completeStepProgress(step: String) {
+        val (_, end) = stepBand(step)
+        currentStepPct = end
+        applyProgressUi(currentStepPct, stepLabel(step))
+    }
+
+    private fun applyProgressUi(pct: Int, label: String) {
+        runOnUiThread {
+            if (!isInstallInProgress) return@runOnUiThread
+            installProgressContainer.visibility = View.VISIBLE
+            installProgressBar.isIndeterminate = false
+            installProgressBar.max = 100
+            installProgressBar.progress = pct
+            progressPercentText.text = "$pct%"
+            progressStepLabel.text = label
+        }
+    }
+
     private fun startHeartbeat() {
         heartbeatRunnable?.let { heartbeatHandler.removeCallbacks(it) }
         heartbeatRunnable = object : Runnable {
             override fun run() {
                 val now = System.currentTimeMillis()
-                if (now - lastProgressTime > 5000 && isInstallInProgress) {
-                    val secs = (now - lastProgressTime) / 1000
-                    // Go through appendLog (not logView.append) so the
-                    // heartbeat is batched with pending logs and doesn't
-                    // race the flush runnable on the main thread.
-                    appendLog("… 仍在运行中 (${secs}s)")
+                if (isInstallInProgress) {
+                    // Nudge the sub-step progress bar forward every tick,
+                    // capped 3% below the step's band end so completion is
+                    // the only thing that fills the last few percent.
+                    val cap = currentStepBandEnd - 3
+                    if (currentStepPct < cap) {
+                        currentStepPct = (currentStepPct + 1).coerceAtMost(cap)
+                        applyProgressUi(currentStepPct, progressStepLabel.text?.toString() ?: "")
+                    }
+                    // Log a heartbeat only when no pip/apt output has
+                    // arrived for >5s, so the user can tell a hang from
+                    // a merely-quiet phase.
+                    if (now - lastProgressTime > 5000) {
+                        val secs = (now - lastProgressTime) / 1000
+                        appendLog("… 仍在运行中 (${secs}s)")
+                    }
                 }
-                heartbeatHandler.postDelayed(this, 5000)
+                heartbeatHandler.postDelayed(this, 3000)
             }
         }
-        heartbeatHandler.postDelayed(heartbeatRunnable!!, 5000)
+        heartbeatHandler.postDelayed(heartbeatRunnable!!, 3000)
     }
 
     private fun stopHeartbeat() {
