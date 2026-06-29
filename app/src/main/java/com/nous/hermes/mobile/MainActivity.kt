@@ -851,37 +851,43 @@ class MainActivity : AppCompatActivity() {
     private var lastProgressTime = 0L
 
     // ── Sub-step progress (live progress bar within each step) ──────────────
-    // Each of the 4 install steps owns a 25%-wide band of the overall bar:
-    //   proot     [0, 25)
-    //   python    [25, 50)
-    //   buildDeps [50, 75)
-    //   hermes    [75, 100]
-    // On step start, the bar jumps to bandStart + 2 (visible "started"
-    // movement). The heartbeat tick below nudges it +1 every 3s, capping at
-    // bandEnd - 3 so the bar never reaches the step's full 25% until the
+    // Band allocation is proportional to ACTUAL measured install time, not
+    // even-split. Empirical timings (from real device logs):
+    //   proot     ~10s     → 0–3%
+    //   python    ~20s     → 3–10%
+    //   buildDeps ~3min    → 10–30%   (286MB download + 28 deb extract)
+    //   hermes    20–40min → 30–99%   (git clone + venv + pip + native compile)
+    // On step start, the bar jumps to bandStart + 1 (visible "started"
+    // movement). The heartbeat tick below nudges it +1 every 5s, capping at
+    // bandEnd - 1 so the bar never reaches the step's full band until the
     // step actually completes (avoiding the "100% but still installing"
     // lie). On completion, completeStepProgress() snaps the bar to bandEnd.
     @Volatile private var currentStepBandStart = 0
-    @Volatile private var currentStepBandEnd = 25
+    @Volatile private var currentStepBandEnd = 3
     @Volatile private var currentStepPct = 0
 
     private fun stepBand(step: String): Pair<Int, Int> = when (step) {
-        "proot" -> 0 to 25
-        "python" -> 25 to 50
-        "buildDeps" -> 50 to 75
-        "hermes" -> 75 to 100
+        "proot" -> 0 to 3
+        "python" -> 3 to 10
+        "buildDeps" -> 10 to 30
+        "hermes" -> 30 to 100
         else -> 0 to 100
     }
 
     /**
      * Mark the start of an install step. Jumps the bar to the step's band
-     * start + 2% so the user immediately sees movement when a step begins.
+     * start + 1 (proot/python/buildDeps) or bandStart (hermes, since its
+     * band is huge — sub-phase progress will drive it forward) so the
+     * user immediately sees movement when a step begins.
      */
     private fun beginStepProgress(step: String) {
         val (start, end) = stepBand(step)
         currentStepBandStart = start
         currentStepBandEnd = end
-        currentStepPct = start + 2
+        // For narrow bands (proot/python/buildDeps), jump +1 to show we
+        // started. For hermes (70-wide band), the sub-phase progress
+        // callback will push it forward — starting at bandStart is fine.
+        currentStepPct = if (end - start > 30) start else start + 1
         applyProgressUi(currentStepPct, stepLabel(step))
     }
 
@@ -912,12 +918,20 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 val now = System.currentTimeMillis()
                 if (isInstallInProgress) {
-                    // Nudge the sub-step progress bar forward every tick,
-                    // capped 3% below the step's band end so completion is
-                    // the only thing that fills the last few percent.
-                    val cap = currentStepBandEnd - 3
+                    // Nudge the sub-step progress bar forward every tick.
+                    // Tick interval = 5s; we size the per-tick nudge so the
+                    // band fills in roughly the step's expected runtime:
+                    //   band 3 wide  (proot)    → +1/tick = 15s to fill (fast step)
+                    //   band 7 wide  (python)   → +1/tick = 35s to fill
+                    //   band 20 wide (buildDeps) → +1/tick = 100s (~1.5min)
+                    //   band 70 wide (hermes)    → +1/tick = 350s (~6min, capped at bandEnd-1)
+                    // The cap at bandEnd - 1 reserves the last percent for
+                    // actual completion (no "100% but still installing" lie).
+                    val bandWidth = currentStepBandEnd - currentStepBandStart
+                    val nudge = if (bandWidth <= 20) 1 else (bandWidth / 70).coerceAtLeast(1)
+                    val cap = currentStepBandEnd - 1
                     if (currentStepPct < cap) {
-                        currentStepPct = (currentStepPct + 1).coerceAtMost(cap)
+                        currentStepPct = (currentStepPct + nudge).coerceAtMost(cap)
                         applyProgressUi(currentStepPct, progressStepLabel.text?.toString() ?: "")
                     }
                     // Log a heartbeat only when no pip/apt output has
@@ -928,10 +942,10 @@ class MainActivity : AppCompatActivity() {
                         appendLog("… 仍在运行中 (${secs}s)")
                     }
                 }
-                heartbeatHandler.postDelayed(this, 3000)
+                heartbeatHandler.postDelayed(this, 5000)
             }
         }
-        heartbeatHandler.postDelayed(heartbeatRunnable!!, 3000)
+        heartbeatHandler.postDelayed(heartbeatRunnable!!, 5000)
     }
 
     private fun stopHeartbeat() {
@@ -946,6 +960,12 @@ class MainActivity : AppCompatActivity() {
         }
         lastProgressTime = System.currentTimeMillis()
         pendingLogs.add(text)
+        // Drive progress bar by matching real install log output.
+        // Each line is checked against known milestones from actual
+        // device logs, and the bar jumps to the matching percentage.
+        // This is more accurate than a heartbeat timer because it
+        // reflects what's ACTUALLY happening, not just elapsed time.
+        applyLogBasedProgress(text)
         // Batch flush every 200ms instead of per-line to avoid
         // flooding the main thread with UI updates
         if (pendingLogs.size >= 5) {
@@ -955,6 +975,87 @@ class MainActivity : AppCompatActivity() {
             logUpdateHandler.removeCallbacks(logFlushRunnable)
             logUpdateHandler.postDelayed(logFlushRunnable, 200)
         }
+    }
+
+    /**
+     * Map real install log lines to progress bar percentages.
+     *
+     * Band allocation is proportional to ACTUAL measured install time:
+     *   proot     ~10s     → 0–3%
+     *   python    ~20s     → 3–10%
+     *   buildDeps ~3min    → 10–30%   (286MB download + 28 deb extract)
+     *   hermes    20–40min → 30–100%  (git clone + venv + pip + native compile)
+     *
+     * Within each step, specific log lines push the bar forward to a
+     * fixed checkpoint. Unknown lines fall through to the heartbeat
+     * timer (+1 every 5s, capped at bandEnd - 1).
+     */
+    private fun applyLogBasedProgress(line: String) {
+        // Trim and normalize for matching (log lines often have trailing
+        // punctuation or variable content like counts/versions).
+        val l = line.trim()
+
+        // proot step (0-3%)
+        when {
+            l.startsWith("Downloading proot") -> setProgress(1, "proot")
+            l.startsWith("Using bundled proot") -> setProgress(2, "proot")
+            l.startsWith("Extracting proot") -> setProgress(2, "proot")
+            l == "proot installed" || l.startsWith("✓ proot") -> setProgress(3, "proot")
+        }
+
+        // python step (3-10%)
+        when {
+            l.startsWith("No bundled debs") || l.startsWith("Downloading Python") -> setProgress(4, "python")
+            l.startsWith("Using bundled python") -> setProgress(5, "python")
+            l.startsWith("Extracting Python") -> setProgress(6, "python")
+            l == "Python installed" || l == "Python ready" || l.startsWith("✓ Python") -> setProgress(10, "python")
+        }
+
+        // buildDeps step (10-30%)
+        when {
+            l.startsWith("Downloading build dependencies") -> setProgress(11, "buildDeps")
+            l.startsWith("Verifying downloaded .deb") -> setProgress(22, "buildDeps")
+            l.startsWith("Using bundled build deps") -> setProgress(15, "buildDeps")
+            l.startsWith("Extracting build dependencies") -> setProgress(23, "buildDeps")
+            l.startsWith("Fixing git-core") -> setProgress(27, "buildDeps")
+            l.startsWith("Patching make") -> setProgress(28, "buildDeps")
+            l.startsWith("Creating header stubs") -> setProgress(29, "buildDeps")
+            l.startsWith("Marked build deps") || l.startsWith("✓ build deps") -> setProgress(30, "buildDeps")
+        }
+
+        // hermes step (30-100%)
+        when {
+            l.startsWith("Cloning Hermes Agent") -> setProgress(32, "hermes")
+            l.startsWith("Git clone failed, trying tarball") -> setProgress(33, "hermes")
+            l.startsWith("Extracting tarball") -> setProgress(36, "hermes")
+            l.startsWith("Hermes Agent downloaded via tarball") -> setProgress(38, "hermes")
+            l.startsWith("Hermes repository already present") -> setProgress(38, "hermes")
+            l.startsWith("Hermes Agent already present") -> setProgress(38, "hermes")
+            l.startsWith("Python venv already exists") -> setProgress(42, "hermes")
+            l.startsWith("Creating Python venv") -> setProgress(40, "hermes")
+            l.startsWith("Phase 1: try installing") -> setProgress(45, "hermes")
+            l.startsWith("Installing Hermes (pip install") -> setProgress(48, "hermes")
+            l.startsWith("Phase 1 FAILED") -> setProgress(52, "hermes")
+            l.startsWith("Lite 版无预编译 wheel") -> setProgress(54, "hermes")
+            l.startsWith("Phase 2: downloading rust") -> setProgress(55, "hermes")
+            l.startsWith("Extracting rust/clang") -> setProgress(60, "hermes")
+            l == "rust + clang ready" -> setProgress(65, "hermes")
+            l.startsWith("Compiling native packages from source") -> setProgress(70, "hermes")
+            l.startsWith("Linking hermes binary") -> setProgress(92, "hermes")
+            l.startsWith("Verifying Hermes install") -> setProgress(96, "hermes")
+            l.startsWith("✓ Hermes Agent") -> setProgress(100, "hermes")
+        }
+    }
+
+    /**
+     * Set the progress bar to a specific percentage, but only if it's
+     * higher than the current value (progress is monotonic — we never
+     * let it go backwards, even if log lines arrive out of order).
+     */
+    private fun setProgress(pct: Int, step: String) {
+        if (pct <= currentStepPct) return
+        currentStepPct = pct
+        applyProgressUi(pct, stepLabel(step))
     }
 
     // ── System helpers ──────────────────────────────────────────────────────
