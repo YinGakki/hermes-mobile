@@ -1489,21 +1489,16 @@ WEOF
                 cp -a _compile_stage/usr/* "$prefix/" 2>&1
             fi &&
             rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null;
-            chmod 755 "$prefix/bin/clang" "$prefix/bin/clang++" \
-                "$prefix/bin/aarch64-linux-android-clang" \
-                "$prefix/bin/aarch64-linux-android-clang++" \
-                "$prefix/bin/rustc" "$prefix/bin/cargo" \
-                "$prefix/bin/rustfmt" "$prefix/bin/rustdoc" \
-                "$prefix/bin/lld" "$prefix/bin/lld-link" \
-                "$prefix/bin/ld.lld" "$prefix/bin/ld64.lld" \
-                "$prefix/bin/llvm-ar" "$prefix/bin/llvm-nm" \
-                "$prefix/bin/llvm-objcopy" "$prefix/bin/llvm-objdump" \
-                "$prefix/bin/llvm-strip" "$prefix/bin/llvm-ranlib" 2>/dev/null;
-            find "$prefix/libexec/rustlib" -type f -name 'rustc*' -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/libexec/rustlib" -type f -name 'rustfmt*' -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/libexec/rustlib" -type f -name 'miri*' -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/libexec/rustlib" -type f -name 'cargo*' -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/lib" -type f -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
+            # Robust executability fix: Android's `cp -a` doesn't always
+            # preserve mode bits from dpkg-deb -x. Use find to chmod every
+            # regular file in bin/ and libexec/ (rustlib binaries are nested
+            # deep, and clang wrapper scripts may be named clang-18 / lld-18
+            # etc). -type f skips symlinks (their targets get chmod'd directly).
+            find "$prefix/bin" -type f -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/libexec" -type f -exec chmod 755 {} \; 2>/dev/null;
+            # Also chmod dynamic libs in lib/ that may be dlopen'd as code
+            find "$prefix/lib" -name 'librustc_driver*' -type f -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/lib" -name 'libclang*' -type f -exec chmod 755 {} \; 2>/dev/null;
             echo "Compile toolchain installed"
         """.trimIndent()
         val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
@@ -1533,10 +1528,9 @@ WEOF
             Log.w(TAG, "clang exists but not executable (exit=$clangTest) — retrying chmod")
             onProgress("clang 权限异常，重新修复…")
             runInPrefix(
-                "chmod 755 $prefix/bin/clang $prefix/bin/clang++ " +
-                    "$prefix/bin/aarch64-linux-android-clang " +
-                    "$prefix/bin/aarch64-linux-android-clang++ " +
-                    "$prefix/bin/rustc $prefix/bin/cargo 2>&1",
+                "find $prefix/bin -type f -exec chmod 755 {} \\; 2>&1; " +
+                    "find $prefix/libexec -type f -exec chmod 755 {} \\; 2>/dev/null; " +
+                    "echo chmod-done",
                 onOutput = { onProgress(it) },
             )
             val retest = runInPrefix("$prefix/bin/clang --version 2>&1 | head -1")
