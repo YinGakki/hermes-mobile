@@ -1325,12 +1325,20 @@ H3
             }) == 0
         }
 
-        // Phase 2 fallback: if wheel install failed, ask the user whether
-        // to download rust+clang (~600MB) and compile from source. This is
-        // needed when the pre-fetched aarch64 manylinux wheels don't work
-        // on Android's bionic libc (they may segfault at runtime because
-        // they're built against glibc). The user should know which path
-        // they're on before burning 600MB of data.
+        // Phase 2 fallback: if Phase 1 failed, compile native packages from
+        // source. This is needed because PyPI has NO Android-aarch64 wheels
+        // for native deps (cryptography/cffi/pydantic-core/...) — they must
+        // be built on-device with rust+clang.
+        //
+        // WHEN TO ASK THE USER:
+        //   - full flavor (wheel cache present): Phase 1 failing is an
+        //     anomaly (the cache should have covered pure-python deps, and
+        //     native ones should have fallen back to PyPI). Worth asking
+        //     before burning 600MB on rust/clang.
+        //   - lite flavor (NO wheel cache): Phase 1 was guaranteed to fail
+        //     on native packages — there are no Android wheels on PyPI, and
+        //     there's no cache to fall back to. Source compile is the ONLY
+        //     path forward, so asking is just noise. Auto-approve.
         if (!installOk) {
             // Surface the last few pip error lines so the user can see
             // WHY Phase 1 failed (e.g. "ERROR: Could not build wheel for
@@ -1339,14 +1347,24 @@ H3
                 .takeLast(15)
                 .filter { it.isNotBlank() }
             onProgress("════════════════════════════════════════")
-            onProgress("Phase 1 (wheel cache) FAILED. Last pip output:")
+            onProgress("Phase 1 FAILED (no Android-native wheels for crypto/cffi/...). Last pip output:")
             tailLines.forEach { onProgress("  $it") }
             onProgress("════════════════════════════════════════")
-            Log.w(TAG, "pip install from wheel cache failed — asking user about source compile")
 
-            // Ask the user via callback. Default lambda returns true
-            // (auto-approve) for headless/CI runs where no UI is present.
-            val approved = onNeedCompile()
+            val hadWheelCache = wheelCacheDir != null
+            val approved = if (hadWheelCache) {
+                // full flavor: Phase 1 failing is unexpected — let the user
+                // decide whether to burn 600MB on the toolchain.
+                Log.w(TAG, "pip install from wheel cache failed — asking user about source compile")
+                onNeedCompile()
+            } else {
+                // lite flavor: no wheel cache → Phase 1 was always going to
+                // fail on native packages → source compile is mandatory.
+                // Skip the dialog and proceed directly.
+                onProgress("Lite 版无预编译 wheel 缓存，native 包必须从源码编译 — 自动继续…")
+                Log.i(TAG, "lite flavor: auto-approving source compile (no wheel cache, no Android wheels on PyPI)")
+                true
+            }
             if (!approved) {
                 Log.e(TAG, "User declined source compile — install aborted")
                 return false
