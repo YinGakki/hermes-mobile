@@ -142,6 +142,9 @@ class MainActivity : AppCompatActivity() {
         requestBatteryOptimizationExemption()
         startForegroundService()
 
+        // Grey out tabs that require Hermes to be installed (Dashboard / Settings).
+        refreshNavTabs()
+
         btnProot.setOnClickListener { runStep("proot") }
         btnPython.setOnClickListener { runStep("python") }
         btnBuildDeps.setOnClickListener { runStep("buildDeps") }
@@ -228,6 +231,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Enable/disable bottom-nav tabs based on install state.
+     * Before Hermes is installed, only Install + Logs are usable.
+     * Dashboard + Settings tabs are greyed out so users can't navigate
+     * to actions that would fail (open shell/chat need Hermes installed).
+     */
+    private fun refreshNavTabs() {
+        val installed = serverManager.isHermesInstalled()
+        val menu = bottomNav.menu
+        menu.findItem(R.id.nav_install)?.isEnabled = true
+        menu.findItem(R.id.nav_logs)?.isEnabled = true
+        menu.findItem(R.id.nav_dashboard)?.isEnabled = installed
+        menu.findItem(R.id.nav_settings)?.isEnabled = installed
+    }
+
+    /**
      * Show the "ready" header if Hermes is installed, otherwise the
      * "not ready" placeholder. The quick-action cards are hidden until
      * installation completes so users don't tap actions that can't work.
@@ -275,6 +293,8 @@ class MainActivity : AppCompatActivity() {
         statusText.visibility = View.VISIBLE
         statusText.text = getString(R.string.status_initializing)
         logView.text = ""
+        // Disable Dashboard/Settings tabs again until install completes.
+        refreshNavTabs()
         extractBootstrap()
     }
 
@@ -284,6 +304,7 @@ class MainActivity : AppCompatActivity() {
         statusDetail.visibility = View.GONE
         stepsContainer.visibility = View.VISIBLE
         refreshStepButtons()
+        refreshNavTabs()
     }
 
     // ── Step runner ─────────────────────────────────────────────────────────
@@ -335,6 +356,9 @@ class MainActivity : AppCompatActivity() {
         logUpdateHandler.post(logFlushRunnable)
         installProgressContainer.visibility = View.GONE
         refreshStepButtons()
+        // A step may have just completed (e.g. Hermes installed) — refresh
+        // the enabled state of the Dashboard/Settings nav tabs accordingly.
+        refreshNavTabs()
     }
 
     private fun runStep(step: String) {
@@ -531,6 +555,7 @@ class MainActivity : AppCompatActivity() {
     private fun showDoneScreen() {
         // Auto-switch to the Dashboard page after install completes.
         stepsContainer.visibility = View.GONE
+        refreshNavTabs()
         refreshDashboardState()
         updateChatButtonLabel()
         bottomNav.selectedItemId = R.id.nav_dashboard
