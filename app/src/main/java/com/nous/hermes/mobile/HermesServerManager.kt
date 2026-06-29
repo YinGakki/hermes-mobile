@@ -283,7 +283,7 @@ class HermesServerManager(private val context: Context) {
                         python python-pip \
                         libffi openssl libsqlite ncurses \
                         libbz2 liblzma libcrypt readline zlib \
-                        libexpat libandroid-shmem talloc 2>&1
+                        libexpat libandroid-shmem libtalloc 2>&1
                 """.trimIndent()
                 val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
                 if (dlCode != 0) {
@@ -693,6 +693,14 @@ WEOF
         var lastError: Boolean = false
         for (attempt in 1..maxAttempts) {
             if (attempt > 1) {
+                // A previous attempt likely died holding apt/dpkg locks
+                // (apt-get can sit for minutes on a hung network read
+                // before timing out). The next retry would immediately
+                // hit "Could not get lock ... held by process N (apt-get)"
+                // and fail the same way. Kill any leftover apt/dpkg and
+                // remove the lock files before sleeping, so the retry
+                // starts from a clean slate.
+                killStaleAptProcesses(onProgress)
                 val delay = baseDelayMs * (1L shl (attempt - 2))
                 onProgress("Retry $attempt/$maxAttempts for $what (waiting ${delay}ms)…")
                 try { Thread.sleep(delay) } catch (_: InterruptedException) {}
@@ -701,6 +709,32 @@ WEOF
             if (!lastError) return true
         }
         return !lastError
+    }
+
+    /**
+     * Kill any apt-get/dpkg processes still running from a previous attempt
+     * and remove their lock files. Idempotent — safe to call when nothing
+     * is running.
+     */
+    private fun killStaleAptProcesses(onProgress: (String) -> Unit) {
+        val paths = BootstrapInstaller.getPaths(context)
+        val prefix = paths.prefixDir
+        val cmd = """
+            # Kill leftover apt-get / dpkg from a previous (failed) attempt.
+            # `pgrep` is part of Termux's procps and is in the bootstrap.
+            for p in $(pgrep apt-get 2>/dev/null) $(pgrep dpkg 2>/dev/null); do
+                kill -9 "$p" 2>/dev/null
+            done
+            # Remove lock files they may have left behind.
+            rm -f "$prefix/var/cache/apt/archives/lock" \
+                  "$prefix/var/cache/apt/archives/lock-frontend" \
+                  "$prefix/var/lib/apt/lists/lock" \
+                  "$prefix/var/lib/dpkg/lock" \
+                  "$prefix/var/lib/dpkg/lock-frontend" 2>/dev/null
+            echo "cleaned apt locks"
+        """.trimIndent()
+        runInPrefix(cmd) { line -> Log.d(TAG, "[cleanup] $line") }
+        onProgress("Cleared stale apt locks before retry")
     }
 
     private fun fixGitCoreShebangs(prefix: String) {
