@@ -455,8 +455,13 @@ class MainActivity : AppCompatActivity() {
         val ok = serverManager.installHermes(
             onProgress = { msg -> appendLog(msg) },
             onNeedCompile = {
+                // Phase 1 failed and source compile is needed. Log this so
+                // the user sees WHY the install paused — without this, the
+                // 120s wait for the dialog looks like an ANR.
+                appendLog("⏳ Phase 1 失败，等待你确认是否下载工具链并从源码编译…")
                 var approved = false
                 runOnUiThread { approved = askUserAboutCompile() }
+                if (approved) appendLog("已确认编译，开始下载工具链…") else appendLog("已取消编译")
                 approved
             },
         )
@@ -860,8 +865,10 @@ class MainActivity : AppCompatActivity() {
                 val now = System.currentTimeMillis()
                 if (now - lastProgressTime > 5000 && isInstallInProgress) {
                     val secs = (now - lastProgressTime) / 1000
-                    logView.append("… 仍在运行中 (${secs}s)\n")
-                    logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+                    // Go through appendLog (not logView.append) so the
+                    // heartbeat is batched with pending logs and doesn't
+                    // race the flush runnable on the main thread.
+                    appendLog("… 仍在运行中 (${secs}s)")
                 }
                 heartbeatHandler.postDelayed(this, 5000)
             }

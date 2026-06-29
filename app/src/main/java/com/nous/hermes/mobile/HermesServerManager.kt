@@ -1189,9 +1189,12 @@ H3
             val cmd = """
                 cd ${homeDir}/hermes-agent &&
                 . .venv/bin/activate &&
-                python -m pip install $pipArgs -e '.[termux]' -c constraints-termux.txt 2>&1
+                python -m pip install --retries 3 --timeout 60 $pipArgs -e '.[termux]' -c constraints-termux.txt 2>&1
             """.trimIndent()
-            runInPrefix(cmd, onOutput = {
+            // 10-minute timeout: PyPI downloads can be slow on mobile networks
+            // but an indefinite hang (DNS stuck, mirror down) makes the app
+            // look frozen. pip prints progress per-package, so 10 min is plenty.
+            runInPrefix(cmd, timeoutMs = 10 * 60 * 1000L, onOutput = {
                 onProgress(it)
                 phase1Output.appendLine(it)
             }) == 0
@@ -1244,9 +1247,12 @@ H3
                 val cmd = """
                     cd ${homeDir}/hermes-agent &&
                     . .venv/bin/activate &&
-                    python -m pip install $pipArgs --no-binary=:all: -e '.[termux]' -c constraints-termux.txt 2>&1
+                    python -m pip install --retries 3 --timeout 60 $pipArgs --no-binary=:all: -e '.[termux]' -c constraints-termux.txt 2>&1
                 """.trimIndent()
-                runInPrefix(cmd, onOutput = { onProgress(it) }) == 0
+                // 30-minute timeout for source compile: building cryptography,
+                // pydantic-core, cffi from source is CPU-heavy and can take
+                // 5-10 min per package on a phone. 30 min covers the full set.
+                runInPrefix(cmd, timeoutMs = 30 * 60 * 1000L, onOutput = { onProgress(it) }) == 0
             }
             if (!compileOk) {
                 Log.e(TAG, "pip install (source compile) failed after retries")
