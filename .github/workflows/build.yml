@@ -77,12 +77,21 @@ jobs:
           fi
           echo "Bootstrap: $(wc -c < "$f") bytes"
 
+      # ─────────────────────────────────────────────────────────────────────
+      # FULL-FLAVOR-ONLY STEPS — temporarily disabled (only building lite).
+      # These download wheels + debs into app/src/full/assets/ for the
+      # offline "full" flavor. They are useless for the lite flavor and
+      # add ~5+ min to CI. Re-enable by removing the `if: false` lines
+      # (and re-add :app:assembleFullRelease to the build step).
+      # ─────────────────────────────────────────────────────────────────────
       - name: Set up Python (for wheel cache fetch)
+        if: false  # lite-only build
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Clone hermes-agent (for pyproject.toml + constraints)
+        if: false  # lite-only build
         shell: bash
         run: |
           set -euo pipefail
@@ -92,6 +101,7 @@ jobs:
           echo "hermes_dir=$RUNNER_TEMP/hermes-agent" >> "$GITHUB_ENV"
 
       - name: Pre-fetch Hermes wheel cache (no-arch + manylinux x86_64)
+        if: false  # lite-only build
         shell: bash
         run: |
           set -euo pipefail
@@ -137,6 +147,7 @@ jobs:
           echo "Total files: $(ls -1 "$wheelhouse" | wc -l)"
 
       - name: Package wheel cache as tarball
+        if: false  # lite-only build
         shell: bash
         run: |
           set -euo pipefail
@@ -151,6 +162,7 @@ jobs:
           echo "Wheel cache size: $(du -h app/src/full/assets/wheels.tar.gz | cut -f1)"
 
       - name: Pre-fetch Python + native deps deb bundle (aarch64)
+        if: false  # lite-only build
         shell: bash
         run: |
           set -euo pipefail
@@ -196,6 +208,7 @@ jobs:
           echo "Total deb files: $(ls -1 "$bundle_dir"/*.deb 2>/dev/null | wc -l)"
 
       - name: Package deb bundle as tarball
+        if: false  # lite-only build
         shell: bash
         run: |
           set -euo pipefail
@@ -210,6 +223,7 @@ jobs:
           echo "Deb bundle size: $(du -h app/src/full/assets/deb-bundle.tar.gz | cut -f1)"
 
       - name: Pre-fetch aarch64 manylinux wheels (best-effort)
+        if: false  # lite-only build
         shell: bash
         run: |
           set -euo pipefail
@@ -273,7 +287,7 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/release.jks"
           echo "Keystore decoded ($(wc -c < "$RUNNER_TEMP/keystore/release.jks") bytes)"
 
-      - name: Build release APK (both flavors)
+      - name: Build release APK (lite flavor only)
         env:
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/keystore/release.jks
           SIGNING_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -282,54 +296,46 @@ jobs:
           HAS_KEYSTORE: ${{ steps.has_keystore.outputs.has_keystore == 'true' }}
         shell: bash
         run: |
-          ./gradlew :app:assembleFullRelease :app:assembleLiteRelease \
+          ./gradlew :app:assembleLiteRelease \
             --no-daemon \
             --stacktrace \
             -Pandroid.builder.sdkDownload=false
 
-      - name: Locate built APKs
+      - name: Locate built APK
         id: apk
         shell: bash
         run: |
           set -euo pipefail
-          full_apk=$(find app/build/outputs/apk/full/release -name '*.apk' | head -n1)
           lite_apk=$(find app/build/outputs/apk/lite/release -name '*.apk' | head -n1)
-          if [ -z "$full_apk" ] || [ -z "$lite_apk" ]; then
-            echo "ERROR: expected 2 APKs, got full=[$full_apk] lite=[$lite_apk]"
+          if [ -z "$lite_apk" ]; then
+            echo "ERROR: lite APK not found"
             exit 1
           fi
-          echo "Full APK: $full_apk ($(wc -c < "$full_apk") bytes)"
           echo "Lite APK: $lite_apk ($(wc -c < "$lite_apk") bytes)"
 
-      - name: Upload APK artifacts
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: hermes-agent-arm64-release
           path: |
-            app/build/outputs/apk/full/release/*.apk
             app/build/outputs/apk/lite/release/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Rename APKs to include short SHA + flavor
+      - name: Rename APK to include short SHA + flavor
         shell: bash
         run: |
           set -euo pipefail
-          full_src=$(find app/build/outputs/apk/full/release -name '*.apk' | head -n1)
           lite_src=$(find app/build/outputs/apk/lite/release -name '*.apk' | head -n1)
-          full_dst="hermes-${GITHUB_SHA::7}-arm64-full.apk"
           lite_dst="hermes-${GITHUB_SHA::7}-arm64-lite.apk"
-          cp "$full_src" "$full_dst"
           cp "$lite_src" "$lite_dst"
-          echo "full_dst=$full_dst" >> "$GITHUB_ENV"
           echo "lite_dst=$lite_dst" >> "$GITHUB_ENV"
-          echo "Renamed: $full_dst ($(du -h "$full_dst" | cut -f1)), $lite_dst ($(du -h "$lite_dst" | cut -f1))"
+          echo "Renamed: $lite_dst ($(du -h "$lite_dst" | cut -f1))"
 
-      - name: Upload both APKs to "latest" pre-release
+      - name: Upload Lite APK to "latest" pre-release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ env.full_dst }}
             ${{ env.lite_dst }}
           # Rolling pre-release: always overwrite the same "latest" tag,
           # never a real published release (prerelease=true).
@@ -338,22 +344,18 @@ jobs:
           body: |
             Rolling pre-release built from `${{ github.sha }}` on `${{ github.run_id }}`.
 
-            ## Two flavors
+            ## Lite flavor (self-download)
 
             | Flavor | Size | Description |
             |--------|------|-------------|
-            | `*-full.apk` | ~225 MB | Offline-complete: bundled debs + wheels. First launch needs only rust/clang + hermes-agent clone (~600MB). |
             | `*-lite.apk` | ~34 MB | Self-download: bootstrap only. First launch downloads everything via apt-get + pip (~1GB). |
-
-            Both flavors have identical functionality — the only difference is which assets are bundled in the APK.
 
             - Arch: arm64-v8a only
             - Min Android: 7.0 (API 24)
             - targetSdk: 28 (intentional, see README → W^X bypass)
             - Signed: ${{ env.HAS_KEYSTORE == '1' }}
 
-            Install: `adb install hermes-XXXXXXX-arm64-full.apk` (or `-lite.apk`, or sideload from file manager).
-            Both flavors can be installed side-by-side (different applicationId suffix).
+            Install: `adb install hermes-XXXXXXX-arm64-lite.apk` (or sideload from file manager).
           prerelease: true
           make_latest: 'false'
           fail_on_unmatched_files: true
