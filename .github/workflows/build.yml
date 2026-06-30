@@ -162,7 +162,9 @@ jobs:
           echo "Wheel cache size: $(du -h app/src/full/assets/wheels.tar.gz | cut -f1)"
 
       - name: Pre-fetch Python + native deps deb bundle (aarch64)
-        if: false  # lite-only build
+        # Lite flavor: bundle ALL packages to avoid runtime download failures
+        # (Termux CDN 403 / connection timeouts on mobile networks).
+        if: true
         shell: bash
         run: |
           set -euo pipefail
@@ -200,7 +202,9 @@ jobs:
             --extra ripgrep --extra rhash --extra jsoncpp \
             --extra libedit --extra ndk-sysroot --extra ndk-multilib --extra libcompiler-rt \
             --extra nodejs --extra npm --extra c-ares --extra libicu \
-            --extra cmake --extra libllvm --extra lld
+            --extra cmake --extra libllvm --extra lld \
+            --extra clang --extra rust \
+            --extra liblldb --extra libpolly --extra libunwind
           echo "---"
           echo "Bundle contents:"
           ls -1 "$bundle_dir" | head -30
@@ -217,10 +221,10 @@ jobs:
             echo "WARNING: deb bundle is empty — APK will fall back to apt-get download at first launch"
             exit 0
           fi
-          mkdir -p app/src/full/assets
-          tar -czf app/src/full/assets/deb-bundle.tar.gz -C "$RUNNER_TEMP" deb-bundle
-          ls -la app/src/full/assets/deb-bundle.tar.gz
-          echo "Deb bundle size: $(du -h app/src/full/assets/deb-bundle.tar.gz | cut -f1)"
+          mkdir -p app/src/main/assets
+          tar -czf app/src/main/assets/deb-bundle.tar.gz -C "$RUNNER_TEMP" deb-bundle
+          ls -la app/src/main/assets/deb-bundle.tar.gz
+          echo "Deb bundle size: $(du -h app/src/main/assets/deb-bundle.tar.gz | cut -f1)"
 
       - name: Pre-fetch aarch64 manylinux wheels (best-effort)
         if: false  # lite-only build

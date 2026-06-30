@@ -1438,40 +1438,37 @@ WEOF
     ): Boolean {
         val termuxPrefix = "/data/data/com.termux/files/usr"
 
-        // apt-get update (with retry)
-        val updateOk = runWithRetry(
-            maxAttempts = 3,
-            baseDelayMs = 2000L,
-            onProgress = onProgress,
-            what = "apt-get update (for rust/clang)",
-        ) {
-            runInPrefix(
-                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
-                onOutput = { onProgress(it) },
-            ) == 0
-        }
-        if (!updateOk) {
-            Log.w(TAG, "apt-get update failed (non-fatal — proceeding with download anyway)")
-        }
+        // Check if clang/rust debs are already staged from the bundled
+        // deb-bundle.tar.gz. If so, skip the apt-get download phase
+        // entirely — this avoids 403 / connection-timeout failures from the
+        // Termux CDN on flaky mobile networks.
+        val hasBundledToolchain = runInPrefix(
+            "ls $prefix/tmp/" +
+                "rust*.deb clang*.deb clang-*.deb " +
+                "liblldb*.deb libpolly*.deb libclang*.deb " +
+                "libunwind*.deb libcompiler-rt*.deb " +
+                "2>/dev/null | wc -l",
+        ).trim().toIntOrNull() ?: 0
 
-        // Download rust + clang. (~570MB — ffmpeg intentionally excluded;
-        // Hermes core doesn't use it and it adds ~30MB. Users who need
-        // audio/video extras can `pkg install ffmpeg` manually later.)
-        val pkgs = "rust clang"
-        val dlOk = runWithRetry(
-            maxAttempts = 3,
-            baseDelayMs = 3000L,
-            onProgress = onProgress,
-            what = "apt-get download $pkgs",
-        ) {
-            runInPrefix(
-                "cd $prefix/tmp && apt-get download --allow-unauthenticated $pkgs 2>&1",
-                onOutput = { onProgress(it) },
-            ) == 0
-        }
-        if (!dlOk) {
-            Log.e(TAG, "apt-get download ($pkgs) failed after retries")
-            return false
+        if (hasBundledToolchain > 0) {
+            onProgress("Using bundled clang+rust debs (${hasBundledToolchain} files) — skipping CDN download")
+        } else {
+            onProgress("No bundled clang+rust debs — downloading via apt-get (~570MB)")
+            // apt-get update (with retry)
+            val updateOk = runWithRetry(
+                maxAttempts = 3,
+                baseDelayMs = 2000L,
+                onProgress = onProgress,
+                what = "apt-get update (for rust/clang)",
+            ) {
+                runInPrefix(
+                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
+                    onOutput = { onProgress(it) },
+                ) == 0
+            }
+            if (!updateOk) {
+                Log.w(TAG, "apt-get update failed (non-fatal — proceeding with download anyway)")
+            }
         }
 
         // Extract them into the prefix
