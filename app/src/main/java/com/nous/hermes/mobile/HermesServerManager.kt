@@ -1494,11 +1494,16 @@ WEOF
             # regular file in bin/ and libexec/ (rustlib binaries are nested
             # deep, and clang wrapper scripts may be named clang-18 / lld-18
             # etc). -type f skips symlinks (their targets get chmod'd directly).
-            find "$prefix/bin" -type f -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/libexec" -type f -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/bin" -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/libexec" -exec chmod 755 {} \; 2>/dev/null;
             # Also chmod dynamic libs in lib/ that may be dlopen'd as code
-            find "$prefix/lib" -name 'librustc_driver*' -type f -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/lib" -name 'libclang*' -type f -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/lib" -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
+            find "$prefix/lib" -name 'libclang*' -exec chmod 755 {} \; 2>/dev/null;
+            # Explicitly chmod all clang-* wrappers (some are symlinks that
+            # -type f would skip — e.g. aarch64-linux-android-clang)
+            for f in "$prefix/bin/clang"* "$prefix/bin/*clang*"; do
+                [ -e "${'$'}f" ] && chmod 755 "${'$'}f" 2>/dev/null || true
+            done;
             echo "Compile toolchain installed"
         """.trimIndent()
         val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
@@ -1528,8 +1533,8 @@ WEOF
             Log.w(TAG, "clang exists but not executable (exit=$clangTest) — retrying chmod")
             onProgress("clang 权限异常，重新修复…")
             runInPrefix(
-                "find $prefix/bin -type f -exec chmod 755 {} \\; 2>&1; " +
-                    "find $prefix/libexec -type f -exec chmod 755 {} \\; 2>/dev/null; " +
+                "find $prefix/bin -exec chmod 755 {} \\; 2>&1; " +
+                    "find $prefix/libexec -exec chmod 755 {} \\; 2>/dev/null; " +
                     "echo chmod-done",
                 onOutput = { onProgress(it) },
             )
