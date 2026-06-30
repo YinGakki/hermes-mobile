@@ -46,7 +46,7 @@ class HermesEnvBackup(private val context: Context) {
         )
 
         // 备份文件 magic header（gzip magic 0x1f 0x8b）
-        private val GZIP_MAGIC = byteArrayOf(0x1f, 0x8b)
+        private val GZIP_MAGIC = byteArrayOf(0x1f.toByte(), 0x8b.toByte())
     }
 
     private val filesDir = context.filesDir
