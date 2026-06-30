@@ -1489,20 +1489,20 @@ WEOF
                 cp -a _compile_stage/usr/* "$prefix/" 2>&1
             fi &&
             rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null;
-            # Robust executability fix: Android's `cp -a` doesn't always
-            # preserve mode bits from dpkg-deb -x. Use find to chmod every
-            # regular file in bin/ and libexec/ (rustlib binaries are nested
-            # deep, and clang wrapper scripts may be named clang-18 / lld-18
-            # etc). -type f skips symlinks (their targets get chmod'd directly).
-            find "$prefix/bin" -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/libexec" -exec chmod 755 {} \; 2>/dev/null;
-            # Also chmod dynamic libs in lib/ that may be dlopen'd as code
-            find "$prefix/lib" -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
-            find "$prefix/lib" -name 'libclang*' -exec chmod 755 {} \; 2>/dev/null;
-            # Explicitly chmod all clang-* wrappers (some are symlinks that
-            # -type f would skip — e.g. aarch64-linux-android-clang)
-            for f in "$prefix/bin/clang"* "$prefix/bin/*clang*"; do
-                [ -e "${'$'}f" ] && chmod 755 "${'$'}f" 2>/dev/null || true
+            # Robust executability fix: 'cp -a' may lose execute bits, and
+            # 'chmod 755 symlink' on Linux/Android only modifies symlink metadata
+            # (ignored by kernel), NOT the target. We must chmod the real files.
+            # -L dereferences all symlinks so chmod affects actual binaries.
+            find -L "$prefix/bin" -type f -exec chmod 755 {} \; 2>/dev/null;
+            find -L "$prefix/libexec" -type f -exec chmod 755 {} \; 2>/dev/null;
+            find -L "$prefix/lib" -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
+            find -L "$prefix/lib" -name 'libclang*' -exec chmod 755 {} \; 2>/dev/null;
+            # Also chmod the targets of clang-* symlinks explicitly.
+            # Using 'readlink -f' resolves all intermediate symlinks to the real path.
+            for _link in "$prefix/bin/clang"* "$prefix/bin/lld"* "$prefix/bin/*clang*" "$prefix/bin/*lld*"; do
+                [ -L "${'$'}_link" ] || continue
+                _target=$(readlink -f "${'$'}_link" 2>/dev/null)
+                [ -n "${'$'}_target" ] && chmod 755 "${'$'}_target" 2>/dev/null || true
             done;
             echo "Compile toolchain installed"
         """.trimIndent()
@@ -1533,8 +1533,8 @@ WEOF
             Log.w(TAG, "clang exists but not executable (exit=$clangTest) — retrying chmod")
             onProgress("clang 权限异常，重新修复…")
             runInPrefix(
-                "find $prefix/bin -exec chmod 755 {} \\; 2>&1; " +
-                    "find $prefix/libexec -exec chmod 755 {} \\; 2>/dev/null; " +
+                "find -L $prefix/bin -type f -exec chmod 755 {} \\; 2>&1; " +
+                    "find -L $prefix/libexec -type f -exec chmod 755 {} \\; 2>/dev/null; " +
                     "echo chmod-done",
                 onOutput = { onProgress(it) },
             )
