@@ -1442,13 +1442,16 @@ WEOF
         // deb-bundle.tar.gz. If so, skip the apt-get download phase
         // entirely — this avoids 403 / connection-timeout failures from the
         // Termux CDN on flaky mobile networks.
-        val hasBundledToolchain = runInPrefix(
+        val sbBundletoolchain = StringBuilder()
+        runInPrefix(
             "ls $prefix/tmp/" +
                 "rust*.deb clang*.deb clang-*.deb " +
                 "liblldb*.deb libpolly*.deb libclang*.deb " +
                 "libunwind*.deb libcompiler-rt*.deb " +
                 "2>/dev/null | wc -l",
-        ).trim().toIntOrNull() ?: 0
+            onOutput = { line -> sbBundletoolchain.append(line) }
+        )
+        val hasBundledToolchain = sbBundletoolchain.toString().trim().toIntOrNull() ?: 0
 
         if (hasBundledToolchain > 0) {
             onProgress("Using bundled clang+rust debs (${hasBundledToolchain} files) — skipping CDN download")
