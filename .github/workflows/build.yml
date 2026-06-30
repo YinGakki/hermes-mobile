@@ -212,7 +212,7 @@ jobs:
           echo "Total deb files: $(ls -1 "$bundle_dir"/*.deb 2>/dev/null | wc -l)"
 
       - name: Package deb bundle as tarball
-        if: false  # lite-only build
+        # Bundle the fetched debs into the APK assets directory.
         shell: bash
         run: |
           set -euo pipefail
