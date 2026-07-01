@@ -76,14 +76,6 @@ class HermesServerManager(private val context: Context) {
                 "CONTAINER" to "1",
                 "CARGO_HOME" to "${paths.homeDir}/.cargo",
                 "RUSTUP_HOME" to "${paths.homeDir}/.rustup",
-                // Python 3.13+ on Android reports sys.platform as "android".
-                // Many packages (psutil, etc.) only check for "linux" in their
-                // setup.py and fail with "platform android is not supported".
-                // sitecustomize.py in this directory patches sys.platform to
-                // "linux" at Python startup. PYTHONPATH is inherited by pip's
-                // build-isolation subprocesses, so this works even in isolated
-                // build environments.
-                "PYTHONPATH" to "${paths.homeDir}/.platform-patch",
             )
         }
     }
@@ -941,9 +933,10 @@ H3
 
         onProgress("Python native libs missing: ${missing.joinToString()} — downloading…")
         val termuxPrefix = "/data/data/com.termux/files/usr"
+        val pkgsArg = missing.joinToString(" ")
         val cmd = """
             cd $prefix/tmp &&
-            apt-get download --allow-unauthenticated ${'$'}{missing.joinToString(" ")} 2>&1 &&
+            apt-get download --allow-unauthenticated $pkgsArg 2>&1 &&
             mkdir -p _pylibs_stage &&
             for deb in *.deb; do
                 [ -f "${'$'}deb" ] || continue
@@ -1242,15 +1235,22 @@ H3
             }
         }
 
-        // Create sitecustomize.py to patch sys.platform for Python 3.13+.
-        // Python 3.13 on Android reports sys.platform="android", but many
-        // packages (psutil, etc.) only recognize "linux" in their setup.py.
-        // PYTHONPATH is set to this directory in buildEnvironment(), so
-        // Python finds sitecustomize.py at startup — even in pip's isolated
-        // build environments (PYTHONPATH is inherited by subprocesses).
-        val patchDir = File(homeDir, ".platform-patch")
-        patchDir.mkdirs()
-        val siteCustomize = File(patchDir, "sitecustomize.py")
+        // Patch sys.platform for Python 3.13+ on Android.
+        // Python 3.13 reports sys.platform="android", but many packages
+        // (psutil, etc.) only recognize "linux" in their setup.py and fail
+        // with "platform android is not supported".
+        //
+        // sitecustomize.py is auto-imported by Python at startup (via the
+        // site module). Placing it in the SYSTEM site-packages (not the
+        // venv's) ensures it's loaded by:
+        //   - the venv python (venv was created with --system-site-packages)
+        //   - pip's build-isolation subprocesses (which inherit sys.path
+        //     from the parent interpreter, including system site-packages)
+        // PYTHONPATH-based approach was unreliable because pip's build
+        // isolation can strip PYTHONPATH from the subprocess environment.
+        val sysSitePackages = File(prefix, "lib/python3.13/site-packages")
+        sysSitePackages.mkdirs()
+        val siteCustomize = File(sysSitePackages, "sitecustomize.py")
         try {
             siteCustomize.writeText(
                 """
