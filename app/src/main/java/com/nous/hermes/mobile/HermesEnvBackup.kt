@@ -80,15 +80,14 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
             // serverMgr.runInPrefix 执行 —— Termux 的 tar 链接 libandroid-glob.so
             // 等动态库，只有 runInPrefix 配置的 LD_LIBRARY_PATH 才能找到。
             val excludesArg = EXCLUDE_PATTERNS.joinToString(" ") { "--exclude '$it'" }
-            val tarCmd = """
-                cd "${'$'}{FILES_DIR}" && tar -czf "${'$'}{ARCHIVE_PATH}" $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME 2>&1
+            // 直接用 Kotlin 字符串插值把绝对路径嵌入命令。不用 shell 变量
+            // 占位符（之前用 ${'$'}{FILES_DIR} + .replace() 方案有 bug：
+            // Kotlin 把 ${'$'} 解析成字面 $，但 shell 里 ${FILES_DIR} 未定义
+            // → 空字符串 → cd "" → "Cannot open: No such file or directory"）。
+            // paths 来自 context.filesDir，路径不含空格，直接拼接安全。
+            val cmd = """
+                cd "${filesDir.absolutePath}" && tar -czf "${tmpArchive.absolutePath}" $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME 2>&1
             """.trimIndent()
-            // 在 runInPrefix 环境里注入 FILES_DIR 和 ARCHIVE_PATH（prefix 路径
-            // 含空格或特殊字符时安全）。runInPrefix 的 env map 不支持额外
-            // 变量，所以直接字符串拼接（路径来自 context.filesDir，无空格）。
-            val cmd = tarCmd
-                .replace("\${'$'}{FILES_DIR}", filesDir.absolutePath)
-                .replace("\${'$'}{ARCHIVE_PATH}", tmpArchive.absolutePath)
             Log.i(TAG, "Running backup via runInPrefix: $cmd")
             val code = serverMgr.runInPrefix(cmd, onOutput = { onProgress(it) })
             if (code != 0) {
