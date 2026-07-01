@@ -76,6 +76,14 @@ class HermesServerManager(private val context: Context) {
                 "CONTAINER" to "1",
                 "CARGO_HOME" to "${paths.homeDir}/.cargo",
                 "RUSTUP_HOME" to "${paths.homeDir}/.rustup",
+                // Python 3.13+ on Android reports sys.platform as "android".
+                // Many packages (psutil, etc.) only check for "linux" in their
+                // setup.py and fail with "platform android is not supported".
+                // sitecustomize.py in this directory patches sys.platform to
+                // "linux" at Python startup. PYTHONPATH is inherited by pip's
+                // build-isolation subprocesses, so this works even in isolated
+                // build environments.
+                "PYTHONPATH" to "${paths.homeDir}/.platform-patch",
             )
         }
     }
@@ -1234,6 +1242,32 @@ H3
             }
         }
 
+        // Create sitecustomize.py to patch sys.platform for Python 3.13+.
+        // Python 3.13 on Android reports sys.platform="android", but many
+        // packages (psutil, etc.) only recognize "linux" in their setup.py.
+        // PYTHONPATH is set to this directory in buildEnvironment(), so
+        // Python finds sitecustomize.py at startup — even in pip's isolated
+        // build environments (PYTHONPATH is inherited by subprocesses).
+        val patchDir = File(homeDir, ".platform-patch")
+        patchDir.mkdirs()
+        val siteCustomize = File(patchDir, "sitecustomize.py")
+        try {
+            siteCustomize.writeText(
+                """
+                import sys
+                # Python 3.13+ on Android reports sys.platform as "android".
+                # Many packages (psutil, etc.) only check for "linux" — patch
+                # sys.platform so they build correctly.
+                if sys.platform == "android":
+                    sys.platform = "linux"
+                """.trimIndent() + "\n",
+            )
+            Log.i(TAG, "sitecustomize.py written to ${siteCustomize.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to write sitecustomize.py: ${e.message}")
+            // Non-fatal — some packages may fail to build without this patch
+        }
+
         // Reuse existing venv if it looks healthy. Recreating it would
         // throw away packages already installed by a previous (possibly
         // partial) run and force pip to redownload everything. pip install
@@ -1573,27 +1607,13 @@ WEOF
                 cp -a _compile_stage/usr/* "$prefix/" 2>&1
             fi &&
             rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null;
-            # Robust executability fix. Android cp -a loses execute bits, and
-            # 'chmod 755 symlink' on Linux/Android only modifies symlink metadata
-            # (ignored by kernel), NOT the target file.
-            #
-            # Strategy: chmod every regular file under bin/ and libexec/
-            # (dereferencing symlinks via -L so real targets are affected),
-            # PLUS chmod every .so under lib/ (rustc dynamically loads
-            # librustc_driver*.so etc, missing +x causes "cannot open shared
-            # object file: Permission denied").
-            # Then explicitly chmod every symlink target in bin/ (clang-18,
-            # lld-18, etc.) via readlink -f as a belt-and-suspenders measure.
-            find -L "$prefix/bin" -type f -exec chmod 755 {} \; 2>/dev/null;
-            find -L "$prefix/libexec" -type f -exec chmod 755 {} \; 2>/dev/null;
-            find -L "$prefix/lib" -type f -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
-            find -L "$prefix/lib" -type f -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
-            find -L "$prefix/lib" -type f -name 'libclang*' -exec chmod 755 {} \; 2>/dev/null;
-            for _link in "$prefix/bin/"*; do
-                [ -L "${'$'}_link" ] || continue
-                _target=$(readlink -f "${'$'}_link" 2>/dev/null)
-                [ -n "${'$'}_target" ] && [ -f "${'$'}_target" ] && chmod 755 "${'$'}_target" 2>/dev/null || true
-            done;
+            # Robust executability fix. Android cp -a loses execute bits.
+            # chmod -R 755 on bin/ and libexec/ recursively sets execute bits
+            # on all regular files (including clang-18, rustc, etc.).
+            # For lib/*.so files, use find (chmod -R on all of lib/ is too broad).
+            chmod -R 755 "$prefix/bin" 2>/dev/null;
+            chmod -R 755 "$prefix/libexec" 2>/dev/null;
+            find "$prefix/lib" -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
             echo "Compile toolchain installed"
         """.trimIndent()
         val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
@@ -1610,24 +1630,21 @@ WEOF
             return false
         }
         // Smoke-test executability of ALL binaries pip/distutils might invoke.
-        // pip calls 'aarch64-linux-android-clang' (a symlink that may have a
-        // different target than 'clang'), not 'clang' itself — testing only
-        // 'clang' would pass while pip still fails with Permission denied.
-        // We catch EACCES here instead of letting pip die mid-build with a
-        // confusing "Permission denied" deep inside Cython.
+        // pip calls 'aarch64-linux-android-clang' (a symlink), not 'clang'
+        // itself — testing only 'clang' would pass while pip still fails.
         val testBinaries = listOf("clang", "aarch64-linux-android-clang", "rustc", "cargo")
         for (bin in testBinaries) {
             val testCode = runInPrefix("$prefix/bin/$bin --version >/dev/null 2>&1")
             if (testCode != 0) {
                 Log.w(TAG, "$bin not executable (exit=$testCode) — retrying chmod")
                 onProgress("$bin 权限异常，重新修复…")
+                // Simple retry: chmod -R 755 on bin/ and libexec/ again.
+                // (Previous version used a for loop with \${'$'} shell vars
+                //  which caused "Bad substitution" in dash/sh — simplified.)
                 runInPrefix(
-                    "find -L $prefix/bin -type f -exec chmod 755 {} \\; 2>/dev/null; " +
-                        "find -L $prefix/libexec -type f -exec chmod 755 {} \\; 2>/dev/null; " +
-                        "find -L $prefix/lib -type f -name '*.so*' -exec chmod 755 {} \\; 2>/dev/null; " +
-                        "for _l in $prefix/bin/*; do [ -L \"\${'$'}_l\" ] || continue; " +
-                        "_t=\$(readlink -f \"\${'$'}_l\" 2>/dev/null); " +
-                        "[ -n \"\${'$'}_t\" ] && [ -f \"\${'$'}_t\" ] && chmod 755 \"\${'$'}_t\" 2>/dev/null || true; done; " +
+                    "chmod -R 755 $prefix/bin 2>/dev/null; " +
+                        "chmod -R 755 $prefix/libexec 2>/dev/null; " +
+                        "find $prefix/lib -name '*.so*' -exec chmod 755 {} \\; 2>/dev/null; " +
                         "echo chmod-done",
                     onOutput = { onProgress(it) },
                 )

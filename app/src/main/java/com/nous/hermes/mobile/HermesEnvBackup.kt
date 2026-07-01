@@ -86,8 +86,8 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
             // gzip、以及 tar 依赖的所有二进制都可执行。
             val prefix = File(filesDir, PREFIX_DIR_NAME).absolutePath
             val cmd = """
-                find -L "$prefix/bin" -type f -exec chmod 755 {} \; 2>/dev/null;
-                find -L "$prefix/lib" -type f -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
+                chmod -R 755 "$prefix/bin" 2>/dev/null;
+                find "$prefix/lib" -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
                 cd "${filesDir.absolutePath}" && tar -czf "${tmpArchive.absolutePath}" $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME 2>&1
             """.trimIndent()
             Log.i(TAG, "Running backup via runInPrefix: $cmd")
