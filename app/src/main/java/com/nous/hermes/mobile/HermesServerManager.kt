@@ -411,20 +411,35 @@ class HermesServerManager(private val context: Context) {
     ): Boolean {
         val aptMirrors = listOf(
             "http://packages.termux.dev/apt/termux-main/",
-            "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
+            "http://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
         )
         for ((idx, mirror) in aptMirrors.withIndex()) {
             onProgress("apt-get: 尝试镜像 ${idx + 1}/${aptMirrors.size}: $mirror")
             runInPrefix("echo \"deb $mirror stable main\" > $prefix/etc/apt/sources.list")
-            // apt-get update — ignore GPG warnings (Termux packages aren't signed)
-            val updateOk = runInPrefix(
-                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | " +
-                    "grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
-                onOutput = { onProgress(it) },
-            ) == 0
-            if (!updateOk) {
-                Log.w(TAG, "apt-get update failed for $mirror")
-                onProgress("镜像 $mirror 更新失败，尝试下一个…")
+            // apt-get update — check exit code directly (NOT via pipe+grep,
+            // because `cmd | grep || true` always returns 0 even if cmd
+            // failed, which caused false "updateOk=true" and subsequent
+            // "Unable to locate package" errors).
+            // GPG warnings are noisy but harmless — we filter them in
+            // onOutput instead of in the shell pipeline.
+            val updateCode = runInPrefix(
+                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                onOutput = { line ->
+                    // Suppress noisy GPG/signature warnings — they're expected
+                    // (Termux packages aren't GPG-signed in our bootstrap).
+                    if (!line.contains("GPG error") &&
+                        !line.contains("is not signed") &&
+                        !line.contains("cannot be authenticated") &&
+                        !line.contains("apt-key") &&
+                        !line.startsWith("Ign:")
+                    ) {
+                        onProgress(line)
+                    }
+                },
+            )
+            if (updateCode != 0) {
+                Log.w(TAG, "apt-get update failed for $mirror (code=$updateCode)")
+                onProgress("镜像 $mirror 更新失败（exit=$updateCode），尝试下一个…")
                 continue
             }
             val dlCode = runInPrefix(
@@ -1467,7 +1482,7 @@ WEOF
         // CDN returns 403.
         val aptMirrors = listOf(
             "http://packages.termux.dev/apt/termux-main/",
-            "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
+            "http://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
         )
 
         onProgress("Downloading rust + clang (~570MB) via apt-get…")
@@ -1480,11 +1495,12 @@ WEOF
             // Point sources.list at this mirror, then apt-get update + download.
             // --allow-insecure-repositories / --allow-unauthenticated because
             // Termux packages aren't GPG-signed in our bootstrap setup.
-            val setMirrorCmd = """
-                echo "deb $mirror stable main" > $prefix/etc/apt/sources.list
-            """.trimIndent()
-            runInPrefix(setMirrorCmd)
+            runInPrefix("echo \"deb $mirror stable main\" > $prefix/etc/apt/sources.list")
 
+            // apt-get update — check exit code directly (NOT via pipe+grep,
+            // because `cmd | grep || true` always returns 0 even if cmd
+            // failed, which caused false "updateOk=true" and subsequent
+            // "Unable to locate package" errors).
             val updateOk = runWithRetry(
                 maxAttempts = 2,
                 baseDelayMs = 2000L,
@@ -1492,8 +1508,17 @@ WEOF
                 what = "apt-get update ($mirror)",
             ) {
                 runInPrefix(
-                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
-                    onOutput = { onProgress(it) },
+                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                    onOutput = { line ->
+                        if (!line.contains("GPG error") &&
+                            !line.contains("is not signed") &&
+                            !line.contains("cannot be authenticated") &&
+                            !line.contains("apt-key") &&
+                            !line.startsWith("Ign:")
+                        ) {
+                            onProgress(line)
+                        }
+                    },
                 ) == 0
             }
             if (!updateOk) {
