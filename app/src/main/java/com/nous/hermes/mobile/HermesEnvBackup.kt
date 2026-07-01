@@ -80,12 +80,14 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
             // serverMgr.runInPrefix 执行 —— Termux 的 tar 链接 libandroid-glob.so
             // 等动态库，只有 runInPrefix 配置的 LD_LIBRARY_PATH 才能找到。
             val excludesArg = EXCLUDE_PATTERNS.joinToString(" ") { "--exclude '$it'" }
-            // 直接用 Kotlin 字符串插值把绝对路径嵌入命令。不用 shell 变量
-            // 占位符（之前用 ${'$'}{FILES_DIR} + .replace() 方案有 bug：
-            // Kotlin 把 ${'$'} 解析成字面 $，但 shell 里 ${FILES_DIR} 未定义
-            // → 空字符串 → cd "" → "Cannot open: No such file or directory"）。
-            // paths 来自 context.filesDir，路径不含空格，直接拼接安全。
+            // Android cp -a 丢失可执行位是普遍问题，不止影响 clang/rust，
+            // 也影响 tar 调用的 gzip 子进程（"gzip: Cannot exec: Permission
+            // denied"）。backup 前先对整个 prefix/bin 做 chmod，确保 tar、
+            // gzip、以及 tar 依赖的所有二进制都可执行。
+            val prefix = File(filesDir, PREFIX_DIR_NAME).absolutePath
             val cmd = """
+                find -L "$prefix/bin" -type f -exec chmod 755 {} \; 2>/dev/null;
+                find -L "$prefix/lib" -type f -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
                 cd "${filesDir.absolutePath}" && tar -czf "${tmpArchive.absolutePath}" $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME 2>&1
             """.trimIndent()
             Log.i(TAG, "Running backup via runInPrefix: $cmd")
