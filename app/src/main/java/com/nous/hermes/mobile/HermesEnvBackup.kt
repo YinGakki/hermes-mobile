@@ -20,7 +20,7 @@ import java.io.FileOutputStream
  * 所以先在 cacheDir 生成/接收临时 tar.gz 文件，再用 ContentResolver 复制到
  * Uri / 从 Uri 复制到 cacheDir。
  */
-class HermesEnvBackup(private val context: Context) {
+class HermesEnvBackup(private val context: Context, private val serverMgr: HermesServerManager) {
 
     companion object {
         private const val TAG = "HermesEnvBackup"
@@ -69,58 +69,30 @@ class HermesEnvBackup(private val context: Context) {
             return false
         }
 
-        // 临时文件用于流式 tar 输出
+        // 临时文件用于流式 tar 输出。放在 cacheDir 而非 prefix/tmp/ 是
+        // 因为备份内容包含 prefix/tmp/，tar 不能写到正在打包的目录里。
         val tmpArchive = File(cacheDir, "hermes-env-backup-${System.currentTimeMillis()}.tar.gz")
         try {
             onProgress("正在打包环境（可能需要 1-3 分钟）…")
 
-            // 用 Termux 自带的 tar（系统 toybox tar 在某些 Android 版本上
-            // 不支持 --exclude 通配符，GNU tar 行为更可预测）。环境通过
-            // runInPrefix 提供，但 tar 命令自身不需要 Termux prefix，用
-            // 系统 tar 也可。这里直接用 Java ProcessBuilder 调用 Termux 的
-            // sh -c "tar ..."，PATH 指向 prefix/bin。
-            val tarBin = File(prefix, "bin/tar")
-            val useTermuxTar = tarBin.exists()
-
-            val cmd = if (useTermuxTar) {
-                listOf(
-                    File(prefix, "bin/sh").absolutePath, "-c",
-                    buildString {
-                        append("cd \"")
-                        append(filesDir.absolutePath)
-                        append("\" && \"")
-                        append(tarBin.absolutePath)
-                        append("\" -czf \"")
-                        append(tmpArchive.absolutePath)
-                        append("\" ")
-                        EXCLUDE_PATTERNS.forEach { append("--exclude '").append(it).append("' ") }
-                        append(PREFIX_DIR_NAME).append(" ").append(HOME_DIR_NAME)
-                    },
-                )
-            } else {
-                listOf("tar", "-czf", tmpArchive.absolutePath) +
-                    EXCLUDE_PATTERNS.flatMap { listOf("--exclude", it) } +
-                    listOf("-C", filesDir.absolutePath, PREFIX_DIR_NAME, HOME_DIR_NAME)
-            }
-
-            Log.i(TAG, "Running backup cmd: ${cmd.joinToString(" ")}")
-            val pb = ProcessBuilder(cmd).redirectErrorStream(true)
-            pb.environment()["TMPDIR"] = cacheDir.absolutePath
-            val proc = pb.start()
-            // drain stdout/stderr combined
-            val output = proc.inputStream.bufferedReader().use { reader ->
-                val sb = StringBuilder()
-                var line = reader.readLine()
-                while (line != null) {
-                    sb.appendLine(line)
-                    onProgress(line)
-                    line = reader.readLine()
-                }
-                sb.toString()
-            }
-            val code = proc.waitFor()
+            // 用 Termux 自带的 tar（系统 toybox tar 在 Android 11+ 可能
+            // 不支持 --exclude 通配符，且某些版本缺 gzip 支持）。必须通过
+            // serverMgr.runInPrefix 执行 —— Termux 的 tar 链接 libandroid-glob.so
+            // 等动态库，只有 runInPrefix 配置的 LD_LIBRARY_PATH 才能找到。
+            val excludesArg = EXCLUDE_PATTERNS.joinToString(" ") { "--exclude '$it'" }
+            val tarCmd = """
+                cd "${'$'}{FILES_DIR}" && tar -czf "${'$'}{ARCHIVE_PATH}" $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME 2>&1
+            """.trimIndent()
+            // 在 runInPrefix 环境里注入 FILES_DIR 和 ARCHIVE_PATH（prefix 路径
+            // 含空格或特殊字符时安全）。runInPrefix 的 env map 不支持额外
+            // 变量，所以直接字符串拼接（路径来自 context.filesDir，无空格）。
+            val cmd = tarCmd
+                .replace("\${'$'}{FILES_DIR}", filesDir.absolutePath)
+                .replace("\${'$'}{ARCHIVE_PATH}", tmpArchive.absolutePath)
+            Log.i(TAG, "Running backup via runInPrefix: $cmd")
+            val code = serverMgr.runInPrefix(cmd, onOutput = { onProgress(it) })
             if (code != 0) {
-                Log.e(TAG, "tar failed with code $code: $output")
+                Log.e(TAG, "tar failed with code $code")
                 onProgress("错误：tar 打包失败（exit=$code）")
                 return false
             }
@@ -202,15 +174,16 @@ class HermesEnvBackup(private val context: Context) {
                 return false
             }
 
-            // 校验 tar.gz 完整性（test -t 比 -x 更快暴露损坏）
+            // 校验 tar.gz 完整性（test 比 extract 更快暴露损坏）
+            // 用 runInPrefix 调用 Termux tar（系统 tar 可能不支持 -t 或
+            // 缺 gzip）。注意：这一步必须在清空 prefix 之前执行，因为
+            // 清空后 prefix/bin/tar 就没了。
             onProgress("校验备份完整性…")
-            val testProc = ProcessBuilder("tar", "-tzf", tmpArchive.absolutePath)
-                .redirectErrorStream(true).start()
-            val testOut = testProc.inputStream.bufferedReader().readText()
-            val testCode = testProc.waitFor()
+            val testCmd = "tar -tzf \"${tmpArchive.absolutePath}\" >/dev/null 2>&1"
+            val testCode = serverMgr.runInPrefix(testCmd)
             if (testCode != 0) {
-                onProgress("错误：备份文件已损坏")
-                Log.e(TAG, "tar test failed: $testOut")
+                onProgress("错误：备份文件已损坏或格式不支持")
+                Log.e(TAG, "tar test failed (code=$testCode)")
                 return false
             }
 
@@ -226,7 +199,11 @@ class HermesEnvBackup(private val context: Context) {
                 onProgress("警告：部分旧文件无法删除，继续还原…")
             }
 
-            // 解压到 filesDir
+            // 解压到 filesDir —— 此时 prefix 已清空，runInPrefix 不可用，
+            // 改用 Java ProcessBuilder 调系统 tar（解压不需要 LD_LIBRARY_PATH，
+            // 系统 toybox tar 的 -xzf 基础解压功能是支持的，且不依赖
+            // Termux 的动态库）。如果系统 tar 不可用则用 Java GZIPInputStream
+            // + TarInputStream 纯 Java 解压（备选方案，暂未实现）。
             onProgress("正在解压环境（可能需要 1-2 分钟）…")
             val proc = ProcessBuilder(
                 "tar", "-xzf", tmpArchive.absolutePath,

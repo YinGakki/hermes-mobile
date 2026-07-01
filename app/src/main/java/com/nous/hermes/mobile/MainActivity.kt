@@ -153,7 +153,7 @@ class MainActivity : AppCompatActivity() {
 
         serverManager = HermesServerManager(this)
         studioInstaller = HermesStudioInstaller(this)
-        envBackup = HermesEnvBackup(this)
+        envBackup = HermesEnvBackup(this, serverManager)
 
         // SAF launcher for "Save environment" — creates a new file at the
         // user-chosen location. Registered before any button click so it
@@ -546,7 +546,7 @@ class MainActivity : AppCompatActivity() {
             MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.env_save_partial_title)
                 .setMessage(getString(R.string.env_save_partial_msg, statusLines))
-                .setPositiveButton(R.string.compile_continue) { _, _ -> launchSaveEnv() }
+                .setPositiveButton(R.string.env_save_action) { _, _ -> launchSaveEnv() }
                 .setNegativeButton(R.string.cancel, null)
                 .show()
         }
