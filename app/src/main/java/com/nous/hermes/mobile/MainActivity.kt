@@ -296,16 +296,16 @@ class MainActivity : AppCompatActivity() {
         logView.text = ""
         activeThread = Thread {
             try {
-                if (!BootstrapInstaller.isBootstrapInstalled(this)) {
+                if (!BootstrapManager.isBootstrapInstalled(this)) {
                     runOnUiThread { setStatus(getString(R.string.status_extracting_bootstrap)) }
-                    BootstrapInstaller.install(this) { msg ->
+                    BootstrapManager.install(this) { msg ->
                         runOnUiThread { statusText.text = msg }
                     }
                 }
                 // Always refresh system config (resolv.conf, passwd, timezone)
                 // even if bootstrap was already installed — Android may have
                 // cleared these files between launches.
-                BootstrapInstaller.ensureSystemConfig(this)
+                BootstrapManager.ensureSystemConfig(this)
                 serverManager.extractDebBundleIfPresent { msg -> appendLog(msg) }
                 runOnUiThread { showSteps() }
             } catch (e: Exception) {
@@ -767,11 +767,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun isBuildDepsInstalled(): Boolean {
-        val prefix = BootstrapInstaller.getPaths(this).prefixDir
-        val marker = File(prefix, "var/.hermes-deps-installed")
-        // Must exist AND match current version — old markers from previous
-        // APK versions (which had different package lists) are stale.
-        return marker.exists() && marker.readText().trim() == "v2"
+        // 新架构 marker 由 HermesServerManager.installHermesBuildDeps 写到
+        // configDir/.build-deps-v1（rootfs 模型，不再用 prefix/var）。
+        val configDir = BootstrapManager.getPaths(this).configDir
+        val marker = File(configDir, ".build-deps-v1")
+        return marker.exists()
     }
 
     private fun allStepsDone(): Boolean {
@@ -908,25 +908,21 @@ class MainActivity : AppCompatActivity() {
     // ── Dialogs ──────────────────────────────────────────────────────────────
 
     private fun showShellInstructions() {
-        val paths = BootstrapInstaller.getPaths(this)
+        val paths = BootstrapManager.getPaths(this)
         val msg = """
-            |Hermes Agent is installed at:
-            |${paths.prefixDir}
+            |Hermes Agent runs inside a proot+Ubuntu rootfs environment.
             |
-            |To use it, open any terminal app (e.g. Termux from F-Droid)
-            |and run:
+            |Repository + venv location (host):
+            |${paths.homeDir}/hermes-agent
             |
-            |    export PATH=${paths.prefixDir}/bin:${'$'}PATH
-            |    export HOME=${paths.homeDir}
-            |    export LD_LIBRARY_PATH=${paths.prefixDir}/lib
-            |    cd ${paths.homeDir}/hermes-agent
-            |    . .venv/bin/activate
-            |    hermes setup
-            |    hermes
+            |Hermes is invoked via proot. The easiest way to use it is the
+            |Chat UI button above — no terminal needed.
             |
-            |Or run `hermes setup --portal` to use Nous Portal (free OAuth).
+            |To run manually from the app's bundled shell, the environment
+            |is already set up (rootfs at ${paths.rootfsDir}).
+            |Inside proot the agent lives at /root/home/hermes-agent.
             |
-            |Tip: You can also use the Chat UI button above — no terminal needed.
+            |Tip: run `hermes setup --portal` to use Nous Portal (free OAuth).
         """.trimMargin()
         MaterialAlertDialogBuilder(this)
             .setTitle("How to use Hermes")

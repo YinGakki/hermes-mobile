@@ -9,17 +9,22 @@ import java.io.FileOutputStream
 import java.util.zip.GZIPOutputStream
 
 /**
- * 备份/还原已安装好的 Hermes 运行环境（Termux prefix + home 目录）。
+ * 备份/还原已安装好的 Hermes 运行环境（proot rootfs + home + config + lib）。
  *
- * 备份内容：files/usr 与 files/home 全量打包成 tar.gz，排除 tmp/、cache/、
- * *.pyc、npm cache 等可重建的临时文件。
+ * 新架构（proot + Ubuntu rootfs）下备份内容：
+ *   filesDir/rootfs  — Ubuntu rootfs（含 apt 装的 python/build deps）
+ *   filesDir/home    — hermes-agent 代码 + .venv + .hermes 配置
+ *   filesDir/config  — resolv.conf + proc_fakes + build-deps marker
+ *   filesDir/lib     — libtalloc.so.2 等运行时库
  *
- * 还原流程：清空现有 prefix 与 home → 解压备份文件 → 跳过全部安装步骤直接可用。
+ * 排除 rootfs 运行时目录（proc/sys/dev/tmp/run，这些是空目录或 bind mount），
+ * 以及 venv 内的 __pycache__、apt cache 等可重建文件。
  *
- * 文件路径策略：用 SAF 让用户选择保存位置（兼容 Documents/ Downloads/ USB OTG
- * 等任意位置）。SAF 返回的 Uri 不是文件系统路径，无法直接喂给 tar 命令，
- * 所以先在 cacheDir 生成/接收临时 tar.gz 文件，再用 ContentResolver 复制到
- * Uri / 从 Uri 复制到 cacheDir。
+ * 还原后跳过全部安装步骤直接可用。
+ *
+ * 实现策略：用系统 toybox tar（/system/bin/sh -c "tar -cf -"）打包到 stdout，
+ * Java GZIPOutputStream 压缩，彻底不依赖 proot/prefix 二进制（还原时 rootfs
+ * 可能已被清空，proot 不可用）。
  */
 class HermesEnvBackup(private val context: Context, private val serverMgr: HermesServerManager) {
 
@@ -27,23 +32,17 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
         private const val TAG = "HermesEnvBackup"
 
         // 需要打包/还原的子目录（相对于 context.filesDir）
-        private const val PREFIX_DIR_NAME = "usr"
-        private const val HOME_DIR_NAME = "home"
+        private val BACKUP_DIR_NAMES = listOf("rootfs", "home", "config", "lib")
 
-        // 备份内排除的路径（相对 filesDir，归档条目形如 "usr/tmp/foo"）
-        // 这些是可重建的临时/缓存文件，备份它们会浪费几百 MB 且无意义。
+        // 备份内排除的路径（归档条目形如 "rootfs/proc/..."）
+        // 这些是可重建的临时/缓存/运行时文件。
         private val EXCLUDE_PATTERNS = listOf(
-            "usr/tmp",
-            "usr/var/cache",
-            "usr/var/log",
-            "usr/var/tmp",
-            "home/.cache",
-            "home/.npm",
-            "home/.cargo/registry",
-            "home/.rustup/toolchains/*/share",
+            "rootfs/proc", "rootfs/sys", "rootfs/dev",
+            "rootfs/run", "rootfs/tmp", "rootfs/var/tmp",
+            "rootfs/var/cache", "rootfs/var/log",
+            "home/.cache", "home/.npm",
             "home/hermes-agent/.venv/lib/python*/site-packages/*/__pycache__",
-            "home/hermes-agent/build",
-            "home/hermes-agent/dist",
+            "home/hermes-agent/build", "home/hermes-agent/dist",
         )
 
         // 备份文件 magic header（gzip magic 0x1f 0x8b）
@@ -56,48 +55,40 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
     /**
      * 备份已安装的环境到用户选定的 Uri。
      *
-     * 在调用方线程执行；调用方应在后台线程调用。
-     *
      * @param targetUri SAF 返回的输出 Uri
-     * @param onProgress 进度文本回调（UI 线程除外，调用方自行 post）
+     * @param onProgress 进度文本回调
      * @return true 表示成功
      */
     fun backup(targetUri: Uri, onProgress: (String) -> Unit): Boolean {
-        val prefix = File(filesDir, PREFIX_DIR_NAME)
-        val home = File(filesDir, HOME_DIR_NAME)
-        if (!prefix.isDirectory || !File(prefix, "bin/sh").exists()) {
+        // 检查 rootfs 是否已安装
+        val rootfs = File(filesDir, "rootfs")
+        val home = File(filesDir, "home")
+        if (!File(rootfs, "ubuntu/bin/bash").exists()) {
             onProgress("错误：未检测到已安装的环境，无法备份")
             return false
         }
 
-        // 临时文件用于流式 tar 输出。放在 cacheDir 而非 prefix/tmp/ 是
-        // 因为备份内容包含 prefix/tmp/，tar 不能写到正在打包的目录里。
         val tmpArchive = File(cacheDir, "hermes-env-backup-${System.currentTimeMillis()}.tar.gz")
         try {
             onProgress("正在打包环境（可能需要 1-3 分钟）…")
 
-            // 不依赖 gzip 二进制。Android cp -a 丢失可执行位会导致
-            // "tar: gzip: Cannot exec: Permission denied"（gzip 是符号链接时
-            // chmod -R 也不跟随）。改用 tar -cf -（写到 stdout，不压缩）+
-            // Java GZIPOutputStream 压缩，彻底绕过 gzip 权限问题。
-            // tar 本身需要 +x，但从日志看 tar 总能启动（报的是 gzip 的错）。
+            // 用系统 toybox tar（不依赖 proot/prefix，还原时 rootfs 已清空也能用）。
+            // tar -cf - 写到 stdout 不压缩，Java GZIPOutputStream 压缩，
+            // 彻底绕过 gzip 二进制权限问题（同旧方案）。
             val excludesArg = EXCLUDE_PATTERNS.joinToString(" ") { "--exclude '$it'" }
-            val paths = BootstrapInstaller.getPaths(context)
-            val env = HermesServerManager.buildEnvMap(context, paths)
-            val tarCmd = "cd \"${filesDir.absolutePath}\" && tar -cf - $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME"
+            val dirsArg = BACKUP_DIR_NAMES.joinToString(" ")
+            val tarCmd = "cd \"${filesDir.absolutePath}\" && tar -cf - $excludesArg $dirsArg"
             Log.i(TAG, "Running backup: $tarCmd")
 
-            val pb = ProcessBuilder("${paths.prefixDir}/bin/sh", "-c", tarCmd)
+            val pb = ProcessBuilder("/system/bin/sh", "-c", tarCmd)
             pb.environment().clear()
-            pb.environment().putAll(env)
-            pb.directory(File(paths.homeDir))
-            // stdout 和 stderr 分开读：stdout 是 tar 二进制数据，stderr 是文本
+            // 系统 tar 不需要任何特殊环境变量
+            pb.directory(filesDir)
             pb.redirectErrorStream(false)
 
             val proc = pb.start()
 
-            // 并发读 stderr（tar 文本输出 → onProgress）。
-            // 必须在读 stdout 之前启动，否则 stderr 管道满会死锁。
+            // 并发读 stderr（tar 文本输出 → onProgress）
             val stderrThread = Thread {
                 try {
                     proc.errorStream.bufferedReader().use { reader ->
@@ -183,8 +174,6 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
     /**
      * 从用户选定的 Uri 还原环境。
      *
-     * 在调用方线程执行；调用方应在后台线程调用。
-     *
      * @param sourceUri SAF 返回的输入 Uri
      * @param onProgress 进度文本回调
      * @return true 表示成功
@@ -192,7 +181,7 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
     fun restore(sourceUri: Uri, onProgress: (String) -> Unit): Boolean {
         val tmpArchive = File(cacheDir, "hermes-env-restore-${System.currentTimeMillis()}.tar.gz")
         try {
-            // 先验证 magic header，避免用户选了非 tar.gz 文件后浪费几十秒解压
+            // 先验证 magic header
             val magicOk = context.contentResolver.openInputStream(sourceUri)?.use { inp ->
                 val header = ByteArray(2)
                 val read = inp.read(header)
@@ -204,7 +193,6 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
             }
 
             onProgress("正在读取备份文件…")
-            // 复制到 cacheDir 临时文件（tar 命令需要文件系统路径，Uri 不行）
             context.contentResolver.openInputStream(sourceUri)?.use { inp ->
                 FileOutputStream(tmpArchive).use { out ->
                     val buf = ByteArray(64 * 1024)
@@ -222,36 +210,31 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
                 return false
             }
 
-            // 校验 tar.gz 完整性（test 比 extract 更快暴露损坏）
-            // 用 runInPrefix 调用 Termux tar（系统 tar 可能不支持 -t 或
-            // 缺 gzip）。注意：这一步必须在清空 prefix 之前执行，因为
-            // 清空后 prefix/bin/tar 就没了。
+            // 校验完整性（用系统 tar，还原时 rootfs 可能已清空 proot 不可用）
             onProgress("校验备份完整性…")
-            val testCmd = "tar -tzf \"${tmpArchive.absolutePath}\" >/dev/null 2>&1"
-            val testCode = serverMgr.runInPrefix(testCmd)
+            val testProc = ProcessBuilder(
+                "/system/bin/sh", "-c",
+                "tar -tzf \"${tmpArchive.absolutePath}\" >/dev/null 2>&1"
+            ).redirectErrorStream(true).start()
+            val testCode = testProc.waitFor()
             if (testCode != 0) {
                 onProgress("错误：备份文件已损坏或格式不支持")
                 Log.e(TAG, "tar test failed (code=$testCode)")
                 return false
             }
 
-            // 备份完成 → 清空旧 prefix + home
+            // 清空旧环境
             onProgress("清除现有环境…")
-            val prefix = File(filesDir, PREFIX_DIR_NAME)
-            val home = File(filesDir, HOME_DIR_NAME)
-            try {
-                if (prefix.exists()) prefix.deleteRecursively()
-                if (home.exists()) home.deleteRecursively()
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to fully clear old env: ${e.message}")
-                onProgress("警告：部分旧文件无法删除，继续还原…")
+            for (dirName in BACKUP_DIR_NAMES) {
+                val dir = File(filesDir, dirName)
+                try {
+                    if (dir.exists()) dir.deleteRecursively()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to clear $dirName: ${e.message}")
+                }
             }
 
-            // 解压到 filesDir —— 此时 prefix 已清空，runInPrefix 不可用，
-            // 改用 Java ProcessBuilder 调系统 tar（解压不需要 LD_LIBRARY_PATH，
-            // 系统 toybox tar 的 -xzf 基础解压功能是支持的，且不依赖
-            // Termux 的动态库）。如果系统 tar 不可用则用 Java GZIPInputStream
-            // + TarInputStream 纯 Java 解压（备选方案，暂未实现）。
+            // 解压到 filesDir（系统 toybox tar 支持 -xzf）
             onProgress("正在解压环境（可能需要 1-2 分钟）…")
             val proc = ProcessBuilder(
                 "tar", "-xzf", tmpArchive.absolutePath,
@@ -273,18 +256,15 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
                 return false
             }
 
-            // 修复可执行位 —— tar 应该保留了 mode bit，但 Android 文件系统
-            // 在某些情况下会丢失，跟 rust/clang extract 同样问题
-            onProgress("修复可执行权限…")
-            fixExecutableBits(prefix)
-
             // 验证关键路径
-            val shOk = File(prefix, "bin/sh").exists()
-            val hermesOk = File(prefix, "bin/hermes").exists()
-            if (!shOk) {
-                onProgress("错误：还原后缺少 bin/sh，备份可能不完整")
+            val bashOk = File(filesDir, "rootfs/ubuntu/bin/bash").exists()
+            val hermesOk = File(filesDir, "home/hermes-agent/.venv/bin/activate").exists()
+            if (!bashOk) {
+                onProgress("错误：还原后缺少 rootfs/ubuntu/bin/bash，备份可能不完整")
                 return false
             }
+            // 刷新系统配置（resolv.conf/proc_fakes 等可能被覆盖或缺失）
+            BootstrapManager.ensureSystemConfig(context)
             onProgress(if (hermesOk) "✓ 环境还原成功，Hermes 可用" else "✓ 环境还原成功，但 Hermes 未安装（可能是仅备份了部分）")
             return true
         } catch (e: Exception) {
@@ -293,29 +273,6 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
             return false
         } finally {
             tmpArchive.delete()
-        }
-    }
-
-    /**
-     * 对 prefix/bin 下所有文件、libexec 下文件强制 chmod 755。
-     * tar 解压后 mode bit 可能丢失（同 rust/clang extract 问题）。
-     */
-    private fun fixExecutableBits(prefix: File) {
-        try {
-            val binDir = File(prefix, "bin")
-            if (binDir.isDirectory) {
-                binDir.listFiles()?.forEach { f ->
-                    if (f.isFile) f.setExecutable(true, true)
-                }
-            }
-            val libexec = File(prefix, "libexec")
-            if (libexec.isDirectory) {
-                libexec.walkTopDown().forEach { f ->
-                    if (f.isFile) f.setExecutable(true, true)
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "fixExecutableBits partial failure: ${e.message}")
         }
     }
 

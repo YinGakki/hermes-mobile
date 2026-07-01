@@ -15,7 +15,7 @@ name: Build Release APK
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, refactor/openclaw-rootfs]
     tags: ['v*']
   pull_request:
     branches: [main, master]
@@ -62,20 +62,22 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - name: Download Termux bootstrap (${{ env.TERMUX_ARCH }})
+      - name: Fetch PRoot binaries (proot + libtalloc) for arm64-v8a
         shell: bash
-        run: ./scripts/download-bootstrap.sh --arch ${{ env.TERMUX_ARCH }}
+        run: ./scripts/fetch-proot-binaries.sh
 
-      - name: Verify bootstrap is present
+      - name: Verify PRoot binaries are present
         shell: bash
         run: |
           set -euo pipefail
-          f="app/src/main/assets/bootstrap-${TERMUX_ARCH}.zip"
-          if [ ! -s "$f" ]; then
-            echo "ERROR: $f missing or empty"
-            exit 1
-          fi
-          echo "Bootstrap: $(wc -c < "$f") bytes"
+          for f in libproot.so libprootloader.so libtalloc.so; do
+            path="app/src/main/jniLibs/arm64-v8a/$f"
+            if [ ! -s "$path" ]; then
+              echo "ERROR: $path missing or empty"
+              exit 1
+            fi
+            echo "$f: $(wc -c < "$path") bytes"
+          done
 
       # ─────────────────────────────────────────────────────────────────────
       # FULL-FLAVOR-ONLY STEPS — temporarily disabled (only building lite).

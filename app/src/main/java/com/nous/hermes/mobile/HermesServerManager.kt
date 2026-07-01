@@ -7,15 +7,24 @@ import java.io.File
 import java.io.InputStreamReader
 
 /**
- * Manages the lifecycle of the Hermes Agent runtime inside the Termux
- * bootstrap environment. Handles installation of proot, Node.js, Python,
- * Hermes build dependencies (rust/clang/make/etc), and the Hermes Agent
- * package itself (via `pip install -e '.[termux]'`).
+ * Hermes Agent 运行时生命周期管理。
  *
- * Based on AnyClaw's CodexServerManager; the OpenClaw/Codex/Proxy/Login
- * sections were removed and replaced with Hermes-specific install steps
- * following the official Termux guide at
- * https://hermes-agent.nousresearch.com/docs/getting-started/termux
+ * 全量参照 openclaw-termux：所有命令通过 [ProcessManager] 走 proot，在完整
+ * Ubuntu rootfs 里执行。相比旧的 Termux prefix 方案，这里不再需要：
+ *   - 手动 deb 解压（apt-get install 在 rootfs 里直接可用）
+ *   - venv 手动创建绕过 _sysconfigdata bug（rootfs 里 python -m venv 正常工作）
+ *   - chmod 修可执行位（proot 保留 rootfs 原始 mode）
+ *   - apt 镜像 fallback（Ubuntu 官方/清华源稳定）
+ *
+ * 安装流程（每步都经 proot install 模式）：
+ *   1. installProot  — 验证 proot 能跑（二进制已通过 jniLibs 打包）
+ *   2. installPython — apt-get install python3 python3-pip python3-venv
+ *   3. installHermesBuildDeps — apt-get install git make pkg-config ...
+ *   4. installHermes — git clone + python -m venv + pip install -e '.[termux]'
+ *
+ * 目录（rootfs 内视角，对应 host 路径见 [BootstrapManager.Paths]）：
+ *   /root/home/hermes-agent  ← 代码 + .venv（host: filesDir/home/hermes-agent）
+ *   /root/.hermes            ← 配置（host: filesDir/home/.hermes）
  */
 class HermesServerManager(private val context: Context) {
 
@@ -25,59 +34,20 @@ class HermesServerManager(private val context: Context) {
         private const val HERMES_REPO = "https://github.com/NousResearch/hermes-agent.git"
 
         /**
-         * Return the LD_PRELOAD path if libtermux-exec.so exists, or empty
-         * string if not. Setting LD_PRELOAD to a non-existent path causes
-         * every process to fail with "cannot locate executable".
+         * 旧 API 兼容：返回 proot 主机侧环境变量。
+         * 新模型下命令统一经 ProcessManager 走 proot，这个 map 主要给
+         * HermesEnvBackup 等需要直接 spawn 进程的调用方用。
          */
-        private fun libTermuxExecPath(prefixDir: String): String {
-            val lib = File(prefixDir, "lib/libtermux-exec.so")
-            return if (lib.exists()) lib.absolutePath else ""
+        @Suppress("unused")
+        fun buildEnvMap(context: Context, paths: BootstrapManager.Paths): Map<String, String> {
+            val pm = ProcessManager(context, paths.filesDir, paths.nativeLibDir)
+            return pm.prootEnvPublic()
         }
+    }
 
-        /**
-         * Build the Termux-prefix environment map for use by other classes
-         * (e.g. HermesStudioInstaller) that need to spawn processes in the
-         * prefix without going through runInPrefix (e.g. for long-running
-         * server processes that need their stdout drained in a custom way).
-         */
-        fun buildEnvMap(context: Context, paths: BootstrapInstaller.Paths): Map<String, String> {
-            return mapOf(
-                "PREFIX" to paths.prefixDir,
-                "HOME" to paths.homeDir,
-                "PATH" to "${paths.prefixDir}/bin:${paths.prefixDir}/bin/applets:/system/bin",
-                "LD_LIBRARY_PATH" to "${paths.prefixDir}/lib",
-                // Only set LD_PRELOAD if libtermux-exec.so actually exists.
-                // Setting it to a non-existent path causes EVERY process to
-                // fail with "cannot locate executable". We check at init time
-                // and set it to empty string if the file doesn't exist.
-                // (Termux's libtermux-exec.so provides command-not-found handler
-                // and aliases — non-critical for Hermes.)
-                "LD_PRELOAD" to libTermuxExecPath(paths.prefixDir),
-                "TERMUX_PREFIX" to paths.prefixDir,
-                "TERMUX__PREFIX" to paths.prefixDir,
-                "LANG" to "en_US.UTF-8",
-                "TMPDIR" to paths.tmpDir,
-                "TMP" to paths.tmpDir,
-                "TEMP" to paths.tmpDir,
-                "PROOT_TMP_DIR" to paths.tmpDir,
-                "TERM" to "xterm-256color",
-                "ANDROID_DATA" to "/data",
-                "ANDROID_ROOT" to "/system",
-                "APT_CONFIG" to "${paths.prefixDir}/etc/apt/apt.conf",
-                "DPKG_ADMINDIR" to "${paths.prefixDir}/var/lib/dpkg",
-                "SSL_CERT_FILE" to "${paths.prefixDir}/etc/tls/cert.pem",
-                "SSL_CERT_DIR" to "/system/etc/security/cacerts",
-                "CURL_CA_BUNDLE" to "${paths.prefixDir}/etc/tls/cert.pem",
-                "GIT_SSL_CAINFO" to "${paths.prefixDir}/etc/tls/cert.pem",
-                "GIT_CONFIG_NOSYSTEM" to "1",
-                "GIT_EXEC_PATH" to "${paths.prefixDir}/libexec/git-core",
-                "GIT_TEMPLATE_DIR" to "${paths.prefixDir}/share/git-core/templates",
-                "OPENSSL_CONF" to "${paths.prefixDir}/etc/tls/openssl.cnf",
-                "CONTAINER" to "1",
-                "CARGO_HOME" to "${paths.homeDir}/.cargo",
-                "RUSTUP_HOME" to "${paths.homeDir}/.rustup",
-            )
-        }
+    private val paths: BootstrapManager.Paths by lazy { BootstrapManager.getPaths(context) }
+    private val processManager: ProcessManager by lazy {
+        ProcessManager(context, paths.filesDir, paths.nativeLibDir)
     }
 
     private var hermesProcess: Process? = null
@@ -87,1707 +57,349 @@ class HermesServerManager(private val context: Context) {
             try { it.exitValue(); false } catch (_: IllegalThreadStateException) { true }
         } ?: false
 
-    // ── Shell helpers ──────────────────────────────────────────────────────
+    // ── Shell 桥接 ──────────────────────────────────────────────────────────
 
     /**
-     * Run a shell command inside the Termux prefix environment.
-     * Returns the exit code.
+     * 在 proot（install 模式）里执行 shell 命令，返回退出码。
+     * 保留旧 API 签名（timeoutMs=0 表示不超时），内部委托给 ProcessManager。
      */
     fun runInPrefix(
         command: String,
         timeoutMs: Long = 0,
         onOutput: ((String) -> Unit)? = null,
     ): Int {
-        val paths = BootstrapInstaller.getPaths(context)
-        val env = buildEnvironment(paths)
+        val timeoutSec = if (timeoutMs > 0) timeoutMs / 1000 else 1800L
+        return processManager.runInProotExitCode(command, timeoutSec, onOutput)
+    }
 
-        val shell = "${paths.prefixDir}/bin/sh"
-        val pb = ProcessBuilder(shell, "-c", command)
-        pb.environment().clear()
-        pb.environment().putAll(env)
-        pb.directory(File(paths.homeDir))
-        pb.redirectErrorStream(true)
-
-        val proc = pb.start()
-
-        // If timeout is set, start a watchdog thread that destroys the
-        // process after the timeout. This prevents indefinite hangs on
-        // DNS resolution, network timeouts, etc.
-        var watchdog: Thread? = null
-        if (timeoutMs > 0) {
-            watchdog = Thread {
-                try {
-                    Thread.sleep(timeoutMs)
-                    if (proc.isAlive) {
-                        Log.w(TAG, "runInPrefix timed out after ${timeoutMs}ms, killing process")
-                        proc.destroyForcibly()
-                    }
-                } catch (_: InterruptedException) {
-                    // Normal — command finished before timeout
+    /**
+     * 重试包装器。apt/pip/git 等网络操作可能因瞬时故障失败，重试 3 次。
+     */
+    fun <T> runWithRetry(
+        maxAttempts: Int = 3,
+        baseDelayMs: Long = 3000L,
+        onProgress: ((String) -> Unit)? = null,
+        what: String = "operation",
+        block: () -> T,
+    ): T {
+        var lastError: Exception? = null
+        repeat(maxAttempts) { attempt ->
+            try {
+                return block()
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "$what attempt ${attempt + 1}/$maxAttempts failed: ${e.message}")
+                onProgress?.invoke("$what 第 ${attempt + 1} 次失败: ${e.message}")
+                if (attempt < maxAttempts - 1) {
+                    val delay = baseDelayMs * (attempt + 1)
+                    onProgress?.invoke("${delay / 1000}s 后重试…")
+                    Thread.sleep(delay)
                 }
-            }.also { it.isDaemon = true; it.start() }
+            }
         }
-
-        val reader = BufferedReader(InputStreamReader(proc.inputStream))
-        var line = reader.readLine()
-        while (line != null) {
-            Log.d(TAG, line)
-            onOutput?.invoke(line)
-            line = reader.readLine()
-        }
-        val code = proc.waitFor()
-        watchdog?.interrupt()
-        return code
+        throw lastError ?: RuntimeException("$what failed after $maxAttempts attempts")
     }
 
-    @Suppress("unused")
-    private fun runCapture(command: String): String {
-        val sb = StringBuilder()
-        runInPrefix(command) { sb.appendLine(it) }
-        return sb.toString().trim()
+    // ── 安装状态检查 ─────────────────────────────────────────────────────────
+
+    fun isProotInstalled(): Boolean {
+        // proot 二进制通过 jniLibs 打包，检查 nativeLibDir 里存在即可。
+        // rootfs 由 BootstrapManager 负责。
+        return File(paths.nativeLibDir, "libproot.so").exists() &&
+            BootstrapManager.isBootstrapInstalled(context)
     }
-
-    // ── Install checks ─────────────────────────────────────────────────────
-
-    fun isProotInstalled(): Boolean =
-        File(BootstrapInstaller.getPaths(context).prefixDir, "bin/proot").exists()
-
-    fun isNodeInstalled(): Boolean =
-        File(BootstrapInstaller.getPaths(context).prefixDir, "bin/node").exists()
 
     fun isPythonInstalled(): Boolean {
-        val prefix = BootstrapInstaller.getPaths(context).prefixDir
-        return File(prefix, "bin/python3").exists() || File(prefix, "bin/python").exists()
+        if (!isProotInstalled()) return false
+        // 在 proot 里检查 python3 是否可用（apt install 后才有）
+        val code = processManager.runInProotExitCode(
+            "command -v python3 >/dev/null 2>&1", 30
+        )
+        return code == 0
+    }
+
+    fun isNodeInstalled(): Boolean {
+        if (!isProotInstalled()) return false
+        val code = processManager.runInProotExitCode(
+            "command -v node >/dev/null 2>&1", 30
+        )
+        return code == 0
     }
 
     fun isHermesInstalled(): Boolean {
-        // Only treat Hermes as "installed" when the wrapper script is on PATH.
-        // git clone succeeding alone is NOT enough — pyproject.toml existing
-        // doesn't mean `pip install -e .[termux]` finished. The wrapper is
-        // the very last thing installHermes() creates, so its presence is a
-        // reliable end-to-end success marker.
-        val paths = BootstrapInstaller.getPaths(context)
-        return File(paths.prefixDir, "bin/hermes").exists()
-    }
-
-    // ── proot ──────────────────────────────────────────────────────────────
-
-    /**
-     * Install proot from the Termux repository. proot uses ptrace to
-     * intercept filesystem syscalls and remap hardcoded Termux paths
-     * (e.g. /data/data/com.termux/files/usr) to our actual prefix,
-     * enabling dpkg, apt-get install, and other tools that have
-     * compiled-in path references.
-     */
-    fun installProot(onProgress: (String) -> Unit): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-        val termuxPrefix = "/data/data/com.termux/files/usr"
-
-        // Retry the whole download+extract+verify cycle up to 3 times so a
-        // transient Termux mirror blip doesn't surface to the user.
-        return runWithRetry(
-            maxAttempts = 3,
-            baseDelayMs = 3000L,
-            onProgress = onProgress,
-            what = "install proot",
-        ) {
-            // Skip apt-get download if the bundle already staged debs in tmp/.
-            if (!bundledDebsPresent()) {
-                onProgress("Downloading proot…")
-                val ok = aptGetDownloadWithMirrors(prefix, "proot libtalloc", onProgress)
-                if (!ok) {
-                    Log.e(TAG, "apt-get download proot failed on all mirrors")
-                    return@runWithRetry false
-                }
-            } else {
-                onProgress("Using bundled proot debs…")
-            }
-
-            onProgress("Extracting proot…")
-            val extractCmd = """
-                cd $prefix/tmp &&
-                mkdir -p _proot_stage &&
-                for deb in proot*.deb libtalloc*.deb; do
-                    [ -f "${'$'}deb" ] || continue
-                    dpkg-deb -x "${'$'}deb" _proot_stage/ 2>&1
-                done &&
-                if [ -d "_proot_stage$termuxPrefix" ]; then
-                    cp -a _proot_stage$termuxPrefix/* "$prefix/" 2>&1
-                elif [ -d "_proot_stage/usr" ]; then
-                    cp -a _proot_stage/usr/* "$prefix/" 2>&1
-                fi &&
-                chmod 700 "$prefix/bin/proot" 2>/dev/null; rm -rf _proot_stage proot*.deb libtalloc*.deb 2>/dev/null
-                echo "proot installed"
-            """.trimIndent()
-            val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-            if (extractCode != 0) {
-                Log.e(TAG, "proot extract failed with code $extractCode")
-                return@runWithRetry false
-            }
-
-            isProotInstalled()
-        }
-    }
-
-    // ── Python ─────────────────────────────────────────────────────────────
-
-    /**
-     * Install Python + python-pip + all native transitive deps (libffi,
-     * openssl, libsqlite, ncurses, libbz2, liblzma, libcrypt, libexpat,
-     * readline, zlib, ...).
-     *
-     * Two code paths:
-     *   1. BUNDLED (preferred): If the APK ships assets/python-bundle.tar.gz
-     *      (pre-fetched at CI time via scripts/fetch-python-bundle.py),
-     *      extract it to a staging dir and dpkg-deb -x every .deb in it.
-     *      Fully offline — no apt-get needed at all.
-     *   2. FALLBACK: `apt-get download python python-pip` + apt resolves
-     *      transitive deps at install. Slower, requires network, only
-     *      used when the bundle isn't bundled (e.g. local dev builds).
-     *
-     * Either path is wrapped in 3× retry to absorb transient failures.
-     */
-    fun installPython(onProgress: (String) -> Unit): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-        val termuxPrefix = "/data/data/com.termux/files/usr"
-
-        return runWithRetry(
-            maxAttempts = 3,
-            baseDelayMs = 3000L,
-            onProgress = onProgress,
-            what = "install python",
-        ) {
-            // If extractDebBundleIfPresent() already staged debs in tmp/
-            // (called once at setup start), skip apt-get download entirely.
-            // Otherwise fall back to apt-get download python + python-pip.
-            if (!bundledDebsPresent()) {
-                onProgress("No bundled debs — downloading via apt-get…")
-                // `apt-get download` does NOT resolve dependencies — every
-                // transitive native lib python3 needs at runtime must be
-                // listed explicitly. Missing any one causes an ImportError
-                // at first `python -m pip` (e.g. libexpat.so.1 missing →
-                // pyexpat.cpython-313-aarch64-linux-android.so fails to dlopen
-                // → pip can't even start). This list mirrors what the full
-                // flavor's fetch-python-bundle.py closure produces.
-                val ok = aptGetDownloadWithMirrors(
-                    prefix,
-                    "python python-pip libffi openssl libsqlite ncurses " +
-                        "libbz2 liblzma libcrypt readline zlib " +
-                        "libexpat libandroid-shmem libtalloc",
-                    onProgress,
-                )
-                if (!ok) {
-                    Log.e(TAG, "apt-get download python failed on all mirrors")
-                    return@runWithRetry false
-                }
-            }
-
-            // Extract every .deb in $prefix/tmp into the prefix.
-            // Works for both bundled (17 debs incl. transitive deps) and
-            // apt-get-fetched (2 debs).
-            onProgress("Extracting Python…")
-            val extractCmd = """
-                cd $prefix/tmp &&
-                mkdir -p _python_stage &&
-                for deb in *.deb; do
-                    [ -f "${'$'}deb" ] || continue
-                    echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _python_stage/ 2>&1
-                done &&
-                if [ -d "_python_stage$termuxPrefix" ]; then
-                    cp -a _python_stage$termuxPrefix/* "$prefix/" 2>&1
-                elif [ -d "_python_stage/usr" ]; then
-                    cp -a _python_stage/usr/* "$prefix/" 2>&1
-                fi &&
-                chmod 700 "$prefix/bin/python"* 2>/dev/null
-                # Make every pip* binary executable. Use a for-loop with a
-                # nullglob-style guard (sh doesn't have nullglob, so check
-                # existence) — `chmod 700 pip*` silently does nothing if the
-                # glob doesn't expand, but the resulting `pip: Permission
-                # denied` at install time is hard to diagnose. Iterate so we
-                # also cover pip3, pip3.11, etc.
-                for b in "$prefix/bin/pip" "$prefix/bin/pip3" "$prefix/bin/pip3.11"; do
-                    [ -e "${'$'}b" ] && chmod 700 "${'$'}b" 2>/dev/null
-                done
-                rm -rf _python_stage *.deb 2>/dev/null
-                echo "Python installed"
-            """.trimIndent()
-            val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-            if (extractCode != 0) {
-                Log.e(TAG, "Python extract failed with code $extractCode")
-                return@runWithRetry false
-            }
-
-            val fixCmd = """
-                if [ -f "$prefix/bin/python3" ] && [ ! -f "$prefix/bin/python" ]; then
-                    ln -sf python3 "$prefix/bin/python"
-                fi
-                echo "Python ready"
-            """.trimIndent()
-            runInPrefix(fixCmd, onOutput = { onProgress(it) })
-
-            isPythonInstalled()
-        }
+        // host 侧检查 hermes-agent 代码 + venv 存在
+        return File(paths.homeDir, "hermes-agent/pyproject.toml").exists() &&
+            File(paths.homeDir, "hermes-agent/.venv/bin/activate").exists()
     }
 
     /**
-     * Extract the bundled deb cache (assets/deb-bundle.tar.gz) to $prefix/tmp/.
-     * Called ONCE at the start of setup, before any install*() function runs.
-     * After this returns true, every install*() function will find its .deb
-     * files already in tmp/ and can skip the apt-get download phase entirely.
-     *
-     * Returns true if the bundle was extracted successfully, false if no
-     * bundle is bundled (each install*() function will fall back to apt-get).
+     * 旧 API 兼容：新模型下不再有 deb bundle（apt 在 rootfs 里直接装）。
+     * 返回 false 让 MainActivity 跳过这一步。
      */
     fun extractDebBundleIfPresent(onProgress: (String) -> Unit): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-        val assetManager = context.assets
-        val tarballAsset = "deb-bundle.tar.gz"
-        val hasTarball = try {
-            assetManager.list("")?.any { it == tarballAsset } == true
-        } catch (e: Exception) {
-            false
-        }
-        if (!hasTarball) return false
-
-        onProgress("Extracting bundled deb cache (deb-bundle.tar.gz)…")
-        val tmpDir = File(prefix, "tmp")
-        tmpDir.mkdirs()
-        val outFile = File(tmpDir, tarballAsset)
-        return try {
-            assetManager.open(tarballAsset).use { input ->
-                outFile.outputStream().use { input.copyTo(it) }
-            }
-            // Extract into tmp/ — all install*() functions' `for deb in *.deb`
-            // loops will pick these up. --strip-components=1 drops the
-            // top-level "deb-bundle/" dir created by `tar -czf ... -C $RUNNER_TEMP deb-bundle`.
-            val code = runInPrefix(
-                "cd $prefix/tmp && tar -xzf $tarballAsset --strip-components=1 2>&1",
-                onOutput = { onProgress(it) },
-            )
-            outFile.delete()
-            if (code != 0) {
-                Log.w(TAG, "tar -xzf deb-bundle failed (code=$code) — falling back to apt-get per-step")
-                return false
-            }
-            val debCount = tmpDir.listFiles { _, n -> n.endsWith(".deb") }?.size ?: 0
-            onProgress("Deb bundle: $debCount debs staged in tmp/")
-            debCount > 0
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not extract bundled deb-bundle.tar.gz: ${e.message}")
-            outFile.delete()
-            false
-        }
-    }
-
-    /**
-     * Check whether $prefix/tmp/ already contains .deb files (from a
-     * previously-extracted bundle). Used by each install*() function to
-     * decide whether to skip the apt-get download phase.
-     */
-    private fun bundledDebsPresent(): Boolean {
-        val prefix = BootstrapInstaller.getPaths(context).prefixDir
-        val tmpDir = File(prefix, "tmp")
-        return tmpDir.listFiles { _, n -> n.endsWith(".deb") }?.isNotEmpty() == true
-    }
-
-    /**
-     * apt-get download with mirror fallback. Used by proot/python/buildDeps
-     * when no bundled debs are present.
-     *
-     * Mirror order:
-     *   1. Official Termux CDN  (packages.termux.dev)
-     *   2. Tsinghua mirror      (mirrors.tuna.tsinghua.edu.cn)
-     *
-     * For each mirror: rewrite sources.list → apt-get update → apt-get download.
-     * Returns true if at least one .deb was downloaded successfully.
-     */
-    private fun aptGetDownloadWithMirrors(
-        prefix: String,
-        packages: String,
-        onProgress: (String) -> Unit,
-    ): Boolean {
-        // 清华镜像优先（纯 HTTP，无 ca-certificates 证书问题）。
-        // 官方 CDN 即使 sources.list 写 http:// 也会 301 重定向到 https://，
-        // 而 bootstrap 没有 ca-certificates → 证书验证失败。
-        val aptMirrors = listOf(
-            "http://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
-            "http://packages.termux.dev/apt/termux-main/",
-        )
-        for ((idx, mirror) in aptMirrors.withIndex()) {
-            onProgress("apt-get: 尝试镜像 ${idx + 1}/${aptMirrors.size}: $mirror")
-            runInPrefix("echo \"deb $mirror stable main\" > $prefix/etc/apt/sources.list")
-            // 合并 update + download 为一条命令，不看 update 退出码。
-            // 原因：apt-get update 对未签名仓库（--allow-insecure-repositories）
-            // 即使成功下载了 InRelease + Packages，也可能因签名验证 warning
-            // 返回非 0 退出码，导致误判失败。但只要 package list 实际更新了，
-            // 后续 download 就能找到包 —— 所以以 download 退出码为准。
-            // 另加 -o Acquire::https::Verify-Peer=false 处理官方 CDN 重定向
-            // 到 HTTPS 的情况（无 ca-certificates 时跳过证书验证）。
-            val cmd = """
-                cd $prefix/tmp &&
-                apt-get update \
-                    --allow-insecure-repositories \
-                    -o Acquire::https::Verify-Peer=false \
-                    -o Acquire::https::Verify-Host=false 2>&1;
-                apt-get download --allow-unauthenticated $packages 2>&1
-            """.trimIndent()
-            val code = runInPrefix(
-                cmd,
-                onOutput = { line ->
-                    // Suppress noisy GPG/signature warnings
-                    if (!line.contains("GPG error") &&
-                        !line.contains("is not signed") &&
-                        !line.contains("cannot be authenticated") &&
-                        !line.contains("apt-key") &&
-                        !line.startsWith("Ign:")
-                    ) {
-                        onProgress(line)
-                    }
-                },
-            )
-            if (code == 0) {
-                onProgress("✓ 从 $mirror 下载成功")
-                return true
-            }
-            Log.w(TAG, "apt-get download failed for $mirror (code=$code)")
-            onProgress("镜像 $mirror 下载失败，尝试下一个…")
-        }
-        onProgress("错误：所有镜像均下载失败（$packages）")
+        onProgress("跳过 deb bundle（新架构用 apt-get install）")
         return false
     }
 
-    // ── Node.js ───────────────────────────────────────────────────────────
+    // ── Step 1: proot 验证 ──────────────────────────────────────────────────
 
     /**
-     * Install Node.js LTS. Hermes declares nodejs as an optional runtime
-     * (used for some MCP servers, Playwright, etc.). Same dpkg-deb manual
-     * extraction approach as AnyClaw.
+     * 验证 proot 能在 rootfs 里执行命令。proot 二进制本身已通过 jniLibs 打包，
+     * 这里只做一次 sanity check：在 rootfs 里跑 `echo ok`。
      */
-    fun installNode(onProgress: (String) -> Unit): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-
-        return runWithRetry(
-            maxAttempts = 3,
-            baseDelayMs = 3000L,
-            onProgress = onProgress,
-            what = "install node",
-        ) {
-            // Skip apt-get download if the bundle already staged debs in tmp/.
-            if (!bundledDebsPresent()) {
-                onProgress("Downloading Node.js packages…")
-                val downloadCmd = """
-                    cd $prefix/tmp &&
-                    apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\|is not signed\|cannot be authenticated\|apt-key\|Ign:' || true;
-                    apt-get download --allow-unauthenticated c-ares libicu libsqlite nodejs npm 2>&1
-                """.trimIndent()
-                val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-                if (dlCode != 0) {
-                    Log.e(TAG, "apt-get download failed with code $dlCode")
-                    return@runWithRetry false
-                }
-            } else {
-                onProgress("Using bundled node debs…")
-            }
-
-            onProgress("Extracting Node.js packages…")
-            val termuxPrefix = "/data/data/com.termux/files/usr"
-            val extractCmd = """
-                cd $prefix/tmp &&
-                mkdir -p _stage &&
-                for deb in *.deb; do
-                    [ -f "${'$'}deb" ] || continue
-                    echo "Extracting ${'$'}deb..." &&
-                    dpkg-deb -x "${'$'}deb" _stage/ 2>&1
-                done &&
-                if [ -d "_stage$termuxPrefix" ]; then
-                    cp -a _stage$termuxPrefix/* "$prefix/" 2>&1
-                elif [ -d "_stage/usr" ]; then
-                    cp -a _stage/usr/* "$prefix/" 2>&1
-                fi; rm -rf _stage *.deb 2>/dev/null
-                echo "done"
-            """.trimIndent()
-            val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-            if (extractCode != 0) {
-                Log.e(TAG, "dpkg-deb extract failed with code $extractCode")
-                return@runWithRetry false
-            }
-
-            onProgress("Fixing npm wrapper script…")
-            val fixCmd = """
-                chmod 700 "$prefix/bin/node" 2>/dev/null
-
-                NPM_CLI="$prefix/lib/node_modules/npm/bin/npm-cli.js"
-                if [ -f "${'$'}NPM_CLI" ] && [ ! -f "$prefix/bin/npm" ]; then
-                    cat > "$prefix/bin/npm" << WEOF
-#!/system/bin/sh
-exec ${'$'}{PREFIX}/bin/node ${'$'}{PREFIX}/lib/node_modules/npm/bin/npm-cli.js "\$@"
-WEOF
-                    chmod 700 "$prefix/bin/npm"
-                fi
-
-                echo "Wrapper scripts created"
-            """.trimIndent()
-            runInPrefix(fixCmd, onOutput = { onProgress(it) })
-
-            isNodeInstalled()
+    fun installProot(onProgress: (String) -> Unit): Boolean {
+        onProgress("验证 proot + rootfs…")
+        if (!File(paths.nativeLibDir, "libproot.so").exists()) {
+            onProgress("错误：libproot.so 不存在（jniLibs 未解压）")
+            return false
+        }
+        if (!BootstrapManager.isBootstrapInstalled(context)) {
+            onProgress("错误：rootfs 未安装")
+            return false
+        }
+        return try {
+            val out = processManager.runInProotSync("echo proot-ok && uname -a", 60) { onProgress(it) }
+            onProgress("✓ proot 可用: ${out.lineSequence().firstOrNull() ?: ""}")
+            true
+        } catch (e: Exception) {
+            onProgress("错误：proot 验证失败 — ${e.message}")
+            false
         }
     }
 
-    // ── Hermes build dependencies ─────────────────────────────────────────
+    // ── Step 2: Python ──────────────────────────────────────────────────────
 
     /**
-     * Install all Termux packages needed for Hermes to build its
-     * Python and Rust extensions. Follows the official Hermes Termux
-     * guide:
-     *
-     *   pkg install -y git python clang rust make pkg-config libffi \
-     *                  openssl nodejs ripgrep ffmpeg
-     *
-     * Plus the transitive build toolchain (cmake, lld, ndk-sysroot,
-     * libllvm, libedit, libcompiler-rt) needed to compile native
-     * Python wheels such as cffi, cryptography, etc.
+     * apt-get install python3 python3-pip python3-venv。
+     * rootfs 里 apt 完全可用，无需手动 deb 解压。
+     */
+    fun installPython(onProgress: (String) -> Unit): Boolean {
+        if (isPythonInstalled()) {
+            onProgress("Python 已安装，跳过")
+            return true
+        }
+        return try {
+            runWithRetry(onProgress = onProgress, what = "install python") {
+                onProgress("apt-get update…")
+                processManager.runInProotSync(
+                    "apt-get update 2>&1 | tail -5", 600
+                ) { onProgress(it) }
+                onProgress("apt-get install python3 python3-pip python3-venv…")
+                processManager.runInProotSync(
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y " +
+                        "python3 python3-pip python3-venv 2>&1 | tail -20",
+                    1200
+                ) { onProgress(it) }
+                isPythonInstalled()
+            }
+        } catch (e: Exception) {
+            onProgress("错误：Python 安装失败 — ${e.message}")
+            false
+        }
+    }
+
+    // ── Step 3: build deps ──────────────────────────────────────────────────
+
+    /**
+     * apt-get install Hermes 编译依赖（git/make/pkg-config/libffi-dev 等）。
+     * rootfs 里这些是标准 Ubuntu 包，apt 自动解析依赖。
      */
     fun installHermesBuildDeps(onProgress: (String) -> Unit): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-        val termuxPrefix = "/data/data/com.termux/files/usr"
-
-        // Skip entirely if a previous run already finished this step
-        // AND the marker version matches (package list may change between
-        // releases — old marker without libngtcp2 must be invalidated).
-        val depsMarker = File(prefix, "var/.hermes-deps-installed")
-        val depsMarkerVersion = "v2"  // bump when package list changes
-        if (depsMarker.exists()) {
-            val markerContent = depsMarker.readText().trim()
-            if (markerContent == depsMarkerVersion) {
-                onProgress("Build dependencies already installed (cached, $depsMarkerVersion)")
-                return true
-            } else {
-                onProgress("Build deps marker outdated ($markerContent → $depsMarkerVersion), re-downloading…")
+        // marker 文件，避免重复安装（apt install 本身幂等，但省一次 update）
+        val marker = File(paths.configDir, ".build-deps-v1")
+        if (marker.exists()) {
+            onProgress("build deps 已安装（缓存）")
+            return true
+        }
+        return try {
+            runWithRetry(onProgress = onProgress, what = "install build deps") {
+                onProgress("apt-get update…")
+                processManager.runInProotSync(
+                    "apt-get update 2>&1 | tail -5", 600
+                ) { onProgress(it) }
+                onProgress("apt-get install build dependencies…")
+                // build-essential 含 gcc/g++/make；libffi-dev/libssl-dev 给
+                // cffi/cryptography 编译用；git 克隆代码；pkg-config 找库；
+                // ripgrep 给 Hermes 搜索；nodejs/npm 可选运行时。
+                processManager.runInProotSync(
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y " +
+                        "build-essential git make pkg-config " +
+                        "libffi-dev libssl-dev libsqlite3-dev zlib1g-dev " +
+                        "ripgrep 2>&1 | tail -20",
+                    1800
+                ) { onProgress(it) }
+                marker.parentFile?.mkdirs()
+                marker.writeText("ok")
+                true
             }
-        }
-
-        // If the bundle already staged debs in tmp/, skip the entire
-        // apt-get update + download phase — just go to extract.
-        // Otherwise fall back to the original apt-get download path.
-        if (!bundledDebsPresent()) {
-            onProgress("Downloading build dependencies…")
-
-            // Official Hermes pkg list + transitive build tools needed to
-            // compile native Python wheels (cryptography, cffi, etc).
-            // clang/rust are included here but will be re-downloaded in
-            // Phase 2 if wheel install fails — that's OK, the second download
-            // is a no-op if the .deb is already in tmp/.
-            val pkgGroups = listOf(
-                // Hermes official Termux pkg list (ffmpeg skipped — Hermes core
-                // doesn't need it, only the optional audio/video extras do,
-                // and it's ~30MB we'd rather not download on lite).
-                "git python clang rust make pkg-config libffi openssl nodejs ripgrep",
-                // Transitive native build toolchain (needed by rust + cffi + cryptography)
-                "cmake binutils lld libllvm libedit ndk-sysroot ndk-multilib libcompiler-rt",
-                // Shared libs that some Hermes extras link against.
-                // libngtcp2 is a transitive dep of libcurl (HTTP/3 support) —
-                // must be explicitly listed because `apt-get download` does NOT
-                // resolve dependencies, unlike `apt-get install -d`.
-                // libexpat is needed by Python's pyexpat (pip imports it) —
-                // without it `python -m pip` crashes with dlopen libexpat.so.1.
-                "libarchive libxml2 liblzma libcurl libuv libnghttp2 libnghttp3 libngtcp2 libexpat",
-                // Misc
-                "rhash jsoncpp",
-            )
-
-            // Download each pkg group with mirror fallback. One group failing
-            // doesn't abort the whole step — subsequent groups still get tried.
-            for (group in pkgGroups) {
-                val groupOk = aptGetDownloadWithMirrors(prefix, group, onProgress)
-                if (!groupOk) {
-                    Log.w(TAG, "apt-get download ($group) failed on all mirrors (non-fatal)")
-                    onProgress("警告：$group 下载失败，继续尝试其他组…")
-                }
-            }
-
-            // Verify downloaded debs are not corrupted. Large debs (rust ~96MB)
-            // may be truncated on unstable networks. `dpkg-deb --info` parses
-            // the control archive — if it fails, the deb is corrupted and
-            // must be re-downloaded.
-            onProgress("Verifying downloaded .deb files…")
-            val verifyCmd = """
-                cd $prefix/tmp
-                for deb in *.deb; do
-                    [ -f "${'$'}deb" ] || continue
-                    if ! dpkg-deb --info "${'$'}deb" >/dev/null 2>&1; then
-                        echo "CORRUPT: ${'$'}deb — re-downloading"
-                        rm -f "${'$'}deb"
-                        pkg=$(echo "${'$'}deb" | sed 's/_.*//')
-                        apt-get download --allow-unauthenticated "${'$'}pkg" 2>&1 || echo "RE-DOWNLOAD FAILED: ${'$'}pkg"
-                    fi
-                done
-                echo "Verification done"
-            """.trimIndent()
-            runInPrefix(verifyCmd, onOutput = { onProgress(it) })
-        } else {
-            // Bundle has most build deps, but rust/clang/ffmpeg were
-            // excluded from the bundle (too big / too frequently updated).
-            // They are now downloaded ON-DEMAND by installHermes() only if
-            // the wheel-cache install path fails (i.e. a package couldn't
-            // be installed from the pre-fetched manylinux wheels and needs
-            // to be compiled from source). This avoids the ~600MB rust+clang
-            // download in the common case where wheels work.
-            onProgress("Using bundled build deps (rust/clang deferred to installHermes)")
-        }
-
-        onProgress("Extracting build dependencies…")
-        val extractCmd = """
-            cd $prefix/tmp &&
-            mkdir -p _deps_stage &&
-            _failed=0
-            for deb in *.deb; do
-                [ -f "${'$'}deb" ] || continue
-                echo "Extracting ${'$'}deb..." 
-                if ! dpkg-deb -x "${'$'}deb" _deps_stage/ 2>&1; then
-                    echo "FAILED to extract ${'$'}deb — file may be corrupted"
-                    _failed=1
-                fi
-            done
-            if [ "${'$'}_failed" = "1" ]; then
-                echo "EXTRACT_FAILED"
-                exit 1
-            fi
-            if [ -d "_deps_stage$termuxPrefix" ]; then
-                cp -a _deps_stage$termuxPrefix/* "$prefix/" 2>&1
-            elif [ -d "_deps_stage/usr" ]; then
-                cp -a _deps_stage/usr/* "$prefix/" 2>&1
-            fi; rm -rf _deps_stage *.deb 2>/dev/null
-            echo "Build deps installed"
-        """.trimIndent()
-
-        val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-        if (extractCode != 0) {
-            onProgress("Build deps extraction FAILED — some packages were corrupted during download")
-            onProgress("Cleaning up stale marker and corrupted debs…")
-            // Delete marker so next run re-downloads
-            depsMarker.delete()
-            // Clean up any partially extracted files
-            runInPrefix("rm -rf $prefix/tmp/*.deb $prefix/tmp/_deps_stage 2>/dev/null") {}
-            return false
-        }
-
-        // Verify critical binaries exist after extraction
-        val gitBin = File(prefix, "bin/git")
-        if (!gitBin.exists()) {
-            onProgress("ERROR: git binary not found after build deps extraction")
-            onProgress("The git .deb may have been corrupted or not downloaded")
-            depsMarker.delete()
-            return false
-        }
-
-        // Create symlinks for tools that expect different names
-        runInPrefix("""
-            [ ! -f "$prefix/bin/ar" ] && [ -f "$prefix/bin/llvm-ar" ] && ln -sf llvm-ar "$prefix/bin/ar"
-            [ ! -f "$prefix/bin/ld" ] || [ -L "$prefix/bin/ld" ] && ln -sf ld.lld "$prefix/bin/ld"
-            echo "Symlinks created"
-        """.trimIndent())
-
-        onProgress("Fixing git-core script shebangs…")
-        fixGitCoreShebangs(prefix)
-
-        onProgress("Patching make & cmake binaries…")
-        patchBinaryTermuxPaths(prefix)
-
-        onProgress("Creating header stubs…")
-        createHeaderStubs(prefix)
-
-        // Write the marker LAST — only after every fixup above succeeded.
-        // On retry, the early-return check at the top of this function sees
-        // the marker and skips the whole step.
-        try {
-            File(prefix, "var").mkdirs()
-            depsMarker.writeText(depsMarkerVersion)
-            onProgress("Marked build deps as installed ($depsMarkerVersion)")
         } catch (e: Exception) {
-            Log.w(TAG, "Could not write deps marker: ${e.message}")
-        }
-
-        return true
-    }
-
-    /**
-     * Retry helper with exponential backoff. Used for apt/pip operations
-     * that fail transiently due to Termux repo mirror or PyPI flakiness.
-     */
-    internal fun runWithRetry(
-        maxAttempts: Int,
-        baseDelayMs: Long,
-        onProgress: (String) -> Unit,
-        what: String,
-        action: () -> Boolean,
-    ): Boolean {
-        var lastError: Boolean = false
-        for (attempt in 1..maxAttempts) {
-            if (attempt > 1) {
-                // A previous attempt likely died holding apt/dpkg locks
-                // (apt-get can sit for minutes on a hung network read
-                // before timing out). The next retry would immediately
-                // hit "Could not get lock ... held by process N (apt-get)"
-                // and fail the same way. Kill any leftover apt/dpkg and
-                // remove the lock files before sleeping, so the retry
-                // starts from a clean slate.
-                killStaleAptProcesses(onProgress)
-                val delay = baseDelayMs * (1L shl (attempt - 2))
-                onProgress("Retry $attempt/$maxAttempts for $what (waiting ${delay}ms)…")
-                try { Thread.sleep(delay) } catch (_: InterruptedException) {}
-            }
-            lastError = !action()
-            if (!lastError) return true
-        }
-        return !lastError
-    }
-
-    /**
-     * Kill any apt-get/dpkg processes still running from a previous attempt
-     * and remove their lock files. Idempotent — safe to call when nothing
-     * is running.
-     */
-    private fun killStaleAptProcesses(onProgress: (String) -> Unit) {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-        val cmd = """
-            # Kill leftover apt-get / dpkg from a previous (failed) attempt.
-            # `pgrep` is part of Termux's procps and is in the bootstrap.
-            for p in ${'$'}(pgrep apt-get 2>/dev/null) ${'$'}(pgrep dpkg 2>/dev/null); do
-                kill -9 "${'$'}p" 2>/dev/null
-            done
-            # Remove lock files they may have left behind.
-            rm -f "$prefix/var/cache/apt/archives/lock" \
-                  "$prefix/var/cache/apt/archives/lock-frontend" \
-                  "$prefix/var/lib/apt/lists/lock" \
-                  "$prefix/var/lib/dpkg/lock" \
-                  "$prefix/var/lib/dpkg/lock-frontend" 2>/dev/null
-            echo "cleaned apt locks"
-        """.trimIndent()
-        runInPrefix(cmd) { line -> Log.d(TAG, "[cleanup] $line") }
-        onProgress("Cleared stale apt locks before retry")
-    }
-
-    private fun fixGitCoreShebangs(prefix: String) {
-        val cmd = """
-            cd "$prefix/libexec/git-core" 2>/dev/null || exit 0
-            for f in git-*; do
-                if head -1 "${'$'}f" 2>/dev/null | grep -q "com.termux"; then
-                    sed -i "1s|/data/data/com.termux/files/usr|$prefix|" "${'$'}f"
-                fi
-            done
-            echo "Git shebangs fixed"
-        """.trimIndent()
-        runInPrefix(cmd) { Log.d(TAG, "[fix-shebang] $it") }
-    }
-
-    private fun patchBinaryTermuxPaths(prefix: String) {
-        val patchScript = """
-            cat > "$prefix/tmp/_patchbin.py" << 'PYEOF'
-import sys
-with open(sys.argv[1], "rb") as f:
-    data = f.read()
-pairs = [
-    (b"/data/data/com.termux/files/usr/bin/sh", b"/system/bin/sh"),
-    (b"/data/data/com.termux/files/usr/bin/bash", b"/system/bin/sh"),
-]
-for old, new in pairs:
-    padded = new + b"\x00" * (len(old) - len(new))
-    data = data.replace(old, padded)
-with open(sys.argv[1], "wb") as f:
-    f.write(data)
-print("patched " + sys.argv[1])
-PYEOF
-            for bin in "$prefix/bin/make" "$prefix/bin/cmake"; do
-                [ -f "${'$'}bin" ] || continue
-                python3 "$prefix/tmp/_patchbin.py" "${'$'}bin" 2>&1 && chmod 700 "${'$'}bin" 2>/dev/null
-            done
-            rm -f "$prefix/tmp/_patchbin.py"
-        """.trimIndent()
-        runInPrefix(patchScript) { Log.d(TAG, "[patch-bin] $it") }
-    }
-
-    private fun createHeaderStubs(prefix: String) {
-        val cmd = """
-            mkdir -p "$prefix/include/android"
-
-            cat > "$prefix/include/android/api-level.h" << 'H1'
-#pragma once
-#define __ANDROID_API__ 24
-H1
-
-            cat > "$prefix/include/spawn.h" << 'H2'
-#pragma once
-#include <sys/types.h>
-typedef struct { short __flags; pid_t __pgroup; } posix_spawnattr_t;
-typedef struct { int __allocated; int __used; void **__actions; } posix_spawn_file_actions_t;
-static inline int posix_spawn(pid_t *p,const char *path,const posix_spawn_file_actions_t *fa,const posix_spawnattr_t *a,char *const argv[],char *const envp[]){return -1;}
-static inline int posix_spawnp(pid_t *p,const char *file,const posix_spawn_file_actions_t *fa,const posix_spawnattr_t *a,char *const argv[],char *const envp[]){return -1;}
-static inline int posix_spawnattr_init(posix_spawnattr_t *a){return 0;}
-static inline int posix_spawnattr_destroy(posix_spawnattr_t *a){return 0;}
-static inline int posix_spawnattr_setflags(posix_spawnattr_t *a,short f){a->__flags=f;return 0;}
-static inline int posix_spawnattr_setpgroup(posix_spawnattr_t *a,pid_t g){a->__pgroup=g;return 0;}
-static inline int posix_spawn_file_actions_init(posix_spawn_file_actions_t *fa){return 0;}
-static inline int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *fa){return 0;}
-static inline int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *fa,int o,int n){return 0;}
-static inline int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t *fa,int f){return 0;}
-#define POSIX_SPAWN_SETPGROUP 2
-#define POSIX_SPAWN_SETSIGDEF 4
-#define POSIX_SPAWN_SETSIGMASK 8
-H2
-
-            cat > "$prefix/include/renameat2_shim.h" << 'H3'
-#pragma once
-#include <sys/syscall.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <linux/fs.h>
-static inline int renameat2(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, unsigned int flags) {
-    return syscall(__NR_renameat2, olddirfd, oldpath, newdirfd, newpath, flags);
-}
-H3
-            echo "Header stubs created"
-        """.trimIndent()
-        runInPrefix(cmd) { Log.d(TAG, "[headers] $it") }
-    }
-
-    // ── Hermes Agent ───────────────────────────────────────────────────────
-
-    /**
-     * Ensure libngtcp2 (and other libcurl transitive deps) are present.
-     * If build deps were installed by an older APK that didn't include
-     * libngtcp2 in the package list, git-remote-https crashes with
-     * "cannot locate symbol ngtcp2_crypto_get_path_challenge_data2_cb".
-     *
-     * This function checks if libngtcp2.so exists in the prefix. If not,
-     * it downloads and extracts just that one package (plus libngtcp2-crypto
-     * if it exists as a separate package).
-     */
-    private fun ensureCurlDeps(prefix: String, onProgress: (String) -> Unit) {
-        // Quick filesystem check — if libngtcp2.so exists, we're good
-        val libngtcp2 = File(prefix, "lib/libngtcp2.so")
-        if (libngtcp2.exists()) return
-
-        onProgress("libngtcp2.so missing — downloading (libcurl HTTP/3 dependency)…")
-        val termuxPrefix = "/data/data/com.termux/files/usr"
-        val cmd = """
-            cd $prefix/tmp &&
-            apt-get download --allow-unauthenticated libngtcp2 2>&1 &&
-            for deb in libngtcp2*.deb; do
-                [ -f "${'$'}deb" ] || continue
-                dpkg-deb -x "${'$'}deb" _ngtcp2_stage/ 2>&1
-            done &&
-            if [ -d "_ngtcp2_stage$termuxPrefix" ]; then
-                cp -a _ngtcp2_stage$termuxPrefix/* "$prefix/" 2>&1
-            elif [ -d "_ngtcp2_stage/usr" ]; then
-                cp -a _ngtcp2_stage/usr/* "$prefix/" 2>&1
-            fi &&
-            rm -rf _ngtcp2_stage libngtcp2*.deb 2>/dev/null
-        """.trimIndent()
-        val code = runInPrefix(cmd, onOutput = { onProgress(it) })
-        if (code != 0) {
-            Log.w(TAG, "ensureCurlDeps: libngtcp2 download failed (code=$code)")
-            onProgress("Warning: libngtcp2 download failed — git clone may fail, will use tarball fallback")
-        } else {
-            onProgress("libngtcp2 installed")
-        }
-    }
-
-    /**
-     * Ensure Python's native runtime libraries are present.
-     *
-     * If Python was installed by an older APK version (or by a
-     * runInstallAll that skipped installPython because bin/python3
-     * already existed), critical .so files may be missing. The most
-     * common one is libexpat.so.1 — without it `python -m pip` crashes
-     * at startup because pip imports xmlrpc.client → pyexpat → libexpat.
-     *
-     * This checks each known-critical lib and downloads the matching
-     * Termux package on demand if the .so is absent. Safe to call
-     * repeatedly — it's a no-op once all libs are present.
-     */
-    private fun ensurePythonRuntimeDeps(prefix: String, onProgress: (String) -> Unit) {
-        // Map of (missing .so path) -> (Termux package name to download).
-        // These are the libs Python's stdlib dlopens at import time —
-        // missing any one makes `python -m pip` (and thus the whole
-        // Hermes install) fail before it can do anything useful.
-        val requiredLibs = listOf(
-            "lib/libexpat.so.1" to "libexpat",
-            "lib/libffi.so" to "libffi",
-            "lib/libssl.so" to "openssl",
-            "lib/libsqlite.so" to "libsqlite",
-            "lib/libcrypto.so" to "openssl",
-            "lib/libncursesw.so" to "ncurses",
-            "lib/libbz2.so.1.0" to "libbz2",
-            "lib/liblzma.so" to "liblzma",
-            "lib/libz.so.1" to "zlib",
-            "lib/libreadline.so" to "readline",
-        )
-        val missing = requiredLibs.filter { !File(prefix, it.first).exists() }.map { it.second }.distinct()
-        if (missing.isEmpty()) return
-
-        onProgress("Python native libs missing: ${missing.joinToString()} — downloading…")
-        val termuxPrefix = "/data/data/com.termux/files/usr"
-        val pkgsArg = missing.joinToString(" ")
-        val cmd = """
-            cd $prefix/tmp &&
-            apt-get download --allow-unauthenticated $pkgsArg 2>&1 &&
-            mkdir -p _pylibs_stage &&
-            for deb in *.deb; do
-                [ -f "${'$'}deb" ] || continue
-                case "${'$'}deb" in
-                    libexpat*|libffi*|openssl*|libsqlite*|ncurses*|libbz2*|liblzma*|zlib*|readline*) dpkg-deb -x "${'$'}deb" _pylibs_stage/ 2>&1 ;;
-                esac
-            done &&
-            if [ -d "_pylibs_stage$termuxPrefix" ]; then
-                cp -a _pylibs_stage$termuxPrefix/* "$prefix/" 2>&1
-            elif [ -d "_pylibs_stage/usr" ]; then
-                cp -a _pylibs_stage/usr/* "$prefix/" 2>&1
-            fi &&
-            rm -rf _pylibs_stage *.deb 2>/dev/null
-            echo "Python native libs installed"
-        """.trimIndent()
-        val rc = runInPrefix(cmd, onOutput = { onProgress(it) })
-        if (rc != 0) {
-            Log.w(TAG, "ensurePythonRuntimeDeps: download failed (code=$rc)")
-            onProgress("Warning: some Python native libs failed to install — pip may crash")
-        } else {
-            onProgress("Python native libs installed")
-        }
-    }
-
-    /**
-     * Configure git to rewrite SSH GitHub URLs to HTTPS (we don't have ssh
-     * in our prefix). Required because Hermes git clone may pull submodules
-     * over SSH.
-     */
-    private fun configureGitHttps(paths: BootstrapInstaller.Paths) {
-        val gitconfigFile = File(paths.homeDir, ".gitconfig")
-        val desired = """
-            |[url "https://github.com/"]
-            |	insteadOf = ssh://git@github.com/
-            |	insteadOf = git@github.com:
-        """.trimMargin()
-        val existing = if (gitconfigFile.exists()) gitconfigFile.readText() else ""
-        if (!existing.contains("insteadOf = ssh://git@github.com")) {
-            gitconfigFile.appendText("\n$desired\n")
-        }
-    }
-
-    /**
-     * If the APK ships a bundled wheel cache (assets/wheels/ dir of .whl
-     * files, or assets/wheels.tar.gz), extract it to a local directory and return
-     * that path so installHermes can pass `--no-index --find-links=<dir>`
-     * to pip. This lets the install run fully offline for Hermes deps.
-     *
-     * Returns null if no wheel cache is bundled (fall back to PyPI).
-     */
-    private fun setupWheelCacheIfPresent(prefix: String, onProgress: (String) -> Unit): String? {
-        val assetManager = context.assets
-        val wheelsDir = File(prefix, "var/wheels")
-
-        // Check if wheel cache is bundled as a tarball first (preferred —
-        // single file, smaller in APK because compressible).
-        val tarballAsset = "wheels.tar.gz"
-        val hasTarball = try {
-            assetManager.list("")?.any { it == tarballAsset } == true
-        } catch (e: Exception) {
+            onProgress("错误：build deps 安装失败 — ${e.message}")
             false
         }
-        if (hasTarball) {
-            onProgress("Extracting bundled wheel cache (wheels.tar.gz)…")
-            wheelsDir.mkdirs()
-            val outFile = File(wheelsDir, tarballAsset)
-            try {
-                assetManager.open(tarballAsset).use { input ->
-                    outFile.outputStream().use { input.copyTo(it) }
-                }
-                // NOTE: outFile is a Kotlin File object, NOT a shell variable.
-                // Earlier code used $outFile in the shell string, which expanded
-                // to empty string and made tar fail silently. Use Kotlin string
-                // interpolation to pass the absolute path directly.
-                val tarCode = runInPrefix(
-                    "tar -xzf ${outFile.absolutePath} -C ${wheelsDir.absolutePath} 2>&1",
-                    onOutput = { onProgress(it) },
-                )
-                outFile.delete()
-                if (tarCode != 0) {
-                    Log.w(TAG, "tar -xzf wheels.tar.gz failed (code=$tarCode) — falling back to PyPI")
-                    wheelsDir.deleteRecursively()
-                    return null
-                }
-                val wheelCount = wheelsDir.listFiles { _, n -> n.endsWith(".whl") }?.size ?: 0
-                onProgress("Wheel cache: $wheelCount wheels extracted")
-                if (wheelCount == 0) {
-                    Log.w(TAG, "Wheel cache extracted but contains 0 .whl files — ignoring")
-                    wheelsDir.deleteRecursively()
-                    return null
-                }
-                return wheelsDir.absolutePath
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not extract bundled wheels.tar.gz: ${e.message}")
-                outFile.delete()
-                wheelsDir.deleteRecursively()
-            }
-        }
-
-        // Otherwise check for a plain directory of wheels in assets/wheels/.
-        val hasWheelsDir = try {
-            assetManager.list("wheels")?.isNotEmpty() == true
-        } catch (e: Exception) {
-            false
-        }
-        if (hasWheelsDir) {
-            onProgress("Copying bundled wheel cache (assets/wheels/)…")
-            wheelsDir.mkdirs()
-            try {
-                assetManager.list("wheels")?.forEach { name ->
-                    assetManager.open("wheels/$name").use { input ->
-                        File(wheelsDir, name).outputStream().use { input.copyTo(it) }
-                    }
-                }
-                val wheelCount = wheelsDir.listFiles { _, n -> n.endsWith(".whl") }?.size ?: 0
-                onProgress("Wheel cache: $wheelCount wheels copied")
-                return wheelsDir.absolutePath
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not copy bundled wheels/: ${e.message}")
-                wheelsDir.deleteRecursively()
-            }
-        }
-
-        return null
     }
 
+    // ── Step 4: Hermes Agent ────────────────────────────────────────────────
+
     /**
-     * Install Hermes Agent following the official Termux guide:
+     * git clone hermes-agent + python -m venv + pip install -e '.[termux]'。
      *
-     *   git clone https://github.com/NousResearch/hermes-agent.git
-     *   cd hermes-agent
-     *   python -m pip install -e '.[termux]' -c constraints-termux.txt
+     * rootfs 里 python -m venv 正常工作（无 _sysconfigdata bug），无需手动创建。
+     * pip 用清华镜像加速（国内 PyPI 慢）。
      *
-     * The constraints file pins versions known to build cleanly on
-     * Android. We rely on the in-repo constraints-termux.txt.
+     * @param onNeedCompile Phase 1 失败时回调，询问用户是否同意下载工具链从源码编译。
+     *                       新 rootfs 模型里 build-essential 已装，多数情况一次成功。
      */
     fun installHermes(
         onProgress: (String) -> Unit,
-        onNeedCompile: () -> Boolean = { true },
+        @Suppress("UNUSED_PARAMETER") onNeedCompile: () -> Boolean = { true },
     ): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
         val homeDir = paths.homeDir
+        val repoDir = File(homeDir, "hermes-agent")
 
-        // Prepare directories Hermes expects
-        runInPrefix("mkdir -p $prefix/tmp ${homeDir}/.hermes")
+        // 准备目录
+        File(homeDir, ".hermes").mkdirs()
 
-        // Configure git HTTPS rewrite
-        configureGitHttps(paths)
-
-        // systemctl stub (Hermes may check for systemd)
-        val systemctlStub = File(prefix, "bin/systemctl")
-        if (!systemctlStub.exists()) {
-            systemctlStub.writeText(
-                "#!/system/bin/sh\nexit 0\n"
-            )
-            systemctlStub.setExecutable(true)
-        }
-
-        // Ensure libngtcp2 is present — libcurl.so depends on it for HTTP/3.
-        // If build deps were installed by an older APK version that didn't
-        // include libngtcp2 in the package list, git-remote-https will crash
-        // with "cannot locate symbol ngtcp2_crypto_get_path_challenge_data2_cb".
-        // This is a targeted fix that downloads just the missing lib.
-        ensureCurlDeps(prefix, onProgress)
-
-        // Ensure Python's native runtime libs are present. If Python was
-        // installed by an older APK (or skipped because bin/python3 already
-        // existed), libexpat.so.1 may be missing — and `python -m pip`
-        // crashes at startup importing pyexpat. Download on demand.
-        ensurePythonRuntimeDeps(prefix, onProgress)
-
-        // Clone Hermes (idempotent + retry). GitHub may be blocked in some
-        // networks (e.g. GFW in China), so we try multiple clone URLs
-        // including Chinese mirror sites. Falls back to tarball download
-        // (also with mirror URLs) if git-remote-https is broken.
-        if (!File(homeDir, "hermes-agent/pyproject.toml").exists()) {
-            // Git clone URLs — try official first, then Chinese mirrors
-            val cloneUrls = listOf(
-                HERMES_REPO,
-                "https://kkgithub.com/NousResearch/hermes-agent.git",
-                "https://bgithub.xyz/NousResearch/hermes-agent.git",
-            )
-            var cloneOk = false
-            for (cloneUrl in cloneUrls) {
-                cloneOk = runWithRetry(
-                    maxAttempts = 2,
-                    baseDelayMs = 3000L,
-                    onProgress = onProgress,
-                    what = "git clone from ${cloneUrl.substringAfter("://").substringBefore("/")}",
-                ) {
-                    onProgress("Cloning Hermes Agent repository from $cloneUrl…")
-                    runInPrefix(
-                        "cd ${homeDir} && rm -rf hermes-agent && git clone --depth 1 $cloneUrl hermes-agent 2>&1",
-                        onOutput = { onProgress(it) },
-                    ) == 0 && File(homeDir, "hermes-agent/pyproject.toml").exists()
-                }
-                if (cloneOk) break
-                onProgress("Clone from ${cloneUrl.substringAfter("://").substringBefore("/")} failed, trying next mirror…")
-            }
-
+        // git clone（多镜像 fallback，GitHub 在国内可能被墙）
+        if (!File(repoDir, "pyproject.toml").exists()) {
+            val cloneOk = cloneHermesRepo(onProgress)
             if (!cloneOk) {
-                Log.w(TAG, "git clone failed from all mirrors — falling back to tarball download")
-                onProgress("Git clone failed, trying tarball download…")
-                val tarballOk = runWithRetry(
-                    maxAttempts = 3,
-                    baseDelayMs = 3000L,
-                    onProgress = onProgress,
-                    what = "tarball download hermes-agent",
-                ) {
-                    // Download tarball via Java HttpURLConnection (completely
-                    // bypasses Termux's libcurl). Try multiple URLs —
-                    // github.com may be blocked in some networks (GFW),
-                    // so Chinese mirror proxies are tried as fallback.
-                    val tarballUrls = listOf(
-                        "https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
-                        "https://gh-proxy.com/https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
-                        "https://kkgithub.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
-                        "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/heads/main",
-                    )
-                    val tarballFile = File(paths.tmpDir, "hermes-agent.tar.gz")
-                    var downloaded = false
-                    for (url in tarballUrls) {
-                        try {
-                            val host = url.substringAfter("://").substringBefore("/")
-                            onProgress("Downloading tarball from $host…")
-                            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                            conn.connectTimeout = 20000
-                            conn.readTimeout = 120000
-                            conn.instanceFollowRedirects = true
-                            conn.requestMethod = "GET"
-                            if (conn.responseCode != 200) {
-                                onProgress("HTTP ${conn.responseCode} from $host")
-                                conn.disconnect()
-                                continue
-                            }
-                            conn.inputStream.use { input ->
-                                tarballFile.outputStream().use { input.copyTo(it) }
-                            }
-                            conn.disconnect()
-                            val tarballSize = tarballFile.length()
-                            if (tarballSize < 1024) {
-                                onProgress("Tarball too small (${tarballSize} bytes) — likely an error page")
-                                tarballFile.delete()
-                                continue
-                            }
-                            onProgress("Tarball downloaded (${tarballSize / 1024}KB) from $host")
-                            downloaded = true
-                            break
-                        } catch (e: Exception) {
-                            val host = url.substringAfter("://").substringBefore("/")
-                            onProgress("Download from $host failed: ${e.message}")
-                            Log.w(TAG, "Tarball download from $host failed: ${e.message}")
-                            tarballFile.delete()
-                        }
-                    }
-                    if (!downloaded) {
-                        onProgress("All tarball download URLs failed")
-                        return@runWithRetry false
-                    }
-                    onProgress("Extracting tarball…")
-                    // Extract with prefix's tar (doesn't need libcurl)
-                    val extractCode = runInPrefix(
-                        "cd ${homeDir} && rm -rf hermes-agent && tar -xzf ${tarballFile.absolutePath} -C ${homeDir} 2>&1 && mv hermes-agent-main hermes-agent 2>/dev/null || true",
-                        onOutput = { onProgress(it) },
-                    )
-                    if (extractCode != 0) {
-                        onProgress("tar extract failed (code=$extractCode)")
-                    }
-                    tarballFile.delete()
-                    val pyprojectExists = File(homeDir, "hermes-agent/pyproject.toml").exists()
-                    if (!pyprojectExists) {
-                        onProgress("pyproject.toml not found after extraction — listing ${homeDir}:")
-                        runInPrefix("ls -la ${homeDir}/ 2>&1 | head -20") { onProgress(it) }
-                    }
-                    extractCode == 0 && pyprojectExists
-                }
-                if (!tarballOk) {
-                    Log.e(TAG, "Both git clone and tarball download failed for hermes-agent")
-                    return false
-                }
-                onProgress("Hermes Agent downloaded via tarball (git clone fallback)")
-            }
-        } else {
-            // The existing hermes-agent/ dir may have come from `git clone`
-            // (has a .git/) OR from a tarball fallback (no .git/). Only
-            // attempt `git pull` when it's actually a git repo — otherwise
-            // git prints "fatal: not a git repository" and the user thinks
-            // something is broken. Tarball dirs are left as-is; reinstall
-            // is handled by pip below.
-            if (File("${homeDir}/hermes-agent/.git").isDirectory) {
-                onProgress("Hermes repository already present, pulling latest…")
-                runInPrefix("cd ${homeDir}/hermes-agent && git pull --ff-only 2>&1") { onProgress(it) }
-            } else {
-                onProgress("Hermes Agent already present (tarball), skipping git pull…")
-            }
-        }
-
-        // Patch sys.platform for Python 3.13+ on Android.
-        // Python 3.13 reports sys.platform="android", but many packages
-        // (psutil, etc.) only recognize "linux" in their setup.py and fail
-        // with "platform android is not supported".
-        //
-        // sitecustomize.py is auto-imported by Python at startup (via the
-        // site module). Placing it in the SYSTEM site-packages (not the
-        // venv's) ensures it's loaded by:
-        //   - the venv python (venv was created with --system-site-packages)
-        //   - pip's build-isolation subprocesses (which inherit sys.path
-        //     from the parent interpreter, including system site-packages)
-        // PYTHONPATH-based approach was unreliable because pip's build
-        // isolation can strip PYTHONPATH from the subprocess environment.
-        val sysSitePackages = File(prefix, "lib/python3.13/site-packages")
-        sysSitePackages.mkdirs()
-        val siteCustomize = File(sysSitePackages, "sitecustomize.py")
-        try {
-            siteCustomize.writeText(
-                """
-                import sys
-                # Python 3.13+ on Android reports sys.platform as "android".
-                # Many packages (psutil, etc.) only check for "linux" — patch
-                # sys.platform so they build correctly.
-                if sys.platform == "android":
-                    sys.platform = "linux"
-                """.trimIndent() + "\n",
-            )
-            Log.i(TAG, "sitecustomize.py written to ${siteCustomize.absolutePath}")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to write sitecustomize.py: ${e.message}")
-            // Non-fatal — some packages may fail to build without this patch
-        }
-
-        // Reuse existing venv if it looks healthy. Recreating it would
-        // throw away packages already installed by a previous (possibly
-        // partial) run and force pip to redownload everything. pip install
-        // is idempotent on an existing venv — already-installed packages
-        // are skipped, so resuming on the existing venv is both safe and
-        // faster. Only (re)create when the activate script is missing.
-        val venvActivate = File("${homeDir}/hermes-agent/.venv/bin/activate")
-        if (venvActivate.exists()) {
-            onProgress("Python venv already exists, reusing…")
-        } else {
-            // NOTE: 不用 `python -m venv`。Termux Python 3.13 的 venv 模块
-            // 启动时导入 _sysconfigdata__linux_aarch64-linux-android 会失败
-            // （"No module named '_sysconfigdata__linux_aarch64-linux-android'"），
-            // 导致 venv 创建失败、bin/activate 不生成。即使 --without-pip 也
-            // 逃不掉这个 import（venv 模块顶层就 import _sysconfigdata）。
-            //
-            // 解决方案：手动创建 venv 目录结构，绕过有 bug 的 venv 模块。
-            // 做的事和 venv 模块底层一样：
-            //   1. mkdir .venv/{bin,lib/python3.13/site-packages}
-            //   2. 在 .venv/bin/python 创建符号链接指向系统 python
-            //   3. 写 pyvenv.cfg 声明这是一个 venv + include-system-site-packages
-            //   4. 生成 activate 脚本（让 `. .venv/bin/activate` 能用）
-            // 这样 venv python 能跑、能 import 系统 pip（python-pip deb 装的）、
-            // pip install 目标是 venv site-packages（sys.path 优先级）。
-            onProgress("Creating Python venv manually (bypass broken venv module)…")
-            val venvOk = createVenvManually(homeDir, prefix, onProgress)
-            if (!venvOk || !venvActivate.exists()) {
-                Log.e(TAG, "manual venv creation failed — activate still missing")
-                onProgress("ERROR: venv creation failed — .venv/bin/activate is missing")
+                onProgress("错误：hermes-agent 克隆失败")
                 return false
             }
-            // Sanity-check that pip is reachable from the venv python.
-            // With --system-site-packages this should always be true; with
-            // plain --without-pip it may not be (no pip in venv, no system
-            // fallback). Detect early instead of failing cryptically in Phase 1.
-            val pipCheck = runInPrefix(
-                "cd ${homeDir}/hermes-agent && .venv/bin/python -m pip --version 2>&1",
-                onOutput = { onProgress(it) },
-            )
-            if (pipCheck != 0) {
-                onProgress("venv has no pip — bootstrapping via get-pip.py…")
-                val bootstrapOk = runInPrefix(
-                    "cd ${homeDir}/hermes-agent && " +
-                        "curl -fsSL https://bootstrap.pypa.io/get-pip.py -o get-pip.py && " +
-                        ".venv/bin/python get-pip.py 2>&1 && rm -f get-pip.py",
-                    timeoutMs = 120000,
-                    onOutput = { onProgress(it) },
-                )
-                if (bootstrapOk != 0) {
-                    Log.e(TAG, "pip bootstrap via get-pip.py failed (exit=$bootstrapOk)")
-                    onProgress("ERROR: failed to bootstrap pip into venv")
-                    return false
-                }
-            }
+        } else if (File(repoDir, ".git").isDirectory) {
+            onProgress("hermes-agent 已存在，git pull…")
+            processManager.runInProotExitCode(
+                "cd /root/home/hermes-agent && git pull --ff-only 2>&1", 120
+            ) { onProgress(it) }
         }
 
-        // Try installing from bundled wheel cache first (if the APK
-        // shipped assets/wheels/), else fall back to PyPI download.
-        // Either way: retry up to 3 times.
-        //
-        // We use --find-links WITHOUT --no-index so pip PREFERS the local
-        // wheel cache (fast + reliable for the pure-python deps that make
-        // up the bulk of the install) but still falls back to PyPI for
-        // packages missing from the cache or whose only cached wheel is an
-        // incompatible platform (e.g. manylinux x86_64 wheels can't install
-        // on Android aarch64 — pip skips those and fetches the right one).
-        // --no-index would make pip fail hard on those, breaking the install.
-        //
-        // PyPI mirror: use Tsinghua's mirror (pypi.tuna.tsinghua.edu.cn/simple)
-        // by default. The default PyPI (pypi.org/simple) is slow / unreliable
-        // from mainland China — connections to fastly.net CDN nodes often
-        // time out or hang for minutes mid-download, which previously caused
-        // the 10-minute pip watchdog to fire and fail the install. The
-        // Tsinghua mirror is hosted inside China, fast, and pip-compatible.
-        // --trusted-host is required because pip refuses to send credentials
-        // to a non-HTTPS-default host (and the cert chain on Android's
-        // system trust store may not match if it's intercepted).
-        val wheelCacheDir = setupWheelCacheIfPresent(prefix, onProgress)
-        val pipArgs = buildString {
-            if (wheelCacheDir != null) append("--find-links=$wheelCacheDir ")
-            append("-i https://pypi.tuna.tsinghua.edu.cn/simple ")
-            append("--trusted-host pypi.tuna.tsinghua.edu.cn")
-        }.trim()
-        onProgress("Phase 1: try installing from wheel cache (no compile needed)…")
-        val phase1Output = StringBuilder()
-        val installOk = runWithRetry(
-            maxAttempts = 3,
-            baseDelayMs = 5000L,
-            onProgress = onProgress,
-            what = "pip install hermes (termux)",
-        ) {
-            onProgress("Installing Hermes (pip install -e .[termux]) — this may take a minute…")
-            phase1Output.clear()
-            // Use `python -m pip` (NOT bare `pip`):
-            // - The venv was created with --without-pip, so there's no
-            //   `pip` binary inside .venv/bin/. Bare `pip` resolves via
-            //   PATH to the system $prefix/bin/pip, which may lack the
-            //   executable bit (chmod 700 pip* glob can miss it depending
-            //   on the deb's filename), giving "pip: Permission denied".
-            // - `python -m pip` invokes the pip *module* through the
-            //   python interpreter, which only needs python's executable
-            //   bit (always set correctly). It resolves pip from
-            //   sys.path — the venv's --system-site-packages picks up the
-            //   system pip module. Packages still install into the venv.
+        // python -m venv（rootfs 里正常工作，无需手动创建绕过 bug）
+        val venvActivate = File(repoDir, ".venv/bin/activate")
+        if (!venvActivate.exists()) {
+            onProgress("创建 Python venv…")
+            val venvCode = processManager.runInProotExitCode(
+                "cd /root/home/hermes-agent && python3 -m venv .venv 2>&1",
+                300
+            ) { onProgress(it) }
+            if (venvCode != 0 || !venvActivate.exists()) {
+                onProgress("错误：venv 创建失败")
+                return false
+            }
+        } else {
+            onProgress("venv 已存在，复用…")
+        }
+
+        // pip install -e '.[termux]'
+        return runWithRetry(onProgress = onProgress, what = "pip install hermes") {
+            onProgress("pip install -e '.[termux]'（可能需要几分钟）…")
+            // 清华 PyPI 镜像加速；--retries/--timeout 抗瞬时网络抖动
             val cmd = """
-                cd ${homeDir}/hermes-agent &&
+                cd /root/home/hermes-agent &&
                 . .venv/bin/activate &&
-                python -m pip install --retries 3 --timeout 60 $pipArgs -e '.[termux]' -c constraints-termux.txt 2>&1
+                pip install --retries 3 --timeout 120 \
+                    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+                    --trusted-host pypi.tuna.tsinghua.edu.cn \
+                    -e '.[termux]' 2>&1
             """.trimIndent()
-            // 10-minute timeout: PyPI downloads can be slow on mobile networks
-            // but an indefinite hang (DNS stuck, mirror down) makes the app
-            // look frozen. pip prints progress per-package, so 10 min is plenty.
-            runInPrefix(cmd, timeoutMs = 10 * 60 * 1000L, onOutput = {
-                onProgress(it)
-                phase1Output.appendLine(it)
-            }) == 0
+            val code = processManager.runInProotExitCode(cmd, 1200) { onProgress(it) }
+            if (code != 0) {
+                onProgress("pip install 失败 (exit=$code)")
+                throw RuntimeException("pip install failed (exit=$code)")
+            }
+            // 验证 hermes 可执行
+            val verify = processManager.runInProotExitCode(
+                "cd /root/home/hermes-agent && . .venv/bin/activate && hermes --version 2>&1",
+                120
+            ) { onProgress(it) }
+            if (verify != 0) {
+                onProgress("警告：hermes --version 退出码 $verify")
+            }
+            verify == 0
         }
-
-        // Phase 2 fallback: if Phase 1 failed, compile native packages from
-        // source. This is needed because PyPI has NO Android-aarch64 wheels
-        // for native deps (cryptography/cffi/pydantic-core/...) — they must
-        // be built on-device with rust+clang.
-        //
-        // WHEN TO ASK THE USER:
-        //   - full flavor (wheel cache present): Phase 1 failing is an
-        //     anomaly (the cache should have covered pure-python deps, and
-        //     native ones should have fallen back to PyPI). Worth asking
-        //     before burning 600MB on rust/clang.
-        //   - lite flavor (NO wheel cache): Phase 1 was guaranteed to fail
-        //     on native packages — there are no Android wheels on PyPI, and
-        //     there's no cache to fall back to. Source compile is the ONLY
-        //     path forward, so asking is just noise. Auto-approve.
-        if (!installOk) {
-            // Surface the last few pip error lines so the user can see
-            // WHY Phase 1 failed (e.g. "ERROR: Could not build wheel for
-            // cryptography" or "no matching distribution for ...").
-            val tailLines = phase1Output.lines()
-                .takeLast(15)
-                .filter { it.isNotBlank() }
-            onProgress("════════════════════════════════════════")
-            onProgress("Phase 1 FAILED (no Android-native wheels for crypto/cffi/...). Last pip output:")
-            tailLines.forEach { onProgress("  $it") }
-            onProgress("════════════════════════════════════════")
-
-            val hadWheelCache = wheelCacheDir != null
-            val approved = if (hadWheelCache) {
-                // full flavor: Phase 1 failing is unexpected — let the user
-                // decide whether to burn 600MB on the toolchain.
-                Log.w(TAG, "pip install from wheel cache failed — asking user about source compile")
-                onNeedCompile()
-            } else {
-                // lite flavor: no wheel cache → Phase 1 was always going to
-                // fail on native packages → source compile is mandatory.
-                // Skip the dialog and proceed directly.
-                onProgress("Lite 版无预编译 wheel 缓存，native 包必须从源码编译 — 自动继续…")
-                Log.i(TAG, "lite flavor: auto-approving source compile (no wheel cache, no Android wheels on PyPI)")
-                true
-            }
-            if (!approved) {
-                Log.e(TAG, "User declined source compile — install aborted")
-                return false
-            }
-
-            onProgress("Phase 2: downloading rust+clang + compiling from source…")
-            val compileDepsOk = downloadAndInstallCompileToolchain(prefix, onProgress)
-            if (!compileDepsOk) {
-                Log.e(TAG, "Failed to download rust/clang — cannot compile")
-                return false
-            }
-
-            // Retry pip install, this time forcing sdist compile for the
-            // native packages that failed before. --no-binary ensures pip
-            // won't reuse the (broken) manylinux wheels.
-            onProgress("Compiling native packages from source (may take 5-10 min)…")
-            val compileOk = runWithRetry(
-                maxAttempts = 2,
-                baseDelayMs = 5000L,
-                onProgress = onProgress,
-                what = "pip install (source compile)",
-            ) {
-                val cmd = """
-                    cd ${homeDir}/hermes-agent &&
-                    . .venv/bin/activate &&
-                    python -m pip install --retries 3 --timeout 60 $pipArgs --no-binary=:all: -e '.[termux]' -c constraints-termux.txt 2>&1
-                """.trimIndent()
-                // 30-minute timeout for source compile: building cryptography,
-                // pydantic-core, cffi from source is CPU-heavy and can take
-                // 5-10 min per package on a phone. 30 min covers the full set.
-                runInPrefix(cmd, timeoutMs = 30 * 60 * 1000L, onOutput = { onProgress(it) }) == 0
-            }
-            if (!compileOk) {
-                Log.e(TAG, "pip install (source compile) failed after retries")
-                return false
-            }
-        }
-
-        // Link hermes binary onto PATH so it's discoverable from any shell
-        onProgress("Linking hermes binary…")
-        val linkCmd = """
-            cd ${homeDir}/hermes-agent &&
-            . .venv/bin/activate &&
-            HERMES_BIN="${'$'}(which hermes 2>/dev/null)" &&
-            if [ -n "${'$'}HERMES_BIN" ] && [ ! -f "$prefix/bin/hermes" ]; then
-                cat > "$prefix/bin/hermes" << WEOF
-#!/system/bin/sh
-exec ${'$'}HERMES_BIN "\$@"
-WEOF
-                chmod 700 "$prefix/bin/hermes"
-                echo "hermes wrapper created at $prefix/bin/hermes"
-            else
-                echo "hermes binary not found in venv (install may have failed)"
-            fi
-        """.trimIndent()
-        runInPrefix(linkCmd, onOutput = { onProgress(it) })
-
-        return isHermesInstalled()
     }
 
-    /**
-     * 手动创建 Python venv，绕过 Termux Python 3.13 有 bug 的 venv 模块。
-     *
-     * `python -m venv --without-pip` 也会失败，因为 venv 模块在顶层 import
-     * `_sysconfigdata__linux_aarch64-linux-android`，而该模块在 Termux Python
-     * 3.13 deb 里缺失（"No module named '_sysconfigdata__linux_aarch64-linux-android'"）。
-     *
-     * 本方法做 venv 模块底层做的同样的事：
-     *   1. 创建 .venv/{bin, lib/python3.13/site-packages}
-     *   2. 在 .venv/bin/python 建符号链接指向系统 python
-     *   3. 写 pyvenv.cfg（home + include-system-site-packages = true）
-     *   4. 生成 activate 脚本
-     *
-     * @param homeDir $HOME 目录（hermes-agent 在其下）
-     * @param prefix Termux prefix（$PREFIX，系统 python 在 $prefix/bin/python）
-     * @return true 表示 venv 创建成功且 .venv/bin/activate 存在
-     */
-    private fun createVenvManually(
-        homeDir: String,
-        prefix: String,
-        onProgress: (String) -> Unit,
-    ): Boolean {
-        val venvDir = "$homeDir/hermes-agent/.venv"
-        // 用 Python 自身探测 version（避免硬编码 3.13，未来升级也不破）
-        // 探测失败则回退到 3.13（当前 Termux stable 版本）。
-        val pyVerSb = StringBuilder()
-        runInPrefix(
-            "python -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])' 2>/dev/null",
-            onOutput = { pyVerSb.append(it) },
+    private fun cloneHermesRepo(onProgress: (String) -> Unit): Boolean {
+        val cloneUrls = listOf(
+            HERMES_REPO,
+            "https://kkgithub.com/NousResearch/hermes-agent.git",
+            "https://bgithub.xyz/NousResearch/hermes-agent.git",
         )
-        val pyVer = pyVerSb.toString().trim().let {
-            if (it.matches(Regex("""\d+\.\d+"""))) it else "3.13"
+        for (cloneUrl in cloneUrls) {
+            val host = cloneUrl.substringAfter("://").substringBefore("/")
+            onProgress("git clone from $host…")
+            val code = processManager.runInProotExitCode(
+                "cd /root/home && rm -rf hermes-agent && " +
+                    "git clone --depth 1 $cloneUrl hermes-agent 2>&1",
+                600
+            ) { onProgress(it) }
+            if (code == 0 && File(paths.homeDir, "hermes-agent/pyproject.toml").exists()) {
+                onProgress("✓ 克隆成功（$host）")
+                return true
+            }
+            onProgress("$host 克隆失败，尝试下一个镜像…")
         }
-        Log.i(TAG, "createVenvManually: python version = $pyVer")
+        // 兜底：tarball 下载（git-remote-https 坏了也能用）
+        onProgress("所有 git 镜像失败，尝试 tarball 下载…")
+        return downloadHermesTarball(onProgress)
+    }
 
-        // 用 Kotlin File API 创建 venv 目录结构 + 配置文件，避免 shell
-        // heredoc 里的 $ 被 Kotlin 字符串模板误解析（activate 脚本里有
-        // 大量 $PATH/$VIRTUAL_ENV 等 shell 变量，在 Kotlin """ """ 里会
-        // 被当模板插值，编译报错或写入错误内容）。
-        val venvRoot = File("$homeDir/hermes-agent/.venv")
-        try {
-            if (venvRoot.exists()) venvRoot.deleteRecursively()
-            File(venvRoot, "bin").mkdirs()
-            File(venvRoot, "lib/python$pyVer/site-packages").mkdirs()
-
-            // 符号链接 python → 系统 python
-            val pyLink = File(venvRoot, "bin/python")
-            val py3Link = File(venvRoot, "bin/python3")
+    private fun downloadHermesTarball(onProgress: (String) -> Unit): Boolean {
+        val tarballUrls = listOf(
+            "https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
+            "https://gh-proxy.com/https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
+            "https://kkgithub.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
+        )
+        val tarballFile = File(paths.tmpDir, "hermes-agent.tar.gz")
+        for (url in tarballUrls) {
+            val host = url.substringAfter("://").substringBefore("/")
+            onProgress("下载 tarball from $host…")
             try {
-                osCreateSymlink("$prefix/bin/python", pyLink.absolutePath)
-                osCreateSymlink("$prefix/bin/python3", py3Link.absolutePath)
+                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 20000
+                conn.readTimeout = 120000
+                conn.instanceFollowRedirects = true
+                if (conn.responseCode != 200) {
+                    onProgress("HTTP ${conn.responseCode} from $host")
+                    conn.disconnect()
+                    continue
+                }
+                conn.inputStream.use { inp ->
+                    tarballFile.outputStream().use { inp.copyTo(it) }
+                }
+                conn.disconnect()
+                if (tarballFile.length() < 1024) {
+                    tarballFile.delete(); continue
+                }
+                onProgress("tarball 下载完成，解压…")
+                // 在 proot 里解压（rootfs 的 tar 支持 -xzf）
+                val code = processManager.runInProotExitCode(
+                    "cd /root/home && rm -rf hermes-agent && " +
+                        "tar -xzf ${paths.tmpDir}/hermes-agent.tar.gz -C /root/home 2>&1 && " +
+                        "mv hermes-agent-main hermes-agent 2>/dev/null; " +
+                        "test -f /root/home/hermes-agent/pyproject.toml",
+                    300
+                ) { onProgress(it) }
+                tarballFile.delete()
+                if (code == 0) {
+                    onProgress("✓ tarball 解压成功")
+                    return true
+                }
             } catch (e: Exception) {
-                // 某些 Android 文件系统不支持 symlink，回退到复制
-                Log.w(TAG, "symlink failed, falling back to copy: ${e.message}")
-                File("$prefix/bin/python").copyTo(pyLink, overwrite = true)
-                File("$prefix/bin/python3").copyTo(py3Link, overwrite = true)
+                onProgress("$host 下载失败: ${e.message}")
+                tarballFile.delete()
             }
-
-            // pyvenv.cfg — Python 启动时读这个文件判断 venv 模式
-            File(venvRoot, "pyvenv.cfg").writeText(
-                "home = $prefix/bin\n" +
-                    "include-system-site-packages = true\n",
-            )
-
-            // activate 脚本 — 让 `. .venv/bin/activate` 能用
-            // 用字符串构建避免 shell heredoc 转义陷阱
-            val dollar = '$'
-            File(venvRoot, "bin/activate").writeText(
-                buildString {
-                    appendLine("# This file must be used with \"source bin/activate\" *from bash*")
-                    appendLine("# you cannot run it directly")
-                    appendLine("deactivate () {")
-                    appendLine("    unset -f pydoc >/dev/null 2>&1")
-                    appendLine("    [ -n \"${dollar}{_OLD_VIRTUAL_PATH:-}\" ] && PATH=\"${dollar}_OLD_VIRTUAL_PATH\" && export PATH")
-                    appendLine("    unset _OLD_VIRTUAL_PATH")
-                    appendLine("    [ -n \"${dollar}{_OLD_VIRTUAL_PS1:-}\" ] && PS1=\"${dollar}_OLD_VIRTUAL_PS1\" && export PS1")
-                    appendLine("    unset _OLD_VIRTUAL_PS1")
-                    appendLine("    unset VIRTUAL_ENV")
-                    appendLine("    unset -f deactivate")
-                    appendLine("}")
-                    appendLine("VIRTUAL_ENV=\"${dollar}( cd \"${dollar}( dirname \"${dollar}{BASH_SOURCE[0]}\" )/..\" && pwd )\"")
-                    appendLine("_OLD_VIRTUAL_PATH=\"${dollar}PATH\"")
-                    appendLine("PATH=\"${dollar}VIRTUAL_ENV/bin:${dollar}PATH\"")
-                    appendLine("export PATH")
-                    appendLine("_OLD_VIRTUAL_PS1=\"${dollar}{PS1:-}\"")
-                    appendLine("PS1=\"(.venv) ${dollar}PS1\"")
-                    appendLine("export PS1")
-                },
-            )
-            File(venvRoot, "bin/activate").setExecutable(true, false)
-        } catch (e: Exception) {
-            Log.e(TAG, "createVenvManually file ops failed: ${e.message}")
-            onProgress("错误：创建 venv 失败 — ${e.message}")
-            return false
         }
-
-        // 验证 venv python 能跑（终极 sanity check）
-        val verify = runInPrefix(
-            "$venvDir/bin/python -c 'import sys; print(sys.prefix)' 2>&1",
-            onOutput = { onProgress(it) },
-        )
-        if (verify != 0) {
-            Log.e(TAG, "venv python verify failed (exit=$verify)")
-            return false
-        }
-        onProgress("✓ venv created manually (python $pyVer)")
-        return true
+        return false
     }
 
-    /**
-     * 创建符号链接的跨 Android 版本兼容实现。
-     * Android 8+ 的 Os.symlink 可用，但需要反射调用以兼容低版本。
-     */
-    private fun osCreateSymlink(target: String, linkPath: String) {
-        // 用反射调用 android.system.Os.symlink(String, String)
-        val osClass = Class.forName("android.system.Os")
-        val symlinkMethod = osClass.getMethod("symlink", String::class.java, String::class.java)
-        symlinkMethod.invoke(null, target, linkPath)
-    }
+    // ── 配置 / 健康检查 ─────────────────────────────────────────────────────
 
     /**
-     * Download + install rust + clang + ffmpeg via apt-get. Used ONLY as
-     * a fallback when the wheel-cache install path fails and the user
-     * approves the ~600MB download. Returns true on success.
-     */
-    private fun downloadAndInstallCompileToolchain(
-        prefix: String,
-        onProgress: (String) -> Unit,
-    ): Boolean {
-        val termuxPrefix = "/data/data/com.termux/files/usr"
-
-        // clang + rust (~570MB) are NOT bundled in the APK — bundling them
-        // would inflate the APK from ~50MB to ~350MB. Instead we download
-        // via apt-get, with mirror fallback to absorb Termux CDN 403s.
-        //
-        // Mirror order:
-        //   1. Official Termux CDN  (packages.termux.dev)
-        //   2. Tsinghua mirror      (mirrors.tuna.tsinghua.edu.cn)
-        // Official CDN is fastest when reachable; Tsinghua mirror is the
-        // standard fallback used inside China / on networks where Termux
-        // CDN returns 403.
-        // 清华镜像优先（纯 HTTP，无 ca-certificates 证书问题）。
-        // 官方 CDN 即使 sources.list 写 http:// 也会 301 重定向到 https://，
-        // 而 bootstrap 没有 ca-certificates → 证书验证失败。
-        val aptMirrors = listOf(
-            "http://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
-            "http://packages.termux.dev/apt/termux-main/",
-        )
-
-        onProgress("Downloading rust + clang (~570MB) via apt-get…")
-        val pkgs = "rust clang"
-        var downloadOk = false
-        var lastMirror = ""
-        for ((idx, mirror) in aptMirrors.withIndex()) {
-            lastMirror = mirror
-            onProgress("尝试镜像 ${idx + 1}/${aptMirrors.size}: $mirror")
-            runInPrefix("echo \"deb $mirror stable main\" > $prefix/etc/apt/sources.list")
-
-            // 合并 update + download，不看 update 退出码（详见
-            // aptGetDownloadWithMirrors 中的注释），以 download 结果 +
-            // deb 文件数校验为准。
-            val code = runWithRetry(
-                maxAttempts = 3,
-                baseDelayMs = 5000L,
-                onProgress = onProgress,
-                what = "apt-get download rust clang ($mirror)",
-            ) {
-                val cmd = """
-                    cd $prefix/tmp &&
-                    apt-get update \
-                        --allow-insecure-repositories \
-                        -o Acquire::https::Verify-Peer=false \
-                        -o Acquire::https::Verify-Host=false 2>&1;
-                    apt-get download --allow-unauthenticated $pkgs 2>&1
-                """.trimIndent()
-                runInPrefix(
-                    cmd,
-                    onOutput = { line ->
-                        if (!line.contains("GPG error") &&
-                            !line.contains("is not signed") &&
-                            !line.contains("cannot be authenticated") &&
-                            !line.contains("apt-key") &&
-                            !line.startsWith("Ign:")
-                        ) {
-                            onProgress(line)
-                        }
-                    },
-                ) == 0
-            }
-            if (code) {
-                // Sanity-check: ensure both rust*.deb and clang*.deb are present.
-                // apt-get download can exit 0 even if one package was skipped.
-                val sbCount = StringBuilder()
-                runInPrefix(
-                    "ls $prefix/tmp/rust*.deb $prefix/tmp/clang*.deb 2>/dev/null | wc -l",
-                    onOutput = { sbCount.append(it) },
-                )
-                val n = sbCount.toString().trim().toIntOrNull() ?: 0
-                if (n >= 2) {
-                    downloadOk = true
-                    onProgress("✓ 从 $mirror 下载成功（$n 个 deb）")
-                    break
-                } else {
-                    Log.w(TAG, "download from $mirror returned 0 but only $n debs present")
-                    onProgress("镜像 $mirror 下载不完整（$n 个 deb），尝试下一个…")
-                }
-            } else {
-                Log.w(TAG, "apt-get download failed for $mirror — trying next mirror")
-                onProgress("镜像 $mirror 下载失败，尝试下一个…")
-            }
-        }
-        if (!downloadOk) {
-            Log.e(TAG, "All apt mirrors failed for rust/clang download (last: $lastMirror)")
-            onProgress("错误：所有镜像均下载失败（最后尝试：$lastMirror）")
-            return false
-        }
-
-        // Extract them into the prefix
-        onProgress("Extracting rust/clang…")
-        val extractCmd = """
-            cd $prefix/tmp &&
-            mkdir -p _compile_stage &&
-            for deb in rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb libcompiler-rt*.deb; do
-                [ -f "${'$'}deb" ] || continue
-                echo "Extracting ${'$'}deb..." && dpkg-deb -x "${'$'}deb" _compile_stage/ 2>&1
-            done &&
-            if [ -d "_compile_stage$termuxPrefix" ]; then
-                cp -a _compile_stage$termuxPrefix/* "$prefix/" 2>&1
-            elif [ -d "_compile_stage/usr" ]; then
-                cp -a _compile_stage/usr/* "$prefix/" 2>&1
-            fi &&
-            rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null;
-            # Robust executability fix. Android cp -a loses execute bits.
-            # chmod -R 755 on bin/ and libexec/ recursively sets execute bits
-            # on all regular files (including clang-18, rustc, etc.).
-            # For lib/*.so files, use find (chmod -R on all of lib/ is too broad).
-            chmod -R 755 "$prefix/bin" 2>/dev/null;
-            chmod -R 755 "$prefix/libexec" 2>/dev/null;
-            find "$prefix/lib" -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
-            echo "Compile toolchain installed"
-        """.trimIndent()
-        val extractCode = runInPrefix(extractCmd, onOutput = { onProgress(it) })
-        if (extractCode != 0) {
-            Log.e(TAG, "rust/clang extract failed with code $extractCode")
-            return false
-        }
-
-        // Verify
-        val rustOk = File(prefix, "bin/rustc").exists()
-        val clangOk = File(prefix, "bin/clang").exists()
-        if (!rustOk || !clangOk) {
-            Log.e(TAG, "rust/clang missing after extract (rust=$rustOk, clang=$clangOk)")
-            return false
-        }
-        // Smoke-test executability of ALL binaries pip/distutils might invoke.
-        // pip calls 'aarch64-linux-android-clang' (a symlink), not 'clang'
-        // itself — testing only 'clang' would pass while pip still fails.
-        val testBinaries = listOf("clang", "aarch64-linux-android-clang", "rustc", "cargo")
-        for (bin in testBinaries) {
-            val testCode = runInPrefix("$prefix/bin/$bin --version >/dev/null 2>&1")
-            if (testCode != 0) {
-                Log.w(TAG, "$bin not executable (exit=$testCode) — retrying chmod")
-                onProgress("$bin 权限异常，重新修复…")
-                // Simple retry: chmod -R 755 on bin/ and libexec/ again.
-                // (Previous version used a for loop with \${'$'} shell vars
-                //  which caused "Bad substitution" in dash/sh — simplified.)
-                runInPrefix(
-                    "chmod -R 755 $prefix/bin 2>/dev/null; " +
-                        "chmod -R 755 $prefix/libexec 2>/dev/null; " +
-                        "find $prefix/lib -name '*.so*' -exec chmod 755 {} \\; 2>/dev/null; " +
-                        "echo chmod-done",
-                    onOutput = { onProgress(it) },
-                )
-                val retest = runInPrefix("$prefix/bin/$bin --version >/dev/null 2>&1")
-                if (retest != 0) {
-                    Log.e(TAG, "$bin still not executable after chmod retry")
-                    onProgress("错误：$bin 无法执行（Permission denied）")
-                    return false
-                }
-            }
-        }
-        onProgress("rust + clang ready")
-
-        // Also ensure libngtcp2 is present — if the user is here, they went
-        // through the tarball fallback path (git clone failed due to
-        // libcurl/libngtcp2 mismatch). Installing rust/clang may have
-        // overwritten libcurl, so re-check.
-        ensureCurlDeps(prefix, onProgress)
-
-        return true
-    }
-
-    /**
-     * Write a minimal ~/.hermes/config.yaml skeleton so first-time users
-     * don't have to create it manually. Users still need to run
-     * `hermes setup --portal` (or `hermes model`) to populate API keys.
+     * 写最小 ~/.hermes/config.yaml 骨架，首次用户不用手动建。
      */
     fun configureHermesSkeleton() {
-        val paths = BootstrapInstaller.getPaths(context)
         val configDir = File(paths.homeDir, ".hermes")
         configDir.mkdirs()
-
         val configFile = File(configDir, "config.yaml")
         if (!configFile.exists()) {
             configFile.writeText(
@@ -1803,29 +415,20 @@ WEOF
         }
     }
 
-    /**
-     * Run `hermes --version` to confirm the install is functional.
-     */
     fun healthCheck(onProgress: (String) -> Unit): Boolean {
-        onProgress("Verifying Hermes install…")
+        onProgress("验证 Hermes 安装…")
         val code = runInPrefix(
-            "cd ${BootstrapInstaller.getPaths(context).homeDir}/hermes-agent && " +
-                ". .venv/bin/activate && hermes --version 2>&1",
+            "cd /root/home/hermes-agent && . .venv/bin/activate && hermes --version 2>&1",
             onOutput = { onProgress(it) },
         )
         return code == 0
     }
 
-    // ── Hermes lifecycle ───────────────────────────────────────────────────
+    // ── Hermes 生命周期 ─────────────────────────────────────────────────────
 
     /**
-     * Start a long-running Hermes Agent in the background (e.g. as a
-     * gateway). The process is kept alive by the foreground service and
-     * its stdout is forwarded to logcat for debugging.
-     *
-     * NOTE: by default we don't auto-start any background agent. Users
-     * are expected to launch `hermes` interactively from a shell. This
-     * method exists for future gateway mode support.
+     * 启动长驻 Hermes gateway（gateway 模式）。
+     * 进程由前台服务保活，stdout 转发到 logcat。
      */
     @Suppress("unused")
     fun startHermesGateway(): Boolean {
@@ -1833,22 +436,10 @@ WEOF
             Log.i(TAG, "Hermes gateway already running")
             return true
         }
-
-        val paths = BootstrapInstaller.getPaths(context)
-        val env = buildEnvironment(paths).toMutableMap()
-
-        val shell = "${paths.prefixDir}/bin/sh"
-        val cmd = "cd ${paths.homeDir}/hermes-agent && . .venv/bin/activate && exec hermes gateway run --port $HERMES_PORT 2>&1"
-
-        val pb = ProcessBuilder(shell, "-c", cmd)
-        pb.environment().clear()
-        pb.environment().putAll(env)
-        pb.directory(File(paths.homeDir))
-        pb.redirectErrorStream(true)
-
-        val proc = pb.start()
+        val cmd = "cd /root/home/hermes-agent && . .venv/bin/activate && " +
+            "exec hermes gateway run --port $HERMES_PORT 2>&1"
+        val proc = processManager.startProotProcess(cmd)
         hermesProcess = proc
-
         Thread {
             val reader = BufferedReader(InputStreamReader(proc.inputStream))
             var line = reader.readLine()
@@ -1858,10 +449,6 @@ WEOF
             }
             Log.i(TAG, "Hermes gateway exited with code: ${proc.waitFor()}")
         }.start()
-
-        // Wait briefly and verify the process is still alive.
-        // If it crashed immediately (e.g. missing shared lib, bad venv),
-        // return false so the caller knows.
         Thread.sleep(3000)
         return isRunning
     }
@@ -1870,10 +457,4 @@ WEOF
         hermesProcess?.destroy()
         hermesProcess = null
     }
-
-    // ── Environment ─────────────────────────────────────────────────────────
-
-    internal fun buildEnvironment(
-        paths: BootstrapInstaller.Paths,
-    ): Map<String, String> = buildEnvMap(context, paths)
 }

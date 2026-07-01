@@ -2,23 +2,25 @@ package com.nous.hermes.mobile
 
 import android.content.Context
 import android.util.Log
+import java.io.BufferedReader
 import java.io.File
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Installs and runs the hermes-web-ui npm package — the web dashboard
- * for Hermes Agent (https://github.com/EKKOLearnAI/hermes-studio).
+ * 安装并运行 hermes-web-ui npm 包 —— Hermes Agent 的 web 仪表盘
+ * (https://github.com/EKKOLearnAI/hermes-studio)。
  *
- * Architecture inspired by openclaw-termux's GatewayService.kt:
- *   - Daemon spawns detached (CLI handles its own PID file)
- *   - Watchdog thread monitors /health endpoint
- *   - Auto-restart on crash (max 5, exponential backoff)
- *   - Graceful stop: SIGTERM → 3s → SIGKILL
- *   - Bionic Bypass injected via NODE_OPTIONS
+ * 新架构（proot + Ubuntu rootfs）下：
+ *   - Node.js/npm 通过 apt-get install 装进 rootfs（glibc 版本，非 bionic）
+ *   - npm install -g hermes-web-ui 在 proot 里执行
+ *   - 服务通过 proot gateway 模式长驻运行
+ *   - 不再需要 bionic-bypass.js（rootfs 用 glibc，os.networkInterfaces() 正常）
  *
- * License note: hermes-web-ui is BSL-1.1 (Business Source License).
- * The bionic-bypass.js is MIT-licensed (adapted from openclaw-termux).
+ * Watchdog / 健康检查逻辑参照 openclaw-termux GatewayService.kt：
+ *   - 监控 /health 端点，崩溃自动重启（最多 5 次，指数退避）
+ *   - 优雅停止：destroy proot 进程 → hermes-web-ui stop
  */
 class HermesStudioInstaller(private val context: Context) {
 
@@ -32,43 +34,61 @@ class HermesStudioInstaller(private val context: Context) {
         private const val MAX_RESTARTS = 5
         private const val INITIAL_BACKOFF_MS = 2000L
         private const val MAX_BACKOFF_MS = 16000L
-        private const val GRACE_PERIOD_MS = 60000L  // >60s = reset restart count
+        private const val GRACE_PERIOD_MS = 60000L
         private const val WATCHDOG_INTERVAL_MS = 15000L
         private const val WATCHDOG_INITIAL_DELAY_MS = 45000L
 
-        // Health check config (from openclaw-termux gateway_service.dart)
-        private const val HEALTH_FIRST_DELAY_MS = 30000L  // 30s before first check
+        // Health check config
+        private const val HEALTH_FIRST_DELAY_MS = 30000L
         private const val HEALTH_INTERVAL_MS = 5000L
-        private const val HEALTH_GRACE_MS = 120000L  // 120s before declaring dead
+        private const val HEALTH_GRACE_MS = 120000L
         private const val HEALTH_STARTUP_TIMEOUT_MS = 30000L
-
-        // Process stop config
-        private const val STOP_GRACE_MS = 3000L  // SIGTERM → 3s → SIGKILL
     }
 
     private val serverMgr = HermesServerManager(context)
+    private val paths: BootstrapManager.Paths by lazy { BootstrapManager.getPaths(context) }
+    private val processManager: ProcessManager by lazy {
+        ProcessManager(context, paths.filesDir, paths.nativeLibDir)
+    }
+
     private var watchdogThread: Thread? = null
     @Volatile private var watchdogRunning = false
     @Volatile private var restartCount = 0
     @Volatile private var serverStartTime = 0L
-
-    // Bionic bypass script path (extracted from assets)
-    private var bypassScriptPath: String? = null
-
-    fun isInstalled(): Boolean {
-        val prefix = BootstrapInstaller.getPaths(context).prefixDir
-        return File(prefix, "bin/hermes-web-ui").exists()
-    }
+    private var studioProcess: Process? = null
 
     val isRunning: Boolean
         get() = checkServerHealth()
 
+    fun isInstalled(): Boolean {
+        if (!serverMgr.isProotInstalled()) return false
+        // 在 proot 里检查 hermes-web-ui 是否在 PATH
+        val code = processManager.runInProotExitCode(
+            "command -v hermes-web-ui >/dev/null 2>&1", 30
+        )
+        return code == 0
+    }
+
     /**
-     * Run `npm install -g hermes-web-ui` inside the Termux prefix.
-     * Downloads ~30MB and compiles native modules (node-pty).
+     * 安装 nodejs + npm（apt-get），然后 npm install -g hermes-web-ui。
+     * 全程在 proot install 模式里执行。
      */
     fun install(onProgress: (String) -> Unit): Boolean {
         onProgress("Installing hermes-web-ui via npm (this may take 1-3 min)…")
+
+        // 先确保 nodejs + npm 已装
+        if (!serverMgr.isNodeInstalled()) {
+            onProgress("Installing nodejs + npm via apt-get…")
+            try {
+                processManager.runInProotSync(
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm 2>&1 | tail -20",
+                    1800
+                ) { onProgress(it) }
+            } catch (e: Exception) {
+                onProgress("错误：nodejs/npm 安装失败 — ${e.message}")
+                return false
+            }
+        }
 
         val ok = serverMgr.runWithRetry(
             maxAttempts = 3,
@@ -76,57 +96,29 @@ class HermesStudioInstaller(private val context: Context) {
             onProgress = onProgress,
             what = "npm install -g hermes-web-ui",
         ) {
-            val cmd = """
-                export PATH="${'$'}{PREFIX}/bin:${'$'}PATH" &&
-                npm install -g $NPM_PACKAGE 2>&1
-            """.trimIndent()
-            serverMgr.runInPrefix(cmd, onOutput = { onProgress(it) }) == 0 &&
-                isInstalled()
+            // npm install -g 在 proot 里执行（rootfs 环境，PATH 已含 /usr/bin）
+            val code = processManager.runInProotExitCode(
+                "npm install -g $NPM_PACKAGE 2>&1", 1200
+            ) { onProgress(it) }
+            code == 0 && isInstalled()
         }
         if (!ok) {
             Log.e(TAG, "npm install -g hermes-web-ui failed after retries")
             return false
         }
-        // Extract bionic bypass script to prefix for later use
-        extractBionicBypass()
         onProgress("hermes-web-ui installed")
         return true
     }
 
     /**
-     * Extract bionic-bypass.js from assets to $PREFIX/share/bionic-bypass.js
-     * so it can be injected via NODE_OPTIONS when starting the server.
-     */
-    private fun extractBionicBypass() {
-        val prefix = BootstrapInstaller.getPaths(context).prefixDir
-        val target = File(prefix, "share/bionic-bypass.js")
-        target.parentFile?.mkdirs()
-        try {
-            context.assets.open("bionic-bypass.js").use { input ->
-                target.outputStream().use { input.copyTo(it) }
-            }
-            bypassScriptPath = target.absolutePath
-            Log.i(TAG, "Bionic bypass extracted to $bypassScriptPath")
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not extract bionic-bypass.js: ${e.message}")
-            // Non-fatal — server will run without bypass, may crash later
-        }
-    }
-
-    /**
-     * Start hermes-web-ui daemon + watchdog.
+     * 启动 hermes-web-ui 守护进程 + watchdog。
      *
-     * Flow:
-     *   1. Spawn `hermes-web-ui` (CLI daemonizes itself, writes PID file)
-     *   2. Poll /health until 200 or 30s timeout
-     *   3. Start watchdog thread (monitors health, auto-restarts on crash)
-     *
-     * Returns true if server became healthy within timeout.
+     * 用 proot gateway 模式启动（startProotProcess），保持 Process 引用存活。
+     * proot --kill-on-exit 会在 proot 退出时杀子进程，所以必须保持 proot 进程
+     * 不退出（由本类持有 studioProcess 引用）。
      */
     fun start(onProgress: (String) -> Unit): Boolean {
-        // Reconnect: if server is already running (from a previous app
-        // launch), adopt it instead of starting a duplicate. Based on
-        // openclaw-termux's "isGatewayRunning → adopt" pattern.
+        // 重连：如果服务已在跑，直接接管
         if (checkServerHealth()) {
             onProgress("hermes-web-ui already running — reconnecting")
             serverStartTime = System.currentTimeMillis()
@@ -139,65 +131,15 @@ class HermesStudioInstaller(private val context: Context) {
             return false
         }
 
-        // Port occupancy detection — if port is in use but health check
-        // fails, another process is squatting our port. Report error
-        // instead of silently failing to bind.
+        // 端口占用检测
         if (isPortInUse(STUDIO_PORT)) {
             onProgress("Port $STUDIO_PORT is in use by another process")
-            // Force kill stale process before retrying
             forceKillByPort()
             try { Thread.sleep(1000) } catch (_: InterruptedException) {}
         }
 
-        // Ensure bionic bypass is extracted
-        if (bypassScriptPath == null) extractBionicBypass()
-
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-        val homeDir = paths.homeDir
-
-        // Build environment with Bionic Bypass injection.
-        // NODE_OPTIONS=--require ensures the bypass runs before any
-        // other code, patching os.networkInterfaces() etc.
-        val npmCacheDir = File(paths.tmpDir, "npm-cache").apply { mkdirs() }
-        val env = serverMgr.buildEnvironment(paths).toMutableMap().apply {
-            put("PORT", STUDIO_PORT.toString())
-            put("NODE_ENV", "production")
-            put("HOME", homeDir)
-            put("HERMES_WEB_UI_HOME", "$homeDir/.hermes-web-ui")
-            // Disable io_uring — not available on Android Bionic libc.
-            // Without this, libuv may crash trying to set up io_uring.
-            put("UV_USE_IO_URING", "0")
-            // Use polling instead of inotify — inotify may fail on
-            // Android filesystems (especially emulated storage).
-            put("CHOKIDAR_USEPOLLING", "true")
-            // npm cache in prefix tmp/ (mkdir may fail elsewhere on Android)
-            put("npm_config_cache", npmCacheDir.absolutePath)
-            // Bionic Bypass — critical for Android
-            bypassScriptPath?.let { path ->
-                put("NODE_OPTIONS", "--require $path")
-                Log.i(TAG, "Injecting bionic bypass: NODE_OPTIONS=--require $path")
-            }
-        }
-
-        val shell = "$prefix/bin/sh"
-        val pb = ProcessBuilder(
-            shell, "-c",
-            "nohup hermes-web-ui </dev/null >/dev/null 2>&1 & disown"
-        )
-        pb.environment().clear()
-        pb.environment().putAll(env)
-        pb.directory(File(homeDir))
-        pb.redirectInput(ProcessBuilder.Redirect.from(File("/dev/null")))
-        pb.redirectOutput(ProcessBuilder.Redirect.to(File("/dev/null")))
-        pb.redirectErrorStream(true)
-
         return try {
-            val proc = pb.start()
-            proc.inputStream.close()
-            Thread.sleep(500)
-            proc.destroyForcibly()
-            // Wait for server to be healthy
+            spawnStudioServer()
             onProgress("Waiting for hermes-web-ui to be ready…")
             val ready = waitForHealth(onProgress)
             if (ready) {
@@ -216,13 +158,40 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     /**
-     * Watchdog thread — monitors /health every 15s, auto-restarts on crash.
-     *
-     * Based on openclaw-termux GatewayService.kt's startWatchdog():
-     *   - 45s initial delay (let server warm up)
-     *   - 15s poll interval
-     *   - Max 5 restarts with exponential backoff (2s → 4s → 8s → 16s)
-     *   - If server runs >60s, reset restart count (was a transient crash)
+     * 通过 proot gateway 模式启动 hermes-web-ui，保持进程引用存活。
+     */
+    private fun spawnStudioServer() {
+        stopStudioProcess()
+        // hermes-web-ui 监听 PORT 环境变量；在 proot 里前台运行（proot 进程
+        // 保持存活，--kill-on-exit 确保停止时清理子进程）。
+        val cmd = "PORT=$STUDIO_PORT NODE_ENV=production exec hermes-web-ui 2>&1"
+        val proc = processManager.startProotProcess(cmd)
+        studioProcess = proc
+        // 转发 stdout 到 logcat
+        Thread {
+            val reader = BufferedReader(InputStreamReader(proc.inputStream))
+            var line = reader.readLine()
+            while (line != null) {
+                Log.d(TAG, "[studio] $line")
+                line = reader.readLine()
+            }
+            Log.i(TAG, "hermes-web-ui exited with code: ${proc.waitFor()}")
+        }.start()
+    }
+
+    private fun stopStudioProcess() {
+        studioProcess?.let {
+            it.destroy()
+            try {
+                it.waitFor(3000, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (_: Exception) {}
+            if (it.isAlive) it.destroyForcibly()
+        }
+        studioProcess = null
+    }
+
+    /**
+     * Watchdog 线程 —— 每 15s 检查 /health，崩溃自动重启。
      */
     private fun startWatchdog(onProgress: (String) -> Unit) {
         stopWatchdog()
@@ -241,7 +210,6 @@ class HermesStudioInstaller(private val context: Context) {
                     val uptime = System.currentTimeMillis() - serverStartTime
                     Log.w(TAG, "Watchdog: server unhealthy (uptime=${uptime / 1000}s)")
 
-                    // Reset restart count if server ran for a while
                     if (uptime > GRACE_PERIOD_MS) {
                         Log.i(TAG, "Watchdog: server ran >${GRACE_PERIOD_MS / 1000}s, resetting restart count")
                         restartCount = 0
@@ -266,12 +234,22 @@ class HermesStudioInstaller(private val context: Context) {
 
                     if (!watchdogRunning) break
                     onProgress("Watchdog: restarting hermes-web-ui (attempt $restartCount/$MAX_RESTARTS)…")
-                    val restarted = restartServer()
-                    if (restarted) {
-                        serverStartTime = System.currentTimeMillis()
-                        onProgress("Watchdog: hermes-web-ui restarted successfully")
-                    } else {
-                        Log.e(TAG, "Watchdog: restart $restartCount failed")
+                    try {
+                        spawnStudioServer()
+                        val deadline = System.currentTimeMillis() + 10000
+                        var restarted = false
+                        while (System.currentTimeMillis() < deadline) {
+                            if (checkServerHealth()) { restarted = true; break }
+                            Thread.sleep(1000)
+                        }
+                        if (restarted) {
+                            serverStartTime = System.currentTimeMillis()
+                            onProgress("Watchdog: hermes-web-ui restarted successfully")
+                        } else {
+                            Log.e(TAG, "Watchdog: restart $restartCount failed")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Watchdog restart failed", e)
                     }
                 }
 
@@ -292,116 +270,39 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     /**
-     * Restart the server after a crash. Re-spawns the daemon.
-     */
-    private fun restartServer(): Boolean {
-        val paths = BootstrapInstaller.getPaths(context)
-        val prefix = paths.prefixDir
-        val homeDir = paths.homeDir
-
-        val npmCacheDir = File(paths.tmpDir, "npm-cache").apply { mkdirs() }
-        val env = serverMgr.buildEnvironment(paths).toMutableMap().apply {
-            put("PORT", STUDIO_PORT.toString())
-            put("NODE_ENV", "production")
-            put("HOME", homeDir)
-            put("HERMES_WEB_UI_HOME", "$homeDir/.hermes-web-ui")
-            put("UV_USE_IO_URING", "0")
-            put("CHOKIDAR_USEPOLLING", "true")
-            put("npm_config_cache", npmCacheDir.absolutePath)
-            bypassScriptPath?.let { put("NODE_OPTIONS", "--require $it") }
-        }
-
-        val shell = "$prefix/bin/sh"
-        val pb = ProcessBuilder(shell, "-c", "nohup hermes-web-ui </dev/null >/dev/null 2>&1 & disown")
-        pb.environment().clear()
-        pb.environment().putAll(env)
-        pb.directory(File(homeDir))
-        pb.redirectInput(ProcessBuilder.Redirect.from(File("/dev/null")))
-        pb.redirectOutput(ProcessBuilder.Redirect.to(File("/dev/null")))
-        pb.redirectErrorStream(true)
-
-        return try {
-            val proc = pb.start()
-            proc.inputStream.close()
-            Thread.sleep(1000)
-            proc.destroyForcibly()
-            // Brief health check (don't block watchdog too long)
-            val deadline = System.currentTimeMillis() + 10000
-            while (System.currentTimeMillis() < deadline) {
-                if (checkServerHealth()) return true
-                Thread.sleep(1000)
-            }
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "restartServer failed", e)
-            false
-        }
-    }
-
-    /**
-     * Stop the server gracefully.
-     *
-     * Based on openclaw-termux GatewayService.kt:
-     *   1. Stop the watchdog (so it doesn't restart during shutdown)
-     *   2. Invoke `hermes-web-ui stop` (SIGTERM via CLI)
-     *   3. If still alive after STOP_GRACE_MS, force kill
+     * 优雅停止：停 watchdog → 停 proot 进程 → 必要时按端口强杀。
      */
     fun stop() {
         stopWatchdog()
+        stopStudioProcess()
         if (!isInstalled()) return
         try {
-            Thread {
-                try {
-                    // Graceful stop via CLI (reads PID file, sends SIGTERM)
-                    val code = serverMgr.runInPrefix(
-                        "hermes-web-ui stop 2>&1 || true",
-                        onOutput = { Log.d(TAG, "[stop] $it") },
-                    )
-                    Log.i(TAG, "hermes-web-ui stop exited with code $code")
-
-                    // If still alive after grace period, force kill via port
-                    Thread.sleep(STOP_GRACE_MS)
-                    if (checkServerHealth()) {
-                        Log.w(TAG, "Server still alive after ${STOP_GRACE_MS}ms, force killing")
-                        forceKillByPort()
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "hermes-web-ui stop failed: ${e.message}")
-                    forceKillByPort()
-                }
-            }.start()
+            // 尝试 CLI 优雅停止（读 PID 文件发 SIGTERM）
+            serverMgr.runInPrefix(
+                "hermes-web-ui stop 2>&1 || true",
+                onOutput = { Log.d(TAG, "[stop] $it") },
+            )
+            Thread.sleep(1000)
+            if (checkServerHealth()) {
+                Log.w(TAG, "Server still alive, force killing")
+                forceKillByPort()
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "stop() failed", e)
+            Log.w(TAG, "stop() failed: ${e.message}")
+            forceKillByPort()
         }
     }
 
     /**
-     * Last resort: find PID listening on STUDIO_PORT and kill -9 it.
-     * Tries lsof first, falls back to fuser (busybox), then ss.
+     * 兜底：在 proot 里按端口找 PID 并 kill -9。
      */
     private fun forceKillByPort() {
         try {
-            // Try lsof first (most precise — checks TCP LISTEN state)
-            var killed = serverMgr.runInPrefix(
-                "kill -9 ${'$'}(lsof -tiTCP:$STUDIO_PORT -sTCP:LISTEN 2>/dev/null) 2>/dev/null || true",
-                onOutput = { Log.d(TAG, "[forcekill] $it") },
-            ) == 0
-
-            // Fallback: fuser (busybox applet, usually available)
-            if (!killed) {
-                killed = serverMgr.runInPrefix(
+            serverMgr.runInPrefix(
+                "kill -9 \$(lsof -tiTCP:$STUDIO_PORT -sTCP:LISTEN 2>/dev/null) 2>/dev/null || " +
                     "fuser -k $STUDIO_PORT/tcp 2>/dev/null || true",
-                    onOutput = { Log.d(TAG, "[forcekill] $it") },
-                ) == 0
-            }
-
-            // Fallback: ss (socket statistics, may be available)
-            if (!killed) {
-                serverMgr.runInPrefix(
-                    "kill -9 ${'$'}(ss -tlnp 2>/dev/null | grep ':$STUDIO_PORT ' | sed -n 's/.*pid=\\([0-9]*\\).*/\\1/p') 2>/dev/null || true",
-                    onOutput = { Log.d(TAG, "[forcekill] $it") },
-                )
-            }
+                onOutput = { Log.d(TAG, "[forcekill] $it") },
+            )
         } catch (e: Exception) {
             Log.w(TAG, "forceKillByPort failed: ${e.message}")
         }
@@ -409,12 +310,6 @@ class HermesStudioInstaller(private val context: Context) {
 
     // ── Health check ────────────────────────────────────────────────────────
 
-    /**
-     * Check if a TCP port is in use (regardless of whether it's our server).
-     * Uses a raw socket connect — faster than HTTP health check and
-     * detects non-HTTP processes squatting on the port.
-     * Based on openclaw-termux's port occupancy detection.
-     */
     private fun isPortInUse(port: Int): Boolean {
         return try {
             val socket = java.net.Socket()
@@ -426,20 +321,12 @@ class HermesStudioInstaller(private val context: Context) {
         }
     }
 
-    /**
-     * Poll /health until 200 or timeout.
-     * Uses generous grace period from openclaw-termux:
-     *   - 30s before first check (let Node.js + proot warm up)
-     *   - 120s total before declaring dead
-     */
     private fun waitForHealth(onProgress: (String) -> Unit): Boolean {
-        // Initial delay — don't check too early
         try {
-            Thread.sleep(3000)  // 3s initial (shorter than watchdog's 30s)
+            Thread.sleep(3000)
         } catch (_: InterruptedException) {
             return false
         }
-
         val deadline = System.currentTimeMillis() + HEALTH_STARTUP_TIMEOUT_MS
         var attempt = 0
         while (System.currentTimeMillis() < deadline) {
@@ -457,9 +344,6 @@ class HermesStudioInstaller(private val context: Context) {
         return false
     }
 
-    /**
-     * Hit /health endpoint. Returns true if HTTP 200.
-     */
     private fun checkServerHealth(): Boolean {
         return try {
             val url = URL("$STUDIO_BASE_URL/health")
