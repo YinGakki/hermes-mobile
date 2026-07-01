@@ -1573,20 +1573,26 @@ WEOF
                 cp -a _compile_stage/usr/* "$prefix/" 2>&1
             fi &&
             rm -rf _compile_stage rust*.deb clang*.deb clang-*.deb liblldb*.deb libpolly*.deb libclang*.deb libunwind*.deb 2>/dev/null;
-            # Robust executability fix: 'cp -a' may lose execute bits, and
+            # Robust executability fix. Android cp -a loses execute bits, and
             # 'chmod 755 symlink' on Linux/Android only modifies symlink metadata
-            # (ignored by kernel), NOT the target. We must chmod the real files.
-            # -L dereferences all symlinks so chmod affects actual binaries.
+            # (ignored by kernel), NOT the target file.
+            #
+            # Strategy: chmod every regular file under bin/ and libexec/
+            # (dereferencing symlinks via -L so real targets are affected),
+            # PLUS chmod every .so under lib/ (rustc dynamically loads
+            # librustc_driver*.so etc, missing +x causes "cannot open shared
+            # object file: Permission denied").
+            # Then explicitly chmod every symlink target in bin/ (clang-18,
+            # lld-18, etc.) via readlink -f as a belt-and-suspenders measure.
             find -L "$prefix/bin" -type f -exec chmod 755 {} \; 2>/dev/null;
             find -L "$prefix/libexec" -type f -exec chmod 755 {} \; 2>/dev/null;
-            find -L "$prefix/lib" -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
-            find -L "$prefix/lib" -name 'libclang*' -exec chmod 755 {} \; 2>/dev/null;
-            # Also chmod the targets of clang-* symlinks explicitly.
-            # Using 'readlink -f' resolves all intermediate symlinks to the real path.
-            for _link in "$prefix/bin/clang"* "$prefix/bin/lld"* "$prefix/bin/*clang*" "$prefix/bin/*lld*"; do
+            find -L "$prefix/lib" -type f -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
+            find -L "$prefix/lib" -type f -name 'librustc_driver*' -exec chmod 755 {} \; 2>/dev/null;
+            find -L "$prefix/lib" -type f -name 'libclang*' -exec chmod 755 {} \; 2>/dev/null;
+            for _link in "$prefix/bin/"*; do
                 [ -L "${'$'}_link" ] || continue
                 _target=$(readlink -f "${'$'}_link" 2>/dev/null)
-                [ -n "${'$'}_target" ] && chmod 755 "${'$'}_target" 2>/dev/null || true
+                [ -n "${'$'}_target" ] && [ -f "${'$'}_target" ] && chmod 755 "${'$'}_target" 2>/dev/null || true
             done;
             echo "Compile toolchain installed"
         """.trimIndent()
@@ -1603,30 +1609,34 @@ WEOF
             Log.e(TAG, "rust/clang missing after extract (rust=$rustOk, clang=$clangOk)")
             return false
         }
-        // Smoke-test executability — Android's `cp -a` does not always
-        // preserve mode bits from dpkg-deb -x, so even though the file
-        // exists it may still fail with EACCES when invoked. We catch
-        // this here (instead of letting pip die mid-build with a
-        // confusing "Permission denied" deep inside Cython) and retry
-        // chmod once more.
-        val clangTest = runInPrefix(
-            "$prefix/bin/clang --version 2>&1 | head -1",
-            onOutput = { onProgress(it) },
-        )
-        if (clangTest != 0) {
-            Log.w(TAG, "clang exists but not executable (exit=$clangTest) — retrying chmod")
-            onProgress("clang 权限异常，重新修复…")
-            runInPrefix(
-                "find -L $prefix/bin -type f -exec chmod 755 {} \\; 2>&1; " +
-                    "find -L $prefix/libexec -type f -exec chmod 755 {} \\; 2>/dev/null; " +
-                    "echo chmod-done",
-                onOutput = { onProgress(it) },
-            )
-            val retest = runInPrefix("$prefix/bin/clang --version 2>&1 | head -1")
-            if (retest != 0) {
-                Log.e(TAG, "clang still not executable after chmod retry")
-                onProgress("错误：clang 无法执行（Permission denied）")
-                return false
+        // Smoke-test executability of ALL binaries pip/distutils might invoke.
+        // pip calls 'aarch64-linux-android-clang' (a symlink that may have a
+        // different target than 'clang'), not 'clang' itself — testing only
+        // 'clang' would pass while pip still fails with Permission denied.
+        // We catch EACCES here instead of letting pip die mid-build with a
+        // confusing "Permission denied" deep inside Cython.
+        val testBinaries = listOf("clang", "aarch64-linux-android-clang", "rustc", "cargo")
+        for (bin in testBinaries) {
+            val testCode = runInPrefix("$prefix/bin/$bin --version >/dev/null 2>&1")
+            if (testCode != 0) {
+                Log.w(TAG, "$bin not executable (exit=$testCode) — retrying chmod")
+                onProgress("$bin 权限异常，重新修复…")
+                runInPrefix(
+                    "find -L $prefix/bin -type f -exec chmod 755 {} \\; 2>/dev/null; " +
+                        "find -L $prefix/libexec -type f -exec chmod 755 {} \\; 2>/dev/null; " +
+                        "find -L $prefix/lib -type f -name '*.so*' -exec chmod 755 {} \\; 2>/dev/null; " +
+                        "for _l in $prefix/bin/*; do [ -L \"\${'$'}_l\" ] || continue; " +
+                        "_t=\$(readlink -f \"\${'$'}_l\" 2>/dev/null); " +
+                        "[ -n \"\${'$'}_t\" ] && [ -f \"\${'$'}_t\" ] && chmod 755 \"\${'$'}_t\" 2>/dev/null || true; done; " +
+                        "echo chmod-done",
+                    onOutput = { onProgress(it) },
+                )
+                val retest = runInPrefix("$prefix/bin/$bin --version >/dev/null 2>&1")
+                if (retest != 0) {
+                    Log.e(TAG, "$bin still not executable after chmod retry")
+                    onProgress("错误：$bin 无法执行（Permission denied）")
+                    return false
+                }
             }
         }
         onProgress("rust + clang ready")
