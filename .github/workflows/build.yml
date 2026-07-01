@@ -181,9 +181,9 @@ jobs:
           #   - nodejs-lts, npm, c-ares, libicu (Hermes optional JS runtime)
           #   - cmake, libllvm, lld (native wheel compile)
           #
-          # Excluded (too big / too frequently updated):
+          # Excluded (too big, fetched at runtime via mirror fallback):
           #   - rust toolchain (~300MB, every 6 weeks)
-          #   - clang/llvm full (~300MB, every 6 weeks) — libllvm alone is OK
+          #   - clang/llvm full (~300MB, every 6 weeks)
           #   - ffmpeg (~30MB, optional)
           #
           # The script parses Packages.gz and recursively walks Depends, so
@@ -202,9 +202,7 @@ jobs:
             --extra ripgrep --extra rhash --extra jsoncpp \
             --extra libedit --extra ndk-sysroot --extra ndk-multilib --extra libcompiler-rt \
             --extra nodejs --extra npm --extra c-ares --extra libicu \
-            --extra cmake --extra libllvm --extra lld \
-            --extra clang --extra rust \
-            --extra liblldb --extra libpolly --extra libunwind
+            --extra cmake --extra libllvm --extra lld
           echo "---"
           echo "Bundle contents:"
           ls -1 "$bundle_dir" | head -30
@@ -382,7 +380,7 @@ jobs:
 
             | Flavor | Size | Description |
             |--------|------|-------------|
-            | `*-lite.apk` | ~34 MB | Self-download: bootstrap only. First launch downloads everything via apt-get + pip (~1GB). |
+            | `*-lite.apk` | ~50 MB | Self-download: bootstrap + Python + native deps pre-bundled. First launch downloads clang+rust (~570MB) + pip wheels (~400MB). |
 
             - Arch: arm64-v8a only
             - Min Android: 7.0 (API 24)

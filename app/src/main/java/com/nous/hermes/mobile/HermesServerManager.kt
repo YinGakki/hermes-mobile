@@ -1438,31 +1438,41 @@ WEOF
     ): Boolean {
         val termuxPrefix = "/data/data/com.termux/files/usr"
 
-        // Check if clang/rust debs are already staged from the bundled
-        // deb-bundle.tar.gz. If so, skip the apt-get download phase
-        // entirely — this avoids 403 / connection-timeout failures from the
-        // Termux CDN on flaky mobile networks.
-        val sbBundletoolchain = StringBuilder()
-        runInPrefix(
-            "ls $prefix/tmp/" +
-                "rust*.deb clang*.deb clang-*.deb " +
-                "liblldb*.deb libpolly*.deb libclang*.deb " +
-                "libunwind*.deb libcompiler-rt*.deb " +
-                "2>/dev/null | wc -l",
-            onOutput = { line -> sbBundletoolchain.append(line) }
+        // clang + rust (~570MB) are NOT bundled in the APK — bundling them
+        // would inflate the APK from ~50MB to ~350MB. Instead we download
+        // via apt-get, with mirror fallback to absorb Termux CDN 403s.
+        //
+        // Mirror order:
+        //   1. Official Termux CDN  (packages.termux.dev)
+        //   2. Tsinghua mirror      (mirrors.tuna.tsinghua.edu.cn)
+        // Official CDN is fastest when reachable; Tsinghua mirror is the
+        // standard fallback used inside China / on networks where Termux
+        // CDN returns 403.
+        val aptMirrors = listOf(
+            "http://packages.termux.dev/apt/termux-main/",
+            "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
         )
-        val hasBundledToolchain = sbBundletoolchain.toString().trim().toIntOrNull() ?: 0
 
-        if (hasBundledToolchain > 0) {
-            onProgress("Using bundled clang+rust debs (${hasBundledToolchain} files) — skipping CDN download")
-        } else {
-            onProgress("No bundled clang+rust debs — downloading via apt-get (~570MB)")
-            // apt-get update (with retry)
+        onProgress("Downloading rust + clang (~570MB) via apt-get…")
+        val pkgs = "rust clang"
+        var downloadOk = false
+        var lastMirror = ""
+        for ((idx, mirror) in aptMirrors.withIndex()) {
+            lastMirror = mirror
+            onProgress("尝试镜像 ${idx + 1}/${aptMirrors.size}: $mirror")
+            // Point sources.list at this mirror, then apt-get update + download.
+            // --allow-insecure-repositories / --allow-unauthenticated because
+            // Termux packages aren't GPG-signed in our bootstrap setup.
+            val setMirrorCmd = """
+                echo "deb $mirror stable main" > $prefix/etc/apt/sources.list
+            """.trimIndent()
+            runInPrefix(setMirrorCmd)
+
             val updateOk = runWithRetry(
-                maxAttempts = 3,
+                maxAttempts = 2,
                 baseDelayMs = 2000L,
                 onProgress = onProgress,
-                what = "apt-get update (for rust/clang)",
+                what = "apt-get update ($mirror)",
             ) {
                 runInPrefix(
                     "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
@@ -1470,8 +1480,48 @@ WEOF
                 ) == 0
             }
             if (!updateOk) {
-                Log.w(TAG, "apt-get update failed (non-fatal — proceeding with download anyway)")
+                Log.w(TAG, "apt-get update failed for $mirror — trying next mirror")
+                onProgress("镜像 $mirror 更新失败，尝试下一个…")
+                continue
             }
+
+            val dlCode = runWithRetry(
+                maxAttempts = 3,
+                baseDelayMs = 5000L,
+                onProgress = onProgress,
+                what = "apt-get download $pkgs ($mirror)",
+            ) {
+                runInPrefix(
+                    "cd $prefix/tmp && apt-get download --allow-unauthenticated $pkgs 2>&1",
+                    onOutput = { onProgress(it) },
+                ) == 0
+            }
+            if (dlCode) {
+                // Sanity-check: ensure both rust*.deb and clang*.deb are present.
+                // apt-get download can exit 0 even if one package was skipped.
+                val sbCount = StringBuilder()
+                runInPrefix(
+                    "ls $prefix/tmp/rust*.deb $prefix/tmp/clang*.deb 2>/dev/null | wc -l",
+                    onOutput = { sbCount.append(it) },
+                )
+                val n = sbCount.toString().trim().toIntOrNull() ?: 0
+                if (n >= 2) {
+                    downloadOk = true
+                    onProgress("✓ 从 $mirror 下载成功（$n 个 deb）")
+                    break
+                } else {
+                    Log.w(TAG, "download from $mirror returned 0 but only $n debs present")
+                    onProgress("镜像 $mirror 下载不完整（$n 个 deb），尝试下一个…")
+                }
+            } else {
+                Log.w(TAG, "apt-get download failed for $mirror — trying next mirror")
+                onProgress("镜像 $mirror 下载失败，尝试下一个…")
+            }
+        }
+        if (!downloadOk) {
+            Log.e(TAG, "All apt mirrors failed for rust/clang download (last: $lastMirror)")
+            onProgress("错误：所有镜像均下载失败（最后尝试：$lastMirror）")
+            return false
         }
 
         // Extract them into the prefix
