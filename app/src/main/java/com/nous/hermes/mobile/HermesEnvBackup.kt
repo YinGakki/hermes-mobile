@@ -6,6 +6,7 @@ import android.util.Log
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.zip.GZIPOutputStream
 
 /**
  * 备份/还原已安装好的 Hermes 运行环境（Termux prefix + home 目录）。
@@ -75,25 +76,71 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
         try {
             onProgress("正在打包环境（可能需要 1-3 分钟）…")
 
-            // 用 Termux 自带的 tar（系统 toybox tar 在 Android 11+ 可能
-            // 不支持 --exclude 通配符，且某些版本缺 gzip 支持）。必须通过
-            // serverMgr.runInPrefix 执行 —— Termux 的 tar 链接 libandroid-glob.so
-            // 等动态库，只有 runInPrefix 配置的 LD_LIBRARY_PATH 才能找到。
+            // 不依赖 gzip 二进制。Android cp -a 丢失可执行位会导致
+            // "tar: gzip: Cannot exec: Permission denied"（gzip 是符号链接时
+            // chmod -R 也不跟随）。改用 tar -cf -（写到 stdout，不压缩）+
+            // Java GZIPOutputStream 压缩，彻底绕过 gzip 权限问题。
+            // tar 本身需要 +x，但从日志看 tar 总能启动（报的是 gzip 的错）。
             val excludesArg = EXCLUDE_PATTERNS.joinToString(" ") { "--exclude '$it'" }
-            // Android cp -a 丢失可执行位是普遍问题，不止影响 clang/rust，
-            // 也影响 tar 调用的 gzip 子进程（"gzip: Cannot exec: Permission
-            // denied"）。backup 前先对整个 prefix/bin 做 chmod，确保 tar、
-            // gzip、以及 tar 依赖的所有二进制都可执行。
-            val prefix = File(filesDir, PREFIX_DIR_NAME).absolutePath
-            val cmd = """
-                chmod -R 755 "$prefix/bin" 2>/dev/null;
-                find "$prefix/lib" -name '*.so*' -exec chmod 755 {} \; 2>/dev/null;
-                cd "${filesDir.absolutePath}" && tar -czf "${tmpArchive.absolutePath}" $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME 2>&1
-            """.trimIndent()
-            Log.i(TAG, "Running backup via runInPrefix: $cmd")
-            val code = serverMgr.runInPrefix(cmd, onOutput = { onProgress(it) })
+            val paths = BootstrapInstaller.getPaths(context)
+            val env = HermesServerManager.buildEnvMap(context, paths)
+            val tarCmd = "cd \"${filesDir.absolutePath}\" && tar -cf - $excludesArg $PREFIX_DIR_NAME $HOME_DIR_NAME"
+            Log.i(TAG, "Running backup: $tarCmd")
+
+            val pb = ProcessBuilder("${paths.prefixDir}/bin/sh", "-c", tarCmd)
+            pb.environment().clear()
+            pb.environment().putAll(env)
+            pb.directory(File(paths.homeDir))
+            // stdout 和 stderr 分开读：stdout 是 tar 二进制数据，stderr 是文本
+            pb.redirectErrorStream(false)
+
+            val proc = pb.start()
+
+            // 并发读 stderr（tar 文本输出 → onProgress）。
+            // 必须在读 stdout 之前启动，否则 stderr 管道满会死锁。
+            val stderrThread = Thread {
+                try {
+                    proc.errorStream.bufferedReader().use { reader ->
+                        var line = reader.readLine()
+                        while (line != null) {
+                            Log.d(TAG, "[tar stderr] $line")
+                            onProgress(line)
+                            line = reader.readLine()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "stderr reader interrupted: ${e.message}")
+                }
+            }.also { it.isDaemon = true; it.start() }
+
+            // 读 stdout（tar 二进制流）→ GZIP 压缩 → 临时文件
+            var totalRead = 0L
+            try {
+                GZIPOutputStream(FileOutputStream(tmpArchive)).use { gzOut ->
+                    proc.inputStream.use { inp ->
+                        val buf = ByteArray(256 * 1024)
+                        var n = inp.read(buf)
+                        while (n > 0) {
+                            gzOut.write(buf, 0, n)
+                            totalRead += n
+                            if (totalRead % (50 * 1024 * 1024) < n) {
+                                onProgress("打包中… ${formatSize(totalRead)}")
+                            }
+                            n = inp.read(buf)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "GZIP write failed: ${e.message}")
+                proc.destroyForcibly()
+                onProgress("错误：打包失败 — ${e.message}")
+                return false
+            }
+
+            stderrThread.join(5000)
+            val code = proc.waitFor()
             if (code != 0) {
-                Log.e(TAG, "tar failed with code $code")
+                Log.e(TAG, "tar failed with code $code (read $totalRead bytes)")
                 onProgress("错误：tar 打包失败（exit=$code）")
                 return false
             }
