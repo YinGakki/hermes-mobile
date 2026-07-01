@@ -162,9 +162,13 @@ jobs:
           echo "Wheel cache size: $(du -h app/src/full/assets/wheels.tar.gz | cut -f1)"
 
       - name: Pre-fetch Python + native deps deb bundle (aarch64)
-        # Lite flavor: bundle ALL packages to avoid runtime download failures
-        # (Termux CDN 403 / connection timeouts on mobile networks).
-        if: true
+        # Disabled: APK was 186MB. Now all packages (including Python, proot,
+        # git, build deps, etc.) are downloaded at runtime via apt-get with
+        # mirror fallback. APK shrinks to ~50MB (bootstrap only).
+        # Runtime download path uses the same mirror fallback as clang/rust:
+        #   1. packages.termux.dev (official CDN)
+        #   2. mirrors.tuna.tsinghua.edu.cn (Tsinghua mirror, China-friendly)
+        if: false
         shell: bash
         run: |
           set -euo pipefail
@@ -380,7 +384,7 @@ jobs:
 
             | Flavor | Size | Description |
             |--------|------|-------------|
-            | `*-lite.apk` | ~50 MB | Self-download: bootstrap + Python + native deps pre-bundled. First launch downloads clang+rust (~570MB) + pip wheels (~400MB). |
+            | `*-lite.apk` | ~50 MB | Self-download: bootstrap only. First launch downloads everything via apt-get (with mirror fallback) + pip (~1GB). |
 
             - Arch: arm64-v8a only
             - Min Android: 7.0 (API 24)

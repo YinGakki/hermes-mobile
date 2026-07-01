@@ -195,14 +195,9 @@ class HermesServerManager(private val context: Context) {
             // Skip apt-get download if the bundle already staged debs in tmp/.
             if (!bundledDebsPresent()) {
                 onProgress("Downloading proot…")
-                val downloadCmd = """
-                    cd $prefix/tmp &&
-                    apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\|is not signed\|cannot be authenticated\|apt-key\|Ign:' || true;
-                    apt-get download --allow-unauthenticated proot libtalloc 2>&1
-                """.trimIndent()
-                val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-                if (dlCode != 0) {
-                    Log.e(TAG, "apt-get download proot failed with code $dlCode")
+                val ok = aptGetDownloadWithMirrors(prefix, "proot libtalloc", onProgress)
+                if (!ok) {
+                    Log.e(TAG, "apt-get download proot failed on all mirrors")
                     return@runWithRetry false
                 }
             } else {
@@ -276,18 +271,15 @@ class HermesServerManager(private val context: Context) {
                 // pyexpat.cpython-313-aarch64-linux-android.so fails to dlopen
                 // → pip can't even start). This list mirrors what the full
                 // flavor's fetch-python-bundle.py closure produces.
-                val downloadCmd = """
-                    cd $prefix/tmp &&
-                    apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\|is not signed\|cannot be authenticated\|apt-key\|Ign:' || true;
-                    apt-get download --allow-unauthenticated \
-                        python python-pip \
-                        libffi openssl libsqlite ncurses \
-                        libbz2 liblzma libcrypt readline zlib \
-                        libexpat libandroid-shmem libtalloc 2>&1
-                """.trimIndent()
-                val dlCode = runInPrefix(downloadCmd, onOutput = { onProgress(it) })
-                if (dlCode != 0) {
-                    Log.e(TAG, "apt-get download python failed with code $dlCode")
+                val ok = aptGetDownloadWithMirrors(
+                    prefix,
+                    "python python-pip libffi openssl libsqlite ncurses " +
+                        "libbz2 liblzma libcrypt readline zlib " +
+                        "libexpat libandroid-shmem libtalloc",
+                    onProgress,
+                )
+                if (!ok) {
+                    Log.e(TAG, "apt-get download python failed on all mirrors")
                     return@runWithRetry false
                 }
             }
@@ -399,6 +391,55 @@ class HermesServerManager(private val context: Context) {
         val prefix = BootstrapInstaller.getPaths(context).prefixDir
         val tmpDir = File(prefix, "tmp")
         return tmpDir.listFiles { _, n -> n.endsWith(".deb") }?.isNotEmpty() == true
+    }
+
+    /**
+     * apt-get download with mirror fallback. Used by proot/python/buildDeps
+     * when no bundled debs are present.
+     *
+     * Mirror order:
+     *   1. Official Termux CDN  (packages.termux.dev)
+     *   2. Tsinghua mirror      (mirrors.tuna.tsinghua.edu.cn)
+     *
+     * For each mirror: rewrite sources.list → apt-get update → apt-get download.
+     * Returns true if at least one .deb was downloaded successfully.
+     */
+    private fun aptGetDownloadWithMirrors(
+        prefix: String,
+        packages: String,
+        onProgress: (String) -> Unit,
+    ): Boolean {
+        val aptMirrors = listOf(
+            "http://packages.termux.dev/apt/termux-main/",
+            "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
+        )
+        for ((idx, mirror) in aptMirrors.withIndex()) {
+            onProgress("apt-get: 尝试镜像 ${idx + 1}/${aptMirrors.size}: $mirror")
+            runInPrefix("echo \"deb $mirror stable main\" > $prefix/etc/apt/sources.list")
+            // apt-get update — ignore GPG warnings (Termux packages aren't signed)
+            val updateOk = runInPrefix(
+                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | " +
+                    "grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
+                onOutput = { onProgress(it) },
+            ) == 0
+            if (!updateOk) {
+                Log.w(TAG, "apt-get update failed for $mirror")
+                onProgress("镜像 $mirror 更新失败，尝试下一个…")
+                continue
+            }
+            val dlCode = runInPrefix(
+                "cd $prefix/tmp && apt-get download --allow-unauthenticated $packages 2>&1",
+                onOutput = { onProgress(it) },
+            )
+            if (dlCode == 0) {
+                onProgress("✓ 从 $mirror 下载成功")
+                return true
+            }
+            Log.w(TAG, "apt-get download failed for $mirror (code=$dlCode)")
+            onProgress("镜像 $mirror 下载失败，尝试下一个…")
+        }
+        onProgress("错误：所有镜像均下载失败（$packages）")
+        return false
     }
 
     // ── Node.js ───────────────────────────────────────────────────────────
@@ -519,25 +560,11 @@ WEOF
         if (!bundledDebsPresent()) {
             onProgress("Downloading build dependencies…")
 
-            // apt-get update can fail transiently (Termux repo mirror flakiness).
-            // Retry up to 3 times with exponential backoff before giving up.
-            val updateOk = runWithRetry(
-                maxAttempts = 3,
-                baseDelayMs = 2000L,
-                onProgress = onProgress,
-                what = "apt-get update",
-            ) {
-                runInPrefix(
-                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1 | grep -v 'GPG error\\|is not signed\\|cannot be authenticated\\|apt-key\\|Ign:' || true",
-                    onOutput = { onProgress(it) },
-                ) == 0
-            }
-            if (!updateOk) {
-                Log.w(TAG, "apt-get update failed after 3 retries (non-fatal — proceeding with apt-get download anyway)")
-            }
-
             // Official Hermes pkg list + transitive build tools needed to
             // compile native Python wheels (cryptography, cffi, etc).
+            // clang/rust are included here but will be re-downloaded in
+            // Phase 2 if wheel install fails — that's OK, the second download
+            // is a no-op if the .deb is already in tmp/.
             val pkgGroups = listOf(
                 // Hermes official Termux pkg list (ffmpeg skipped — Hermes core
                 // doesn't need it, only the optional audio/video extras do,
@@ -556,23 +583,13 @@ WEOF
                 "rhash jsoncpp",
             )
 
-            // Download each pkg group with its own retry — one group failing
-            // shouldn't force the whole step to restart from scratch.
+            // Download each pkg group with mirror fallback. One group failing
+            // doesn't abort the whole step — subsequent groups still get tried.
             for (group in pkgGroups) {
-                val groupOk = runWithRetry(
-                    maxAttempts = 3,
-                    baseDelayMs = 2000L,
-                    onProgress = onProgress,
-                    what = "apt-get download $group",
-                ) {
-                    runInPrefix(
-                        "cd $prefix/tmp && apt-get download --allow-unauthenticated $group 2>&1",
-                        timeoutMs = 300000, // 5 min for large debs (rust ~96MB)
-                        onOutput = { onProgress(it) },
-                    ) == 0
-                }
+                val groupOk = aptGetDownloadWithMirrors(prefix, group, onProgress)
                 if (!groupOk) {
-                    Log.w(TAG, "apt-get download ($group) failed after retries (non-fatal)")
+                    Log.w(TAG, "apt-get download ($group) failed on all mirrors (non-fatal)")
+                    onProgress("警告：$group 下载失败，继续尝试其他组…")
                 }
             }
 
