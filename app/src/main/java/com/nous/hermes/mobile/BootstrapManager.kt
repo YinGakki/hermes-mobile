@@ -365,23 +365,32 @@ object BootstrapManager {
             APT::Sandbox::Seccomp "false";
             Dpkg::Use-Pty "0";
             APT::Get::Assume-Yes "true";
-            APT::Get::Allow-Unauthenticated "false";
-            Acquire::AllowInsecureRepositories "false";
             """.trimIndent() + "\n"
         )
+        // bootstrap 阶段放宽验证：ubuntu-base 最小 rootfs 可能不含 ca-certificates
+        // 和 ubuntu-keyring，所以用 HTTP 源 + trusted=yes 跳过 GPG 验证。
+        // 装 ca-certificates + ubuntu-keyring 后可恢复严格模式。
+        File(aptConfDir, "99bootstrap-relaxed").writeText(
+            "APT::Get::Allow-Unauthenticated \"true\";\n" +
+            "Acquire::AllowInsecureRepositories \"true\";\n" +
+            "Acquire::AllowDowngradeToInsecureRepositories \"true\";\n"
+        )
         File(aptConfDir, "99unsafe-io").writeText(
-            "APT::Acquire::AllowInsecureRepositories \"false\";\nDPkg::Options { \"--force-unsafe-io\"; }\n"
+            "DPkg::Options { \"--force-unsafe-io\"; }\n"
         )
 
         // Ubuntu ports 源（arm64 用 ports.ubuntu.com，不是 archive.ubuntu.com）
         // 清华镜像优先（国内速度快），官方兜底。
+        // 用 HTTP 而非 HTTPS：ubuntu-base 最小 rootfs 不保证含 ca-certificates，
+        // HTTPS 会导致 apt-get update 报 Certificate verification failed。
+        // [trusted=yes] 跳过 GPG 验证（rootfs 可能不含 ubuntu-keyring）。
         val sourcesList = File(rootfs, "etc/apt/sources.list")
         sourcesList.parentFile?.mkdirs()
         sourcesList.writeText(
-            "deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main universe\n" +
-            "deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main universe\n" +
-            "# deb https://ports.ubuntu.com/ubuntu-ports/ noble main universe\n" +
-            "# deb https://ports.ubuntu.com/ubuntu-ports/ noble-updates main universe\n"
+            "deb [trusted=yes] http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main universe\n" +
+            "deb [trusted=yes] http://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main universe\n" +
+            "# deb [trusted=yes] http://ports.ubuntu.com/ubuntu-ports/ noble main universe\n" +
+            "# deb [trusted=yes] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main universe\n"
         )
 
         // dpkg status 文件（空文件，apt update 会用，dpkg --configure 需要）
@@ -429,7 +438,9 @@ object BootstrapManager {
     // ── DNS / fake proc / libtalloc ─────────────────────────────────────────
 
     private fun writeResolvConf(paths: Paths) {
-        val content = "nameserver 8.8.8.8\nnameserver 8.8.4.4\nnameserver 1.1.1.1\n"
+        // 国内 DNS 优先（223.5.5.5 阿里、114.114.114.114），Google/Cloudflare 兜底。
+        // 注意：proot 里 DNS 走 host 网络栈，直接用 IP 不需要 /etc/hosts。
+        val content = "nameserver 223.5.5.5\nnameserver 114.114.114.114\nnameserver 8.8.8.8\n"
         try {
             // configDir/resolv.conf —— ProcessManager bind mount 用
             val r1 = File(paths.configDir, "resolv.conf")
