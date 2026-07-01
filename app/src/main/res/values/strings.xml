@@ -46,7 +46,11 @@
     <string name="env_save_filename_template">hermes-env-%1$s.tar.gz</string>
     <string name="env_confirm_restore_title">确认还原</string>
     <string name="env_confirm_restore_msg">还原将清空当前环境并覆盖为备份内容。是否继续？</string>
-    <string name="env_save_only_if_installed">需先完成 Hermes 安装才能保存环境</string>
+    <string name="env_save_only_if_installed">需至少完成一步安装才能保存环境</string>
+    <string name="env_save_partial_title">保存部分环境</string>
+    <string name="env_save_partial_msg">检测到仅完成部分安装步骤：\n\n%1$s\n\n将保存当前已安装的内容。还原后可从断点继续，无需重装已完成的步骤。是否继续？</string>
+    <string name="env_save_full_msg">将保存完整环境（含 Hermes Agent），还原后可直接使用。是否继续？</string>
+    <string name="env_save_empty">尚未安装任何步骤，无可保存内容</string>
     <string name="action_copy_error">复制错误</string>
     <string name="copied_to_clipboard">已复制到剪贴板</string>
     <string name="install_in_progress_title">安装进行中</string>

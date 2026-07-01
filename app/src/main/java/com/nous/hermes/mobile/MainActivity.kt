@@ -521,11 +521,38 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.install_in_progress_msg, Toast.LENGTH_SHORT).show()
             return
         }
-        if (!serverManager.isHermesInstalled()) {
-            Toast.makeText(this, R.string.env_save_only_if_installed, Toast.LENGTH_LONG).show()
+        // Build a status summary of which steps are done so the user knows
+        // exactly what they're about to back up. Each line: "✓ step" or "✗ step".
+        val prootDone = serverManager.isProotInstalled()
+        val pythonDone = serverManager.isPythonInstalled()
+        val depsDone = isBuildDepsInstalled()
+        val hermesDone = serverManager.isHermesInstalled()
+        if (!prootDone && !pythonDone && !depsDone && !hermesDone) {
+            Toast.makeText(this, R.string.env_save_empty, Toast.LENGTH_LONG).show()
             return
         }
-        // 默认文件名带时间戳，避免覆盖旧备份
+        val statusLines = buildString {
+            append(if (prootDone) "✓" else "✗").append(" proot\n")
+            append(if (pythonDone) "✓" else "✗").append(" Python\n")
+            append(if (depsDone) "✓" else "✗").append(" build deps\n")
+            append(if (hermesDone) "✓" else "✗").append(" Hermes Agent")
+        }
+        // If Hermes is done → full backup (directly save, no extra dialog).
+        // Otherwise → confirm partial backup so user understands they'll
+        // need to continue from the breakpoint after restore.
+        if (hermesDone) {
+            launchSaveEnv()
+        } else {
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.env_save_partial_title)
+                .setMessage(getString(R.string.env_save_partial_msg, statusLines))
+                .setPositiveButton(R.string.compile_continue) { _, _ -> launchSaveEnv() }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
+        }
+    }
+
+    private fun launchSaveEnv() {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val filename = getString(R.string.env_save_filename_template, timestamp)
         saveEnvLauncher.launch(filename)
@@ -706,12 +733,16 @@ class MainActivity : AppCompatActivity() {
             else -> 1f
         }
 
-        // Save env: only when Hermes is fully installed (otherwise there's
-        // nothing meaningful to back up). Restore env: always available —
-        // user may want to restore to skip the install entirely.
-        btnSaveEnv.isEnabled = hermesDone && !isInstallInProgress
+        // Save env: enabled as soon as ANY install step is done (proot /
+        // python / buildDeps / hermes). This lets users checkpoint progress
+        // — e.g. save after buildDeps completes (the slowest step) so a
+        // later failure doesn't force re-downloading 570MB of rust/clang.
+        // Restore env: always available — user may want to restore to skip
+        // the install entirely.
+        val anyStepDone = prootDone || pythonDone || depsDone || hermesDone
+        btnSaveEnv.isEnabled = anyStepDone && !isInstallInProgress
         btnSaveEnv.alpha = when {
-            !hermesDone -> 0.35f
+            !anyStepDone -> 0.35f
             isInstallInProgress -> 0.35f
             else -> 1f
         }
