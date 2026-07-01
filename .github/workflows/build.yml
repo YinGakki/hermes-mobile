@@ -382,14 +382,14 @@ jobs:
           body: |
             Rolling pre-release built from `${{ github.sha }}` on `${{ github.run_id }}`.
 
-            ## Lite flavor (self-download)
+            ## Lite flavor (proot + Ubuntu rootfs, self-download)
 
             | Flavor | Size | Description |
             |--------|------|-------------|
-            | `*-lite.apk` | ~50 MB | Self-download: bootstrap only. First launch downloads everything via apt-get (with mirror fallback) + pip (~1GB). |
+            | `*-lite.apk` | ~15 MB | Ships only proot/libtalloc binaries (jniLibs). First launch downloads Ubuntu 24.04 rootfs + apt packages + pip (~1GB) via mirror fallback. |
 
-            - Arch: arm64-v8a only
-            - Min Android: 7.0 (API 24)
+            - Architecture: proot + Ubuntu 24.04 rootfs (arm64-v8a only)
+            - Min Android: 10 (API 29) — needs Os.symlink for rootfs extraction
             - targetSdk: 28 (intentional, see README → W^X bypass)
             - Signed: ${{ env.HAS_KEYSTORE == '1' }}
 
