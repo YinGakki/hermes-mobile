@@ -93,6 +93,15 @@ fetch_for_abi() {
         return 1
     fi
 
+    # Fetch libandroid-shmem package — proot 二进制链接了它（Termux 提供
+    # Android ashmem 兼容的 shm_open/shm_unlink）。Android 系统没有这个库，
+    # 必须随 APK 一起打包到 jniLibs，否则 proot 启动即报：
+    #   CANNOT LINK EXECUTABLE: library "libandroid-shmem.so" not found
+    local shmem_dir="$extract_base/shmem"
+    if ! fetch_termux_pkg "libandroid-shmem" "$deb_arch" "$shmem_dir"; then
+        return 1
+    fi
+
     # Copy proot binary
     local proot_bin
     proot_bin=$(find "$proot_dir" -name "proot" -path "*/bin/*" -type f | head -1)
@@ -131,6 +140,20 @@ fetch_for_abi() {
         chmod 755 "$out_dir/libtalloc.so"
     else
         echo "  [$jni_abi] WARN: libtalloc not found"
+    fi
+
+    # Copy libandroid-shmem.so — proot 启动时直接 dlopen 它，SONAME 不变。
+    local shmem_lib
+    shmem_lib=$(find "$shmem_dir" -name "libandroid-shmem.so" -type f | head -1)
+    if [ -z "$shmem_lib" ]; then
+        # 某些版本只装 libandroid-shmem.so.<ver>，需复制实体
+        shmem_lib=$(find "$shmem_dir" -name "libandroid-shmem.so.*" -not -type l | head -1)
+    fi
+    if [ -n "$shmem_lib" ]; then
+        cp -L "$shmem_lib" "$out_dir/libandroid-shmem.so"
+        chmod 755 "$out_dir/libandroid-shmem.so"
+    else
+        echo "  [$jni_abi] WARN: libandroid-shmem not found (proot will fail to start!)"
     fi
 
     echo "  [$jni_abi] OK — $(ls "$out_dir"/ | tr '\n' ' ')"
