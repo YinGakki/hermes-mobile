@@ -409,24 +409,35 @@ class HermesServerManager(private val context: Context) {
         packages: String,
         onProgress: (String) -> Unit,
     ): Boolean {
+        // 清华镜像优先（纯 HTTP，无 ca-certificates 证书问题）。
+        // 官方 CDN 即使 sources.list 写 http:// 也会 301 重定向到 https://，
+        // 而 bootstrap 没有 ca-certificates → 证书验证失败。
         val aptMirrors = listOf(
-            "http://packages.termux.dev/apt/termux-main/",
             "http://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
+            "http://packages.termux.dev/apt/termux-main/",
         )
         for ((idx, mirror) in aptMirrors.withIndex()) {
             onProgress("apt-get: 尝试镜像 ${idx + 1}/${aptMirrors.size}: $mirror")
             runInPrefix("echo \"deb $mirror stable main\" > $prefix/etc/apt/sources.list")
-            // apt-get update — check exit code directly (NOT via pipe+grep,
-            // because `cmd | grep || true` always returns 0 even if cmd
-            // failed, which caused false "updateOk=true" and subsequent
-            // "Unable to locate package" errors).
-            // GPG warnings are noisy but harmless — we filter them in
-            // onOutput instead of in the shell pipeline.
-            val updateCode = runInPrefix(
-                "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+            // 合并 update + download 为一条命令，不看 update 退出码。
+            // 原因：apt-get update 对未签名仓库（--allow-insecure-repositories）
+            // 即使成功下载了 InRelease + Packages，也可能因签名验证 warning
+            // 返回非 0 退出码，导致误判失败。但只要 package list 实际更新了，
+            // 后续 download 就能找到包 —— 所以以 download 退出码为准。
+            // 另加 -o Acquire::https::Verify-Peer=false 处理官方 CDN 重定向
+            // 到 HTTPS 的情况（无 ca-certificates 时跳过证书验证）。
+            val cmd = """
+                cd $prefix/tmp &&
+                apt-get update \
+                    --allow-insecure-repositories \
+                    -o Acquire::https::Verify-Peer=false \
+                    -o Acquire::https::Verify-Host=false 2>&1;
+                apt-get download --allow-unauthenticated $packages 2>&1
+            """.trimIndent()
+            val code = runInPrefix(
+                cmd,
                 onOutput = { line ->
-                    // Suppress noisy GPG/signature warnings — they're expected
-                    // (Termux packages aren't GPG-signed in our bootstrap).
+                    // Suppress noisy GPG/signature warnings
                     if (!line.contains("GPG error") &&
                         !line.contains("is not signed") &&
                         !line.contains("cannot be authenticated") &&
@@ -437,20 +448,11 @@ class HermesServerManager(private val context: Context) {
                     }
                 },
             )
-            if (updateCode != 0) {
-                Log.w(TAG, "apt-get update failed for $mirror (code=$updateCode)")
-                onProgress("镜像 $mirror 更新失败（exit=$updateCode），尝试下一个…")
-                continue
-            }
-            val dlCode = runInPrefix(
-                "cd $prefix/tmp && apt-get download --allow-unauthenticated $packages 2>&1",
-                onOutput = { onProgress(it) },
-            )
-            if (dlCode == 0) {
+            if (code == 0) {
                 onProgress("✓ 从 $mirror 下载成功")
                 return true
             }
-            Log.w(TAG, "apt-get download failed for $mirror (code=$dlCode)")
+            Log.w(TAG, "apt-get download failed for $mirror (code=$code)")
             onProgress("镜像 $mirror 下载失败，尝试下一个…")
         }
         onProgress("错误：所有镜像均下载失败（$packages）")
@@ -1480,9 +1482,12 @@ WEOF
         // Official CDN is fastest when reachable; Tsinghua mirror is the
         // standard fallback used inside China / on networks where Termux
         // CDN returns 403.
+        // 清华镜像优先（纯 HTTP，无 ca-certificates 证书问题）。
+        // 官方 CDN 即使 sources.list 写 http:// 也会 301 重定向到 https://，
+        // 而 bootstrap 没有 ca-certificates → 证书验证失败。
         val aptMirrors = listOf(
-            "http://packages.termux.dev/apt/termux-main/",
             "http://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main/",
+            "http://packages.termux.dev/apt/termux-main/",
         )
 
         onProgress("Downloading rust + clang (~570MB) via apt-get…")
@@ -1492,23 +1497,27 @@ WEOF
         for ((idx, mirror) in aptMirrors.withIndex()) {
             lastMirror = mirror
             onProgress("尝试镜像 ${idx + 1}/${aptMirrors.size}: $mirror")
-            // Point sources.list at this mirror, then apt-get update + download.
-            // --allow-insecure-repositories / --allow-unauthenticated because
-            // Termux packages aren't GPG-signed in our bootstrap setup.
             runInPrefix("echo \"deb $mirror stable main\" > $prefix/etc/apt/sources.list")
 
-            // apt-get update — check exit code directly (NOT via pipe+grep,
-            // because `cmd | grep || true` always returns 0 even if cmd
-            // failed, which caused false "updateOk=true" and subsequent
-            // "Unable to locate package" errors).
-            val updateOk = runWithRetry(
-                maxAttempts = 2,
-                baseDelayMs = 2000L,
+            // 合并 update + download，不看 update 退出码（详见
+            // aptGetDownloadWithMirrors 中的注释），以 download 结果 +
+            // deb 文件数校验为准。
+            val code = runWithRetry(
+                maxAttempts = 3,
+                baseDelayMs = 5000L,
                 onProgress = onProgress,
-                what = "apt-get update ($mirror)",
+                what = "apt-get download rust clang ($mirror)",
             ) {
+                val cmd = """
+                    cd $prefix/tmp &&
+                    apt-get update \
+                        --allow-insecure-repositories \
+                        -o Acquire::https::Verify-Peer=false \
+                        -o Acquire::https::Verify-Host=false 2>&1;
+                    apt-get download --allow-unauthenticated $pkgs 2>&1
+                """.trimIndent()
                 runInPrefix(
-                    "cd $prefix/tmp && apt-get update --allow-insecure-repositories 2>&1",
+                    cmd,
                     onOutput = { line ->
                         if (!line.contains("GPG error") &&
                             !line.contains("is not signed") &&
@@ -1521,24 +1530,7 @@ WEOF
                     },
                 ) == 0
             }
-            if (!updateOk) {
-                Log.w(TAG, "apt-get update failed for $mirror — trying next mirror")
-                onProgress("镜像 $mirror 更新失败，尝试下一个…")
-                continue
-            }
-
-            val dlCode = runWithRetry(
-                maxAttempts = 3,
-                baseDelayMs = 5000L,
-                onProgress = onProgress,
-                what = "apt-get download $pkgs ($mirror)",
-            ) {
-                runInPrefix(
-                    "cd $prefix/tmp && apt-get download --allow-unauthenticated $pkgs 2>&1",
-                    onOutput = { onProgress(it) },
-                ) == 0
-            }
-            if (dlCode) {
+            if (code) {
                 // Sanity-check: ensure both rust*.deb and clang*.deb are present.
                 // apt-get download can exit 0 even if one package was skipped.
                 val sbCount = StringBuilder()
