@@ -35,6 +35,10 @@ object BootstrapManager {
 
     private const val TAG = "HermesBootstrap"
 
+    // tar LF_HARDLINK 标志位（'1' = 49）。commons-compress 1.26 的
+    // TarArchiveEntry 没有 isHardLink()，需用 linkFlag 直接判断。
+    private const val LF_HARDLINK: Byte = '1'.code.toByte()
+
     // Ubuntu 24.04 base rootfs（arm64）。多镜像 fallback：官方 cdimage 在国内
     // 经常超时，清华镜像兜底。
     private val ROOTFS_URLS = listOf(
@@ -263,7 +267,7 @@ object BootstrapManager {
                 // 必须消费掉条目内容（即使符号链接无内容，也要让流前进）
                 tar.read(ByteArray(0))
             }
-            entry.isHardLink -> {
+            entry.linkFlag == LF_HARDLINK -> {
                 outFile.parentFile?.mkdirs()
                 val target = File(destDir, entry.linkName)
                 try {
