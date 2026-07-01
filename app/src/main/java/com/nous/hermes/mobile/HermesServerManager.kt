@@ -1278,33 +1278,24 @@ H3
         if (venvActivate.exists()) {
             onProgress("Python venv already exists, reusing…")
         } else {
-            // NOTE: do NOT use plain `python -m venv .venv` here.
-            // venv runs `ensurepip` internally, and ensurepip ships manylinux
-            // x86_64 wheels that fail to install on Android aarch64 — the
-            // venv ends up half-created with no bin/activate, and every
-            // subsequent `pip install` fails with "cannot open .venv/bin/activate".
-            // The well-known Termux workaround is `--without-pip` (skip the
-            // broken ensurepip) + `--system-site-packages` (let the venv see
-            // the system pip we installed via the python-pip deb). pip then
-            // resolves to the system pip, and `pip install` still targets the
-            // venv site-packages (venv takes precedence in sys.path), so
-            // isolation is preserved for Hermes' deps.
-            onProgress("Creating Python venv (--without-pip, using system pip)…")
-            val venvCode = runInPrefix(
-                "cd ${homeDir}/hermes-agent && rm -rf .venv && " +
-                    "python -m venv --without-pip --system-site-packages .venv 2>&1",
-                onOutput = { onProgress(it) },
-            )
-            if (venvCode != 0 || !venvActivate.exists()) {
-                onProgress("venv creation failed (exit=$venvCode), retrying with --without-pip only…")
-                runInPrefix(
-                    "cd ${homeDir}/hermes-agent && rm -rf .venv && " +
-                        "python -m venv --without-pip .venv 2>&1",
-                    onOutput = { onProgress(it) },
-                )
-            }
-            if (!venvActivate.exists()) {
-                Log.e(TAG, "venv creation failed — .venv/bin/activate missing")
+            // NOTE: 不用 `python -m venv`。Termux Python 3.13 的 venv 模块
+            // 启动时导入 _sysconfigdata__linux_aarch64-linux-android 会失败
+            // （"No module named '_sysconfigdata__linux_aarch64-linux-android'"），
+            // 导致 venv 创建失败、bin/activate 不生成。即使 --without-pip 也
+            // 逃不掉这个 import（venv 模块顶层就 import _sysconfigdata）。
+            //
+            // 解决方案：手动创建 venv 目录结构，绕过有 bug 的 venv 模块。
+            // 做的事和 venv 模块底层一样：
+            //   1. mkdir .venv/{bin,lib/python3.13/site-packages}
+            //   2. 在 .venv/bin/python 创建符号链接指向系统 python
+            //   3. 写 pyvenv.cfg 声明这是一个 venv + include-system-site-packages
+            //   4. 生成 activate 脚本（让 `. .venv/bin/activate` 能用）
+            // 这样 venv python 能跑、能 import 系统 pip（python-pip deb 装的）、
+            // pip install 目标是 venv site-packages（sys.path 优先级）。
+            onProgress("Creating Python venv manually (bypass broken venv module)…")
+            val venvOk = createVenvManually(homeDir, prefix, onProgress)
+            if (!venvOk || !venvActivate.exists()) {
+                Log.e(TAG, "manual venv creation failed — activate still missing")
                 onProgress("ERROR: venv creation failed — .venv/bin/activate is missing")
                 return false
             }
@@ -1493,6 +1484,126 @@ WEOF
         runInPrefix(linkCmd, onOutput = { onProgress(it) })
 
         return isHermesInstalled()
+    }
+
+    /**
+     * 手动创建 Python venv，绕过 Termux Python 3.13 有 bug 的 venv 模块。
+     *
+     * `python -m venv --without-pip` 也会失败，因为 venv 模块在顶层 import
+     * `_sysconfigdata__linux_aarch64-linux-android`，而该模块在 Termux Python
+     * 3.13 deb 里缺失（"No module named '_sysconfigdata__linux_aarch64-linux-android'"）。
+     *
+     * 本方法做 venv 模块底层做的同样的事：
+     *   1. 创建 .venv/{bin, lib/python3.13/site-packages}
+     *   2. 在 .venv/bin/python 建符号链接指向系统 python
+     *   3. 写 pyvenv.cfg（home + include-system-site-packages = true）
+     *   4. 生成 activate 脚本
+     *
+     * @param homeDir $HOME 目录（hermes-agent 在其下）
+     * @param prefix Termux prefix（$PREFIX，系统 python 在 $prefix/bin/python）
+     * @return true 表示 venv 创建成功且 .venv/bin/activate 存在
+     */
+    private fun createVenvManually(
+        homeDir: String,
+        prefix: String,
+        onProgress: (String) -> Unit,
+    ): Boolean {
+        val venvDir = "$homeDir/hermes-agent/.venv"
+        // 用 Python 自身探测 version（避免硬编码 3.13，未来升级也不破）
+        // 探测失败则回退到 3.13（当前 Termux stable 版本）。
+        val pyVerSb = StringBuilder()
+        runInPrefix(
+            "python -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])' 2>/dev/null",
+            onOutput = { pyVerSb.append(it) },
+        )
+        val pyVer = pyVerSb.toString().trim().let {
+            if (it.matches(Regex("""\d+\.\d+"""))) it else "3.13"
+        }
+        Log.i(TAG, "createVenvManually: python version = $pyVer")
+
+        // 用 Kotlin File API 创建 venv 目录结构 + 配置文件，避免 shell
+        // heredoc 里的 $ 被 Kotlin 字符串模板误解析（activate 脚本里有
+        // 大量 $PATH/$VIRTUAL_ENV 等 shell 变量，在 Kotlin """ """ 里会
+        // 被当模板插值，编译报错或写入错误内容）。
+        val venvRoot = File("$homeDir/hermes-agent/.venv")
+        try {
+            if (venvRoot.exists()) venvRoot.deleteRecursively()
+            File(venvRoot, "bin").mkdirs()
+            File(venvRoot, "lib/python$pyVer/site-packages").mkdirs()
+
+            // 符号链接 python → 系统 python
+            val pyLink = File(venvRoot, "bin/python")
+            val py3Link = File(venvRoot, "bin/python3")
+            try {
+                osCreateSymlink("$prefix/bin/python", pyLink.absolutePath)
+                osCreateSymlink("$prefix/bin/python3", py3Link.absolutePath)
+            } catch (e: Exception) {
+                // 某些 Android 文件系统不支持 symlink，回退到复制
+                Log.w(TAG, "symlink failed, falling back to copy: ${e.message}")
+                File("$prefix/bin/python").copyTo(pyLink, overwrite = true)
+                File("$prefix/bin/python3").copyTo(py3Link, overwrite = true)
+            }
+
+            // pyvenv.cfg — Python 启动时读这个文件判断 venv 模式
+            File(venvRoot, "pyvenv.cfg").writeText(
+                "home = $prefix/bin\n" +
+                    "include-system-site-packages = true\n",
+            )
+
+            // activate 脚本 — 让 `. .venv/bin/activate` 能用
+            // 用字符串构建避免 shell heredoc 转义陷阱
+            val dollar = '$'
+            File(venvRoot, "bin/activate").writeText(
+                buildString {
+                    appendLine("# This file must be used with \"source bin/activate\" *from bash*")
+                    appendLine("# you cannot run it directly")
+                    appendLine("deactivate () {")
+                    appendLine("    unset -f pydoc >/dev/null 2>&1")
+                    appendLine("    [ -n \"${dollar}{_OLD_VIRTUAL_PATH:-}\" ] && PATH=\"${dollar}_OLD_VIRTUAL_PATH\" && export PATH")
+                    appendLine("    unset _OLD_VIRTUAL_PATH")
+                    appendLine("    [ -n \"${dollar}{_OLD_VIRTUAL_PS1:-}\" ] && PS1=\"${dollar}_OLD_VIRTUAL_PS1\" && export PS1")
+                    appendLine("    unset _OLD_VIRTUAL_PS1")
+                    appendLine("    unset VIRTUAL_ENV")
+                    appendLine("    unset -f deactivate")
+                    appendLine("}")
+                    appendLine("VIRTUAL_ENV=\"${dollar}( cd \"${dollar}( dirname \"${dollar}{BASH_SOURCE[0]}\" )/..\" && pwd )\"")
+                    appendLine("_OLD_VIRTUAL_PATH=\"${dollar}PATH\"")
+                    appendLine("PATH=\"${dollar}VIRTUAL_ENV/bin:${dollar}PATH\"")
+                    appendLine("export PATH")
+                    appendLine("_OLD_VIRTUAL_PS1=\"${dollar}{PS1:-}\"")
+                    appendLine("PS1=\"(.venv) ${dollar}PS1\"")
+                    appendLine("export PS1")
+                },
+            )
+            File(venvRoot, "bin/activate").setExecutable(true, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "createVenvManually file ops failed: ${e.message}")
+            onProgress("错误：创建 venv 失败 — ${e.message}")
+            return false
+        }
+
+        // 验证 venv python 能跑（终极 sanity check）
+        val verify = runInPrefix(
+            "$venvDir/bin/python -c 'import sys; print(sys.prefix)' 2>&1",
+            onOutput = { onProgress(it) },
+        )
+        if (verify != 0) {
+            Log.e(TAG, "venv python verify failed (exit=$verify)")
+            return false
+        }
+        onProgress("✓ venv created manually (python $pyVer)")
+        return true
+    }
+
+    /**
+     * 创建符号链接的跨 Android 版本兼容实现。
+     * Android 8+ 的 Os.symlink 可用，但需要反射调用以兼容低版本。
+     */
+    private fun osCreateSymlink(target: String, linkPath: String) {
+        // 用反射调用 android.system.Os.symlink(String, String)
+        val osClass = Class.forName("android.system.Os")
+        val symlinkMethod = osClass.getMethod("symlink", String::class.java, String::class.java)
+        symlinkMethod.invoke(null, target, linkPath)
     }
 
     /**
