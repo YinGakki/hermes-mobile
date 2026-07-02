@@ -185,12 +185,9 @@ class MainActivity : AppCompatActivity() {
         btnRestoreEnv.setOnClickListener { onRestoreEnvClicked() }
 
         openShellButton.setOnClickListener {
-            try {
-                val intent = packageManager.getLaunchIntentForPackage("com.termux")
-                if (intent != null) startActivity(intent) else showShellInstructions()
-            } catch (e: Exception) {
-                showShellInstructions()
-            }
+            // 新架构（proot+rootfs）下 app 自带完整 Linux 环境，
+            // 不再需要跳转 Termux。直接显示使用说明。
+            showShellInstructions()
         }
         chatButton.setOnClickListener { onChatButtonClicked() }
         retryButton.setOnClickListener { restartFromBootstrap() }
@@ -904,19 +901,26 @@ class MainActivity : AppCompatActivity() {
     private fun showShellInstructions() {
         val paths = BootstrapManager.getPaths(this)
         val msg = """
-            |Hermes Agent runs inside a proot+Ubuntu rootfs environment.
+            |Hermes Agent 运行在 app 自带的 proot + Ubuntu rootfs 环境里，
+            |无需安装 Termux。
             |
-            |Repository + venv location (host):
+            |最简单的用法：点上面的「聊天」按钮，直接和 Hermes 对话。
+            |
+            |代码位置（host 文件系统）：
             |${paths.homeDir}/hermes-agent
             |
-            |Hermes is invoked via proot. The easiest way to use it is the
-            |Chat UI button above — no terminal needed.
+            |rootfs 位置：
+            |${paths.rootfsDir}
             |
-            |To run manually from the app's bundled shell, the environment
-            |is already set up (rootfs at ${paths.rootfsDir}).
-            |Inside proot the agent lives at /root/home/hermes-agent.
+            |如需命令行，可用 adb shell 进入：
+            |  cd ${paths.nativeLibDir}
+            |  ./libproot.so -r ${paths.rootfsDir} -b /dev -b /proc \
+            |    -b ${paths.tmpDir}:/tmp -w /root/home \
+            |    /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin bash
             |
-            |Tip: run `hermes setup --portal` to use Nous Portal (free OAuth).
+            |首次使用需配置模型，在 proot 里运行：
+            |  cd /root/home/hermes-agent && . .venv/bin/activate
+            |  hermes setup --portal   # 用 Nous Portal（免费 OAuth）
         """.trimMargin()
         MaterialAlertDialogBuilder(this)
             .setTitle("How to use Hermes")

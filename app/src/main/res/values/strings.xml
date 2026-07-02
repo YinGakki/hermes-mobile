@@ -71,7 +71,7 @@
     <string name="dashboard_not_ready_title">尚未安装</string>
     <string name="dashboard_not_ready_subtitle">请先在「安装」页完成 Hermes Agent 安装</string>
     <string name="card_open_shell_title">打开终端</string>
-    <string name="card_open_shell_subtitle">在 Termux 中使用 hermes 命令</string>
+    <string name="card_open_shell_subtitle">查看 Hermes 使用方法</string>
     <string name="card_open_chat_title">聊天界面</string>
     <string name="card_open_chat_subtitle_install">安装 hermes-web-ui (npm, ~30MB)</string>
     <string name="card_open_chat_subtitle_open">打开 Hermes Web 聊天界面</string>
