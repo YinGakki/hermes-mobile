@@ -503,7 +503,8 @@ class MainActivity : AppCompatActivity() {
         )
         if (!ok) throw RuntimeException("Failed to install Hermes Agent")
         serverManager.configureHermesSkeleton()
-        serverManager.healthCheck { msg -> appendLog(msg) }
+        // 不再调 healthCheck —— installHermes 内部已用 `hermes --version`
+        // 验证过，重复跑只浪费时间和日志行。
         appendLog("✓ Hermes Agent 已安装")
     }
 
@@ -1236,16 +1237,22 @@ class MainActivity : AppCompatActivity() {
             l.contains("✓ build deps 已安装") -> setProgress(60, "buildDeps")
         }
 
-        // hermes 步骤 (60-100)
+        // hermes 步骤 (60-100) — tarball 优先 + venv + pip
         when {
-            l.contains("git clone from") -> setProgress(62, "hermes")
+            l.contains("尝试 tarball 下载") -> setProgress(62, "hermes")
+            l.contains("✓ tarball 解压成功") -> setProgress(65, "hermes")
+            l.contains("tarball 全部失败") -> setProgress(62, "hermes")
+            l.contains("git clone from") -> setProgress(63, "hermes")
             l.contains("✓ 克隆成功") -> setProgress(65, "hermes")
-            l.contains("所有 git 镜像失败") || l.contains("tarball") -> setProgress(64, "hermes")
             l.contains("创建 Python venv") -> setProgress(70, "hermes")
             l.contains("venv 已存在") -> setProgress(70, "hermes")
-            l.contains("pip install -e") -> setProgress(75, "hermes")
-            l.contains("hermes --version") -> setProgress(95, "hermes")
-            l.contains("✓ Hermes") -> setProgress(100, "hermes")
+            l.contains("pip install -e") -> setProgress(72, "hermes")
+            l.contains("Collecting ") && l.contains("from hermes-agent") -> setProgress(74, "hermes")
+            l.contains("Building wheels") || l.contains("Building editable") -> setProgress(78, "hermes")
+            l.contains("Installing collected packages") -> setProgress(85, "hermes")
+            l.contains("Successfully installed") -> setProgress(92, "hermes")
+            l.contains("Hermes Agent v") -> setProgress(96, "hermes")
+            l.contains("✓ Hermes Agent") -> setProgress(100, "hermes")
         }
     }
 

@@ -301,14 +301,16 @@ class HermesServerManager(private val context: Context) {
             onProgress("venv 已存在，复用…")
         }
 
-        // pip install -e '.[termux]'
+            // pip install -e '.[termux]'
         return runWithRetry(onProgress = onProgress, what = "pip install hermes") {
             onProgress("pip install -e '.[termux]'（可能需要几分钟）…")
             // 清华 PyPI 镜像加速；--retries/--timeout 抗瞬时网络抖动
+            // --progress-bar off 关掉每个包的进度条（日志太长），只保留
+            // "Collecting"/"Downloading"/"Successfully installed" 关键行
             val cmd = """
                 cd /root/home/hermes-agent &&
                 . .venv/bin/activate &&
-                pip install --retries 3 --timeout 120 \
+                pip install --progress-bar off --retries 3 --timeout 120 \
                     -i https://pypi.tuna.tsinghua.edu.cn/simple \
                     --trusted-host pypi.tuna.tsinghua.edu.cn \
                     -e '.[termux]' 2>&1
@@ -331,11 +333,15 @@ class HermesServerManager(private val context: Context) {
     }
 
     private fun cloneHermesRepo(onProgress: (String) -> Unit): Boolean {
-        // 镜像优先级按国内可用性排序（github 直连常被墙）：
-        //   1. gitclone.com — 国内 git 镜像，支持 git protocol
-        //   2. kkgithub.com — 国内 GitHub 镜像
-        //   3. github.com 直连（兜底，海外用户/VPN 时快）
-        //   4. bgithub.xyz — 备用
+        // 国内网络下 git clone 经常超时（每个镜像 30s+ TCP 超时，4个镜像
+        // 串行浪费 2.5 分钟全失败）。tarball 下载更可靠（gh-proxy 秒级成功）。
+        // 所以先试 tarball，失败再 git clone（海外用户可能 git 更快）。
+        onProgress("尝试 tarball 下载（国内最稳定）…")
+        if (downloadHermesTarball(onProgress)) {
+            return true
+        }
+
+        onProgress("tarball 全部失败，尝试 git clone…")
         val cloneUrls = listOf(
             "https://gitclone.com/github.com/NousResearch/hermes-agent.git",
             "https://kkgithub.com/NousResearch/hermes-agent.git",
@@ -345,8 +351,11 @@ class HermesServerManager(private val context: Context) {
         for (cloneUrl in cloneUrls) {
             val host = cloneUrl.substringAfter("://").substringBefore("/")
             onProgress("git clone from $host…")
+            // GIT_HTTP_CONNECT_TIMEOUT=15 限制 TCP 连接超时（默认 30s+），
+            // 避免单个镜像卡 30 秒以上。
             val code = processManager.runInProotExitCode(
                 "cd /root/home && rm -rf hermes-agent && " +
+                    "GIT_HTTP_CONNECT_TIMEOUT=15 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=15 " +
                     "git clone --depth 1 $cloneUrl hermes-agent 2>&1",
                 600
             ) { onProgress(it) }
@@ -356,9 +365,7 @@ class HermesServerManager(private val context: Context) {
             }
             onProgress("$host 克隆失败，尝试下一个镜像…")
         }
-        // 兜底：tarball 下载（git-remote-https 坏了也能用）
-        onProgress("所有 git 镜像失败，尝试 tarball 下载…")
-        return downloadHermesTarball(onProgress)
+        return false
     }
 
     private fun downloadHermesTarball(onProgress: (String) -> Unit): Boolean {
