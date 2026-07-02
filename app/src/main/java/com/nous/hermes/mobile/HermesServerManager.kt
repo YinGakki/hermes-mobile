@@ -331,9 +331,15 @@ class HermesServerManager(private val context: Context) {
     }
 
     private fun cloneHermesRepo(onProgress: (String) -> Unit): Boolean {
+        // 镜像优先级按国内可用性排序（github 直连常被墙）：
+        //   1. gitclone.com — 国内 git 镜像，支持 git protocol
+        //   2. kkgithub.com — 国内 GitHub 镜像
+        //   3. github.com 直连（兜底，海外用户/VPN 时快）
+        //   4. bgithub.xyz — 备用
         val cloneUrls = listOf(
-            HERMES_REPO,
+            "https://gitclone.com/github.com/NousResearch/hermes-agent.git",
             "https://kkgithub.com/NousResearch/hermes-agent.git",
+            HERMES_REPO,
             "https://bgithub.xyz/NousResearch/hermes-agent.git",
         )
         for (cloneUrl in cloneUrls) {
@@ -356,10 +362,11 @@ class HermesServerManager(private val context: Context) {
     }
 
     private fun downloadHermesTarball(onProgress: (String) -> Unit): Boolean {
+        // gh-proxy 优先（日志证实它在国内最稳定），github 直连兜底。
         val tarballUrls = listOf(
-            "https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
             "https://gh-proxy.com/https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
             "https://kkgithub.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
+            "https://github.com/NousResearch/hermes-agent/archive/refs/heads/main.tar.gz",
         )
         val tarballFile = File(paths.tmpDir, "hermes-agent.tar.gz")
         for (url in tarballUrls) {
@@ -383,10 +390,11 @@ class HermesServerManager(private val context: Context) {
                     tarballFile.delete(); continue
                 }
                 onProgress("tarball 下载完成，解压…")
-                // 在 proot 里解压（rootfs 的 tar 支持 -xzf）
+                // 在 proot 里解压。tmpDir 已 bind 到 /tmp（见 ProcessManager），
+                // 所以用 /tmp 路径访问 host 下载的 tarball。
                 val code = processManager.runInProotExitCode(
-                    "cd /root/home && rm -rf hermes-agent && " +
-                        "tar -xzf ${paths.tmpDir}/hermes-agent.tar.gz -C /root/home 2>&1 && " +
+                    "cd /root/home && rm -rf hermes-agent hermes-agent-main && " +
+                        "tar -xzf /tmp/hermes-agent.tar.gz -C /root/home 2>&1 && " +
                         "mv hermes-agent-main hermes-agent 2>/dev/null; " +
                         "test -f /root/home/hermes-agent/pyproject.toml",
                     300

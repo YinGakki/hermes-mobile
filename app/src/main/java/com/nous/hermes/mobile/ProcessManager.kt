@@ -136,6 +136,11 @@ class ProcessManager(
             "--bind=$procFakes/fips_enabled:/proc/sys/crypto/fips_enabled",
             // 共享内存 — proot-distro 把 rootfs/tmp bind 到 /dev/shm
             "--bind=$rootfsDir/tmp:/dev/shm",
+            // 关键：bind host tmpDir → /tmp，让 Java（host 侧）下载的文件
+            // （如 hermes-agent.tarball）能直接在 proot 里通过 /tmp 访问。
+            // 不 bind 的话，host 路径 /data/user/0/.../files/tmp 在 proot
+            // 的 rootfs 命名空间里不存在，tar -xzf 会报 No such file。
+            "--bind=$tmpDir:/tmp",
             // SELinux 覆盖 — 空 dir 禁用 SELinux 检查
             "--bind=$sysFakes/empty:/sys/fs/selinux",
             // DNS
