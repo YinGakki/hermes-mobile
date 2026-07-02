@@ -141,23 +141,35 @@ class HermesServerManager(private val context: Context) {
         return false
     }
 
-    // ── Step 1: proot 验证 ──────────────────────────────────────────────────
+    // ── Step 1: proot + rootfs ──────────────────────────────────────────────
 
     /**
-     * 验证 proot 能在 rootfs 里执行命令。proot 二进制本身已通过 jniLibs 打包，
-     * 这里只做一次 sanity check：在 rootfs 里跑 `echo ok`。
+     * 下载 Ubuntu rootfs（如果未装）+ 验证 proot 能在 rootfs 里执行命令。
+     *
+     * rootfs 下载放在这里（而非启动时 extractBootstrap），让"一键安装"
+     * 进度条能反映 rootfs 下载 + 解压进度。
      */
     fun installProot(onProgress: (String) -> Unit): Boolean {
-        onProgress("验证 proot + rootfs…")
+        onProgress("proot: 检查环境…")
         if (!File(paths.nativeLibDir, "libproot.so").exists()) {
             onProgress("错误：libproot.so 不存在（jniLibs 未解压）")
             return false
         }
+        // rootfs 未装则下载 + 解压（最耗时的一步，~1-2min）
         if (!BootstrapManager.isBootstrapInstalled(context)) {
-            onProgress("错误：rootfs 未安装")
-            return false
+            onProgress("proot: 下载 Ubuntu rootfs（约 28MB）…")
+            try {
+                BootstrapManager.install(context) { onProgress(it) }
+            } catch (e: Exception) {
+                onProgress("错误：rootfs 下载/解压失败 — ${e.message}")
+                return false
+            }
+        } else {
+            onProgress("proot: rootfs 已存在，刷新配置…")
+            BootstrapManager.ensureSystemConfig(context)
         }
         return try {
+            onProgress("proot: 验证可执行…")
             val out = processManager.runInProotSync("echo proot-ok && uname -a", 60) { onProgress(it) }
             onProgress("✓ proot 可用: ${out.lineSequence().firstOrNull() ?: ""}")
             true
@@ -175,16 +187,16 @@ class HermesServerManager(private val context: Context) {
      */
     fun installPython(onProgress: (String) -> Unit): Boolean {
         if (isPythonInstalled()) {
-            onProgress("Python 已安装，跳过")
+            onProgress("Python: 已安装，跳过")
             return true
         }
         return try {
             runWithRetry(onProgress = onProgress, what = "install python") {
-                onProgress("apt-get update…")
+                onProgress("Python: apt-get update…")
                 processManager.runInProotSync(
                     "apt-get update 2>&1 | tail -5", 600
                 ) { onProgress(it) }
-                onProgress("apt-get install python3 python3-pip python3-venv…")
+                onProgress("Python: apt-get install python3 python3-pip python3-venv…")
                 processManager.runInProotSync(
                     "DEBIAN_FRONTEND=noninteractive apt-get install -y " +
                         "python3 python3-pip python3-venv 2>&1 | tail -20",
@@ -208,16 +220,16 @@ class HermesServerManager(private val context: Context) {
         // marker 文件，避免重复安装（apt install 本身幂等，但省一次 update）
         val marker = File(paths.configDir, ".build-deps-v1")
         if (marker.exists()) {
-            onProgress("build deps 已安装（缓存）")
+            onProgress("build deps: 已安装（缓存）")
             return true
         }
         return try {
             runWithRetry(onProgress = onProgress, what = "install build deps") {
-                onProgress("apt-get update…")
+                onProgress("build deps: apt-get update…")
                 processManager.runInProotSync(
                     "apt-get update 2>&1 | tail -5", 600
                 ) { onProgress(it) }
-                onProgress("apt-get install build dependencies…")
+                onProgress("build deps: apt-get install build-essential git make pkg-config…")
                 // build-essential 含 gcc/g++/make；libffi-dev/libssl-dev 给
                 // cffi/cryptography 编译用；git 克隆代码；pkg-config 找库；
                 // ripgrep 给 Hermes 搜索；nodejs/npm 可选运行时。

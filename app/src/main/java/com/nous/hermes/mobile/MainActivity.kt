@@ -293,18 +293,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun extractBootstrap() {
-        logView.text = ""
+        // rootfs 下载交给 installProot 步骤（进度条能反映）。
+        // 这里只刷新系统配置（resolv.conf/proc_fakes 等），确保即使
+        // rootfs 已装但配置被 Android 清理也能恢复。
         activeThread = Thread {
             try {
-                if (!BootstrapManager.isBootstrapInstalled(this)) {
-                    runOnUiThread { setStatus(getString(R.string.status_extracting_bootstrap)) }
-                    BootstrapManager.install(this) { msg ->
-                        runOnUiThread { statusText.text = msg }
-                    }
-                }
-                // Always refresh system config (resolv.conf, passwd, timezone)
-                // even if bootstrap was already installed — Android may have
-                // cleared these files between launches.
                 BootstrapManager.ensureSystemConfig(this)
                 serverManager.extractDebBundleIfPresent { msg -> appendLog(msg) }
                 runOnUiThread { showSteps() }
@@ -1063,26 +1056,26 @@ class MainActivity : AppCompatActivity() {
     private var lastProgressTime = 0L
 
     // ── Sub-step progress (live progress bar within each step) ──────────────
-    // Band allocation is proportional to ACTUAL measured install time, not
-    // even-split. Empirical timings (from real device logs):
-    //   proot     ~10s     → 0–3%
-    //   python    ~20s     → 3–10%
-    //   buildDeps ~3min    → 10–30%   (286MB download + 28 deb extract)
-    //   hermes    20–40min → 30–99%   (git clone + venv + pip + native compile)
+    // Band allocation is proportional to ACTUAL measured install time under
+    // the new proot+rootfs architecture:
+    //   proot     ~1-2min   → 0–30%   (Ubuntu rootfs 28MB download + extract)
+    //   python    ~1-2min   → 30–45%  (apt-get update + install python3)
+    //   buildDeps ~2-3min   → 45–60%  (apt-get install build-essential + libs)
+    //   hermes    5-15min   → 60–100% (git clone + venv + pip install)
     // On step start, the bar jumps to bandStart + 1 (visible "started"
     // movement). The heartbeat tick below nudges it +1 every 5s, capping at
     // bandEnd - 1 so the bar never reaches the step's full band until the
     // step actually completes (avoiding the "100% but still installing"
     // lie). On completion, completeStepProgress() snaps the bar to bandEnd.
     @Volatile private var currentStepBandStart = 0
-    @Volatile private var currentStepBandEnd = 3
+    @Volatile private var currentStepBandEnd = 30
     @Volatile private var currentStepPct = 0
 
     private fun stepBand(step: String): Pair<Int, Int> = when (step) {
-        "proot" -> 0 to 3
-        "python" -> 3 to 10
-        "buildDeps" -> 10 to 30
-        "hermes" -> 30 to 100
+        "proot" -> 0 to 30
+        "python" -> 30 to 45
+        "buildDeps" -> 45 to 60
+        "hermes" -> 60 to 100
         else -> 0 to 100
     }
 
@@ -1192,70 +1185,67 @@ class MainActivity : AppCompatActivity() {
     /**
      * Map real install log lines to progress bar percentages.
      *
-     * Band allocation is proportional to ACTUAL measured install time:
-     *   proot     ~10s     → 0–3%
-     *   python    ~20s     → 3–10%
-     *   buildDeps ~3min    → 10–30%   (286MB download + 28 deb extract)
-     *   hermes    20–40min → 30–100%  (git clone + venv + pip + native compile)
+     * 新架构（proot + Ubuntu rootfs）的日志匹配。每个步骤的 onProgress
+     * 输出带步骤前缀（"proot:" / "Python:" / "build deps:" / "Hermes:"），
+     * 让这里能明确区分。
      *
-     * Within each step, specific log lines push the bar forward to a
-     * fixed checkpoint. Unknown lines fall through to the heartbeat
-     * timer (+1 every 5s, capped at bandEnd - 1).
+     * Band allocation (proot+rootfs architecture):
+     *   proot     0–30%   rootfs 下载 + 解压 + 验证
+     *   python    30–45%  apt update + install python3
+     *   buildDeps 45–60%  apt install build-essential + libs
+     *   hermes    60–100% git clone + venv + pip install
      */
     private fun applyLogBasedProgress(line: String) {
-        // Trim and normalize for matching (log lines often have trailing
-        // punctuation or variable content like counts/versions).
+        if (!isInstallInProgress) return
         val l = line.trim()
 
-        // proot step (0-3%)
+        // proot 步骤 (0-30) — rootfs 下载 + 解压 + 验证
         when {
-            l.startsWith("Downloading proot") -> setProgress(1, "proot")
-            l.startsWith("Using bundled proot") -> setProgress(2, "proot")
-            l.startsWith("Extracting proot") -> setProgress(2, "proot")
-            l == "proot installed" || l.startsWith("✓ proot") -> setProgress(3, "proot")
+            l.contains("proot: 检查环境") -> setProgress(1, "proot")
+            l.contains("下载 Ubuntu rootfs") -> setProgress(2, "proot")
+            l.contains("尝试下载") -> setProgress(3, "proot")
+            l.contains("下载中…") -> {
+                // "下载中… 45% (12.3MB)" → 映射到 proot band 2-10
+                val pct = Regex("(\\d+)%").find(l)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                setProgress(2 + pct * 8 / 100, "proot")
+            }
+            l.contains("✓ 下载完成") -> setProgress(10, "proot")
+            l.contains("提取中…") -> {
+                // "提取中… 4000 个条目" → 映射到 12-22
+                val n = Regex("(\\d+) 个条目").find(l)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                setProgress((12 + n / 1000).coerceAtMost(22), "proot")
+            }
+            l.contains("创建符号链接") -> setProgress(24, "proot")
+            l.contains("✓ rootfs 提取完成") -> setProgress(26, "proot")
+            l.contains("Configuring rootfs") -> setProgress(28, "proot")
+            l.contains("proot: 验证可执行") -> setProgress(29, "proot")
+            l.contains("✓ proot 可用") -> setProgress(30, "proot")
         }
 
-        // python step (3-10%)
+        // python 步骤 (30-45)
         when {
-            l.startsWith("No bundled debs") || l.startsWith("Downloading Python") -> setProgress(4, "python")
-            l.startsWith("Using bundled python") -> setProgress(5, "python")
-            l.startsWith("Extracting Python") -> setProgress(6, "python")
-            l == "Python installed" || l == "Python ready" || l.startsWith("✓ Python") -> setProgress(10, "python")
+            l.contains("Python: apt-get update") -> setProgress(32, "python")
+            l.contains("Python: apt-get install") -> setProgress(35, "python")
+            l.contains("✓ Python 已安装") -> setProgress(45, "python")
         }
 
-        // buildDeps step (10-30%)
+        // buildDeps 步骤 (45-60)
         when {
-            l.startsWith("Downloading build dependencies") -> setProgress(11, "buildDeps")
-            l.startsWith("Verifying downloaded .deb") -> setProgress(22, "buildDeps")
-            l.startsWith("Using bundled build deps") -> setProgress(15, "buildDeps")
-            l.startsWith("Extracting build dependencies") -> setProgress(23, "buildDeps")
-            l.startsWith("Fixing git-core") -> setProgress(27, "buildDeps")
-            l.startsWith("Patching make") -> setProgress(28, "buildDeps")
-            l.startsWith("Creating header stubs") -> setProgress(29, "buildDeps")
-            l.startsWith("Marked build deps") || l.startsWith("✓ build deps") -> setProgress(30, "buildDeps")
+            l.contains("build deps: apt-get update") -> setProgress(47, "buildDeps")
+            l.contains("build deps: apt-get install") -> setProgress(50, "buildDeps")
+            l.contains("✓ build deps 已安装") -> setProgress(60, "buildDeps")
         }
 
-        // hermes step (30-100%)
+        // hermes 步骤 (60-100)
         when {
-            l.startsWith("Cloning Hermes Agent") -> setProgress(32, "hermes")
-            l.startsWith("Git clone failed, trying tarball") -> setProgress(33, "hermes")
-            l.startsWith("Extracting tarball") -> setProgress(36, "hermes")
-            l.startsWith("Hermes Agent downloaded via tarball") -> setProgress(38, "hermes")
-            l.startsWith("Hermes repository already present") -> setProgress(38, "hermes")
-            l.startsWith("Hermes Agent already present") -> setProgress(38, "hermes")
-            l.startsWith("Python venv already exists") -> setProgress(42, "hermes")
-            l.startsWith("Creating Python venv") -> setProgress(40, "hermes")
-            l.startsWith("Phase 1: try installing") -> setProgress(45, "hermes")
-            l.startsWith("Installing Hermes (pip install") -> setProgress(48, "hermes")
-            l.startsWith("Phase 1 FAILED") -> setProgress(52, "hermes")
-            l.startsWith("Lite 版无预编译 wheel") -> setProgress(54, "hermes")
-            l.startsWith("Phase 2: downloading rust") -> setProgress(55, "hermes")
-            l.startsWith("Extracting rust/clang") -> setProgress(60, "hermes")
-            l == "rust + clang ready" -> setProgress(65, "hermes")
-            l.startsWith("Compiling native packages from source") -> setProgress(70, "hermes")
-            l.startsWith("Linking hermes binary") -> setProgress(92, "hermes")
-            l.startsWith("Verifying Hermes install") -> setProgress(96, "hermes")
-            l.startsWith("✓ Hermes Agent") -> setProgress(100, "hermes")
+            l.contains("git clone from") -> setProgress(62, "hermes")
+            l.contains("✓ 克隆成功") -> setProgress(65, "hermes")
+            l.contains("所有 git 镜像失败") || l.contains("tarball") -> setProgress(64, "hermes")
+            l.contains("创建 Python venv") -> setProgress(70, "hermes")
+            l.contains("venv 已存在") -> setProgress(70, "hermes")
+            l.contains("pip install -e") -> setProgress(75, "hermes")
+            l.contains("hermes --version") -> setProgress(95, "hermes")
+            l.contains("✓ Hermes") -> setProgress(100, "hermes")
         }
     }
 

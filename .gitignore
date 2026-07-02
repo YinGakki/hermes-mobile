@@ -33,3 +33,4 @@ app/src/main/assets/server-bundle/
 
 # Gradle wrapper jar must be committed — required for ./gradlew to run on CI.
 /.kotlin/
+app/src/main/jniLibs/
