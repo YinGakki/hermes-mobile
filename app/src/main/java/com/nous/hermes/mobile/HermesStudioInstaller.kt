@@ -70,33 +70,32 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     /**
-     * 安装 nodejs + npm（apt-get），然后 npm install -g hermes-web-ui。
-     * 全程在 proot install 模式里执行。
+     * 安装 Node.js 23（从 npmmirror 下载二进制 tarball）+ npm install -g hermes-web-ui。
+     *
+     * Ubuntu 24.04 apt 只提供 Node.js 18.x，但 hermes-web-ui@0.6.23 要求
+     * node >=23.0.0。所以必须用 Node.js 23 官方二进制 tarball，解压到
+     * /usr/local（PATH 优先级高于 /usr/bin，覆盖 apt 版本）。
      */
     fun install(onProgress: (String) -> Unit): Boolean {
-        onProgress("Installing hermes-web-ui via npm (this may take 1-3 min)…")
+        onProgress("Installing hermes-web-ui (this may take 2-5 min)…")
 
-        // 先确保 nodejs + npm 已装
+        // Step 1: 确保 Node.js >=23 已装
         if (!serverMgr.isNodeInstalled()) {
-            onProgress("Installing nodejs + npm via apt-get…")
-            try {
-                processManager.runInProotSync(
-                    "DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm 2>&1 | tail -20",
-                    1800
-                ) { onProgress(it) }
-            } catch (e: Exception) {
-                onProgress("错误：nodejs/npm 安装失败 — ${e.message}")
+            if (!installNodeJs(onProgress)) {
+                onProgress("错误：Node.js 23 安装失败")
                 return false
             }
+        } else {
+            onProgress("Node.js >=23 已安装，跳过")
         }
 
+        // Step 2: npm install -g hermes-web-ui
         val ok = serverMgr.runWithRetry(
             maxAttempts = 3,
             baseDelayMs = 3000L,
             onProgress = onProgress,
             what = "npm install -g hermes-web-ui",
         ) {
-            // npm install -g 在 proot 里执行（rootfs 环境，PATH 已含 /usr/bin）
             val code = processManager.runInProotExitCode(
                 "npm install -g $NPM_PACKAGE 2>&1", 1200
             ) { onProgress(it) }
@@ -106,8 +105,101 @@ class HermesStudioInstaller(private val context: Context) {
             Log.e(TAG, "npm install -g hermes-web-ui failed after retries")
             return false
         }
-        onProgress("hermes-web-ui installed")
+        onProgress("✓ hermes-web-ui installed")
         return true
+    }
+
+    /**
+     * 从 npmmirror 下载 Node.js 23 二进制 tarball，解压到 /usr/local。
+     *
+     * Ubuntu 24.04 apt 只有 Node.js 18.x，但 hermes-web-ui 要求 >=23。
+     * 下载用 Java HttpURLConnection（和 rootfs/hermes tarball 同模式），
+     * 解压用 proot 里的 tar -xJf。
+     */
+    private fun installNodeJs(onProgress: (String) -> Unit): Boolean {
+        onProgress("Node.js: 查询最新 v23 版本…")
+        val nodeVersion = fetchLatestNodeVersion() ?: "v23.11.0"
+        onProgress("Node.js: 目标版本 $nodeVersion")
+
+        val tarballName = "node-$nodeVersion-linux-arm64.tar.xz"
+        val tarballUrls = listOf(
+            "https://npmmirror.com/mirrors/node/$nodeVersion/$tarballName",
+            "https://nodejs.org/dist/$nodeVersion/$tarballName",
+        )
+        val tarballFile = File(paths.tmpDir, "node.tar.xz")
+        var downloaded = false
+        for (url in tarballUrls) {
+            val host = url.substringAfter("://").substringBefore("/")
+            onProgress("Node.js: 下载 from $host…")
+            try {
+                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 20000
+                conn.readTimeout = 120000
+                conn.instanceFollowRedirects = true
+                if (conn.responseCode != 200) {
+                    onProgress("Node.js: HTTP ${conn.responseCode} from $host")
+                    conn.disconnect()
+                    continue
+                }
+                conn.inputStream.use { inp ->
+                    tarballFile.outputStream().use { inp.copyTo(it) }
+                }
+                conn.disconnect()
+                if (tarballFile.length() < 1024) {
+                    tarballFile.delete(); continue
+                }
+                downloaded = true
+                onProgress("Node.js: 下载完成 (${tarballFile.length() / 1048576}MB)")
+                break
+            } catch (e: Exception) {
+                onProgress("Node.js: $host 下载失败: ${e.message}")
+                tarballFile.delete()
+            }
+        }
+        if (!downloaded) {
+            onProgress("Node.js: 所有镜像下载失败")
+            return false
+        }
+
+        // 解压到 /usr/local（--strip-components=1 去掉顶层 node-vXX.X.X-linux-arm64/ 目录）
+        // /usr/local/bin 在 PATH 最前，覆盖 apt 装的 /usr/bin/node
+        onProgress("Node.js: 解压到 /usr/local…")
+        val code = processManager.runInProotExitCode(
+            "tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && " +
+                "rm -f /tmp/node.tar.xz && " +
+                "node --version && npm --version",
+            120
+        ) { onProgress(it) }
+        tarballFile.delete()
+        if (code != 0) {
+            onProgress("Node.js: 解压失败 (exit=$code)")
+            return false
+        }
+        onProgress("✓ Node.js 安装完成")
+        return true
+    }
+
+    /**
+     * 从 npmmirror 的 index.tab 查询最新的 Node.js v23 版本号。
+     * 返回 "v23.x.x" 或 null（查询失败时用硬编码 fallback）。
+     */
+    private fun fetchLatestNodeVersion(): String? {
+        return try {
+            val url = java.net.URL("https://npmmirror.com/mirrors/node/index.tab")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+            val content = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            // index.tab 格式：version\tdate\t...\n（首行是表头）
+            content.lineSequence()
+                .drop(1)
+                .mapNotNull { line ->
+                    val ver = line.substringBefore("\t")
+                    if (ver.startsWith("v23.")) ver else null
+                }
+                .firstOrNull()
+        } catch (_: Exception) { null }
     }
 
     /**

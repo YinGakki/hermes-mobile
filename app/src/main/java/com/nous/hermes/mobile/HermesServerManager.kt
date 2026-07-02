@@ -120,8 +120,10 @@ class HermesServerManager(private val context: Context) {
 
     fun isNodeInstalled(): Boolean {
         if (!isProotInstalled()) return false
+        // hermes-web-ui@0.6.23 要求 node >=23.0.0，Ubuntu 24.04 apt 只有 18.x，
+        // 所以必须用 Node.js 23 二进制 tarball。
         val code = processManager.runInProotExitCode(
-            "command -v node >/dev/null 2>&1", 30
+            "node --version 2>/dev/null | grep -E '^v(2[3-9]|[3-9][0-9])\\.' >/dev/null", 15
         )
         return code == 0
     }
