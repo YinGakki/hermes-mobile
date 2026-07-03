@@ -580,18 +580,18 @@ class MainActivity : AppCompatActivity() {
         // Build a status summary of which steps are done so the user knows
         // exactly what they're about to back up. Each line: "✓ step" or "✗ step".
         val prootDone = serverManager.isProotInstalled()
-        val pythonDone = serverManager.isPythonInstalled()
-        val depsDone = isBuildDepsInstalled()
+        val depsDone = serverManager.isPythonInstalled() && isBuildDepsInstalled()
         val hermesDone = serverManager.isHermesInstalled()
-        if (!prootDone && !pythonDone && !depsDone && !hermesDone) {
+        val webuiDone = studioInstaller.isInstalled()
+        if (!prootDone && !depsDone && !hermesDone && !webuiDone) {
             Toast.makeText(this, R.string.env_save_empty, Toast.LENGTH_LONG).show()
             return
         }
         val statusLines = buildString {
             append(if (prootDone) "✓" else "✗").append(" proot\n")
-            append(if (pythonDone) "✓" else "✗").append(" Python\n")
-            append(if (depsDone) "✓" else "✗").append(" build deps\n")
-            append(if (hermesDone) "✓" else "✗").append(" Hermes Agent")
+            append(if (depsDone) "✓" else "✗").append(" 依赖 (Python + build deps)\n")
+            append(if (hermesDone) "✓" else "✗").append(" Hermes Agent\n")
+            append(if (webuiDone) "✓" else "✗").append(" WebUI")
         }
         // If Hermes is done → full backup (directly save, no extra dialog).
         // Otherwise → confirm partial backup so user understands they'll
@@ -860,12 +860,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Save env: enabled as soon as ANY install step is done (proot /
-        // python / buildDeps / hermes). This lets users checkpoint progress
-        // — e.g. save after buildDeps completes (the slowest step) so a
+        // deps / hermes / webui). This lets users checkpoint progress
+        // — e.g. save after hermes completes (the slowest step) so a
         // later failure doesn't force re-downloading 570MB of rust/clang.
         // Restore env: always available — user may want to restore to skip
         // the install entirely.
-        val anyStepDone = prootDone || pythonDone || depsDone || hermesDone
+        val anyStepDone = prootDone || depsDone || hermesDone || webuiDone
         btnSaveEnv.isEnabled = anyStepDone && !isInstallInProgress
         btnSaveEnv.alpha = when {
             !anyStepDone -> 0.35f
@@ -1169,9 +1169,9 @@ class MainActivity : AppCompatActivity() {
     private fun showStepError(step: String, error: String, tail: String) {
         val stepName = when (step) {
             "proot" -> "安装 proot"
-            "python" -> "安装 Python"
-            "buildDeps" -> "安装 build deps"
+            "deps" -> "安装依赖"
             "hermes" -> "安装 Hermes Agent"
+            "webui" -> "安装 WebUI"
             "install-all" -> "一键安装"
             else -> step
         }
@@ -1482,36 +1482,45 @@ class MainActivity : AppCompatActivity() {
             l.contains("✓ proot 可用") -> setProgress(30, "proot")
         }
 
-        // python 步骤 (30-45)
+        // deps 步骤 (25-50) — python + build deps 合并
         when {
-            l.contains("Python: apt-get update") -> setProgress(32, "python")
-            l.contains("Python: apt-get install") -> setProgress(35, "python")
-            l.contains("✓ Python 已安装") -> setProgress(45, "python")
+            l.contains("deps: apt-get update") -> setProgress(27, "deps")
+            l.contains("deps: apt-get install") -> setProgress(35, "deps")
+            l.contains("✓ 依赖已安装") -> setProgress(50, "deps")
+            // 兼容旧日志格式（installDependencies 内部可能输出旧格式消息）
+            l.contains("Python: apt-get update") -> setProgress(27, "deps")
+            l.contains("Python: apt-get install") -> setProgress(35, "deps")
+            l.contains("✓ Python 已安装") -> setProgress(40, "deps")
+            l.contains("build deps: apt-get update") -> setProgress(42, "deps")
+            l.contains("build deps: apt-get install") -> setProgress(45, "deps")
+            l.contains("✓ build deps 已安装") -> setProgress(50, "deps")
         }
 
-        // buildDeps 步骤 (45-60)
+        // hermes 步骤 (50-80) — tarball 优先 + venv + pip
         when {
-            l.contains("build deps: apt-get update") -> setProgress(47, "buildDeps")
-            l.contains("build deps: apt-get install") -> setProgress(50, "buildDeps")
-            l.contains("✓ build deps 已安装") -> setProgress(60, "buildDeps")
+            l.contains("尝试 tarball 下载") -> setProgress(52, "hermes")
+            l.contains("✓ tarball 解压成功") -> setProgress(55, "hermes")
+            l.contains("tarball 全部失败") -> setProgress(52, "hermes")
+            l.contains("git clone from") -> setProgress(53, "hermes")
+            l.contains("✓ 克隆成功") -> setProgress(55, "hermes")
+            l.contains("创建 Python venv") -> setProgress(60, "hermes")
+            l.contains("venv 已存在") -> setProgress(60, "hermes")
+            l.contains("pip install -e") -> setProgress(62, "hermes")
+            l.contains("Collecting ") && l.contains("from hermes-agent") -> setProgress(64, "hermes")
+            l.contains("Building wheels") || l.contains("Building editable") -> setProgress(68, "hermes")
+            l.contains("Installing collected packages") -> setProgress(72, "hermes")
+            l.contains("Successfully installed") -> setProgress(76, "hermes")
+            l.contains("Hermes Agent v") -> setProgress(78, "hermes")
+            l.contains("✓ Hermes Agent") -> setProgress(80, "hermes")
         }
 
-        // hermes 步骤 (60-100) — tarball 优先 + venv + pip
+        // webui 步骤 (80-100) — node.js + npm install
         when {
-            l.contains("尝试 tarball 下载") -> setProgress(62, "hermes")
-            l.contains("✓ tarball 解压成功") -> setProgress(65, "hermes")
-            l.contains("tarball 全部失败") -> setProgress(62, "hermes")
-            l.contains("git clone from") -> setProgress(63, "hermes")
-            l.contains("✓ 克隆成功") -> setProgress(65, "hermes")
-            l.contains("创建 Python venv") -> setProgress(70, "hermes")
-            l.contains("venv 已存在") -> setProgress(70, "hermes")
-            l.contains("pip install -e") -> setProgress(72, "hermes")
-            l.contains("Collecting ") && l.contains("from hermes-agent") -> setProgress(74, "hermes")
-            l.contains("Building wheels") || l.contains("Building editable") -> setProgress(78, "hermes")
-            l.contains("Installing collected packages") -> setProgress(85, "hermes")
-            l.contains("Successfully installed") -> setProgress(92, "hermes")
-            l.contains("Hermes Agent v") -> setProgress(96, "hermes")
-            l.contains("✓ Hermes Agent") -> setProgress(100, "hermes")
+            l.contains("Installing hermes-web-ui") -> setProgress(82, "webui")
+            l.contains("Node.js >=23 已安装") -> setProgress(85, "webui")
+            l.contains("npm install -g") -> setProgress(87, "webui")
+            l.contains("✓ hermes-web-ui installed") -> setProgress(95, "webui")
+            l.contains("✓ WebUI 已安装") -> setProgress(100, "webui")
         }
     }
 
