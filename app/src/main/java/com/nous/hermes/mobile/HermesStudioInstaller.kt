@@ -101,8 +101,17 @@ class HermesStudioInstaller(private val context: Context) {
         }
     }
 
+    /**
+     * 服务运行状态缓存。由 start()/stop()/watchdog 在后台线程更新。
+     * 不能在 isRunning getter 里做网络请求（checkServerHealth）——
+     * 因为 isRunning 会被 refreshDashboardState() 在 UI 线程调用，
+     * Android 主线程禁止网络操作（NetworkOnMainThreadException），
+     * 异常被 try/catch 吞掉后返回 false，导致仪表盘永远显示"未启动"。
+     */
+    @Volatile private var serviceRunning = false
+
     val isRunning: Boolean
-        get() = checkServerHealth()
+        get() = serviceRunning
 
     fun isInstalled(): Boolean {
         if (!serverMgr.isProotInstalled()) return false
@@ -295,6 +304,7 @@ class HermesStudioInstaller(private val context: Context) {
             onProgress("hermes-web-ui already running — reconnecting")
             serverStartTime = System.currentTimeMillis()
             restartCount = 0
+            serviceRunning = true
             startWatchdog(onProgress)
             return true
         }
@@ -333,6 +343,7 @@ class HermesStudioInstaller(private val context: Context) {
             if (ready) {
                 serverStartTime = System.currentTimeMillis()
                 restartCount = 0
+                serviceRunning = true
                 onProgress("hermes-web-ui started on $STUDIO_BASE_URL")
                 startWatchdog(onProgress)
             } else {
@@ -346,6 +357,7 @@ class HermesStudioInstaller(private val context: Context) {
                     onProgress("hermes-web-ui CLI 已退出 (code=0)，但服务在端口 $STUDIO_PORT 监听中 —— 视为成功")
                     serverStartTime = System.currentTimeMillis()
                     restartCount = 0
+                    serviceRunning = true
                     startWatchdog(onProgress)
                     return true
                 }
@@ -438,6 +450,7 @@ class HermesStudioInstaller(private val context: Context) {
 
             while (watchdogRunning) {
                 val healthy = checkServerHealth()
+                serviceRunning = healthy
                 if (!healthy && watchdogRunning) {
                     val uptime = System.currentTimeMillis() - serverStartTime
                     Log.w(TAG, "Watchdog: server unhealthy (uptime=${uptime / 1000}s)")
@@ -449,6 +462,7 @@ class HermesStudioInstaller(private val context: Context) {
 
                     if (restartCount >= MAX_RESTARTS) {
                         Log.e(TAG, "Watchdog: max restarts ($MAX_RESTARTS) reached, giving up")
+                        serviceRunning = false
                         break
                     }
 
@@ -476,6 +490,7 @@ class HermesStudioInstaller(private val context: Context) {
                         }
                         if (restarted) {
                             serverStartTime = System.currentTimeMillis()
+                            serviceRunning = true
                             onProgress("Watchdog: hermes-web-ui restarted successfully")
                         } else {
                             Log.e(TAG, "Watchdog: restart $restartCount failed")
@@ -507,6 +522,7 @@ class HermesStudioInstaller(private val context: Context) {
     fun stop() {
         stopWatchdog()
         stopStudioProcess()
+        serviceRunning = false
         if (!isInstalled()) return
         try {
             // 尝试 CLI 优雅停止（读 PID 文件发 SIGTERM）
