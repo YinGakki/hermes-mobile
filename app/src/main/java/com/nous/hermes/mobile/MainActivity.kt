@@ -213,10 +213,14 @@ class MainActivity : AppCompatActivity() {
 
         // Logs panel actions (embedded in install page)
         btnToggleLog.setOnClickListener {
+            // 清除 pendingLogs，避免切换后 logFlushRunnable 重复 append
+            // （rebuildFullLogView 已包含这些行，因为 appendLog 先写 fullLog）
+            pendingLogs.clear()
+            logUpdateHandler.removeCallbacks(logFlushRunnable)
             showAllLogs = !showAllLogs
             if (showAllLogs) {
                 btnToggleLog.text = getString(R.string.log_show_current)
-                logPanelTitle.text = getString(R.string.logs_copy_all)
+                logPanelTitle.text = getString(R.string.log_all, fullLog.size)
                 logScroll.layoutParams.height = (resources.displayMetrics.heightPixels * 2 / 3)
                 rebuildFullLogView()
             } else {
@@ -226,6 +230,7 @@ class MainActivity : AppCompatActivity() {
                 rebuildCurrentLogView()
             }
             logScroll.requestLayout()
+            logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
         }
         btnClearLogs.setOnClickListener {
             synchronized(recentLog) { recentLog.clear() }
@@ -1287,6 +1292,8 @@ class MainActivity : AppCompatActivity() {
                 val sb = StringBuilder()
                 newLines.forEach { sb.append(it).append('\n') }
                 logView.append(sb.toString())
+                // 更新标题行数
+                logPanelTitle.text = getString(R.string.log_all, fullLog.size)
             } else {
                 // 当前模式：用最近 30 行重建，避免无限增长
                 rebuildCurrentLogView()

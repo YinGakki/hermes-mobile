@@ -66,6 +66,7 @@
 
     <!-- Embedded log viewer -->
     <string name="log_current">当前操作</string>
+    <string name="log_all">全部日志 (%1$d 行)</string>
     <string name="log_show_all">显示全部日志</string>
     <string name="log_show_current">只看当前</string>
 
