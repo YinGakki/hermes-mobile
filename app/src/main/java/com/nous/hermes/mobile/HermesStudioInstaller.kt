@@ -57,6 +57,26 @@ class HermesStudioInstaller(private val context: Context) {
     @Volatile private var serverStartTime = 0L
     private var studioProcess: Process? = null
 
+    // 最近的服务器输出（环形缓冲），用于失败时把真实错误展示给用户。
+    // onProgress 回调同步追加，spawnStudioServer 的读取线程也追加。
+    private val recentOutput = java.util.ArrayDeque<String>(200)
+    @Volatile private var lastProgressCallback: ((String) -> Unit)? = null
+
+    private fun recordOutput(line: String) {
+        synchronized(recentOutput) {
+            if (recentOutput.size >= 200) recentOutput.pollFirst()
+            recentOutput.addLast(line)
+        }
+    }
+
+    /**
+     * 返回最近的服务器输出（用于失败诊断）。调用方应在 start() 返回 false
+     * 后立即调用以获取崩溃日志。
+     */
+    fun getRecentOutput(): String = synchronized(recentOutput) {
+        recentOutput.joinToString("\n")
+    }
+
     val isRunning: Boolean
         get() = checkServerHealth()
 
@@ -210,6 +230,7 @@ class HermesStudioInstaller(private val context: Context) {
      * 不退出（由本类持有 studioProcess 引用）。
      */
     fun start(onProgress: (String) -> Unit): Boolean {
+        lastProgressCallback = onProgress
         // 重连：如果服务已在跑，直接接管
         if (checkServerHealth()) {
             onProgress("hermes-web-ui already running — reconnecting")
@@ -219,6 +240,7 @@ class HermesStudioInstaller(private val context: Context) {
             return true
         }
         if (!isInstalled()) {
+            onProgress("错误：hermes-web-ui 未安装")
             Log.e(TAG, "Cannot start — hermes-web-ui not installed")
             return false
         }
@@ -230,8 +252,20 @@ class HermesStudioInstaller(private val context: Context) {
             try { Thread.sleep(1000) } catch (_: InterruptedException) {}
         }
 
+        // 预检：确认 hermes-web-ui 在 PATH 里且 node 版本达标，避免"启动即崩溃"
+        // 却看不到错误的盲区。
+        onProgress("预检: 验证 hermes-web-ui 可执行…")
+        val preflight = processManager.runInProotExitCode(
+            "command -v hermes-web-ui && node --version && npm --version", 15
+        ) { onProgress("[preflight] $it") }
+        if (preflight != 0) {
+            onProgress("错误：预检失败 — hermes-web-ui 或 node 不在 PATH 里 (exit=$preflight)")
+            recordOutput("preflight failed: exit=$preflight")
+            return false
+        }
+
         return try {
-            spawnStudioServer()
+            spawnStudioServer(onProgress)
             onProgress("Waiting for hermes-web-ui to be ready…")
             val ready = waitForHealth(onProgress)
             if (ready) {
@@ -241,9 +275,17 @@ class HermesStudioInstaller(private val context: Context) {
                 startWatchdog(onProgress)
             } else {
                 onProgress("hermes-web-ui did not become healthy within ${HEALTH_STARTUP_TIMEOUT_MS / 1000}s")
+                // 进程可能已退出，采集退出码 + 最近输出供诊断
+                val exitCode = studioProcess?.let {
+                    try { if (!it.isAlive) it.exitValue() else null } catch (_: Exception) { null }
+                }
+                if (exitCode != null) {
+                    onProgress("hermes-web-ui 进程已退出，exit=$exitCode")
+                }
             }
             ready
         } catch (e: Exception) {
+            onProgress("启动异常: ${e.message}")
             Log.e(TAG, "Failed to start hermes-web-ui", e)
             false
         }
@@ -251,23 +293,31 @@ class HermesStudioInstaller(private val context: Context) {
 
     /**
      * 通过 proot gateway 模式启动 hermes-web-ui，保持进程引用存活。
+     * 服务器输出同步转发到 onProgress（进入 app 日志页）+ 环形缓冲（供
+     * 失败诊断）+ logcat。
      */
-    private fun spawnStudioServer() {
+    private fun spawnStudioServer(onProgress: ((String) -> Unit)? = null) {
         stopStudioProcess()
         // hermes-web-ui 监听 PORT 环境变量；在 proot 里前台运行（proot 进程
         // 保持存活，--kill-on-exit 确保停止时清理子进程）。
         val cmd = "PORT=$STUDIO_PORT NODE_ENV=production exec hermes-web-ui 2>&1"
         val proc = processManager.startProotProcess(cmd)
         studioProcess = proc
-        // 转发 stdout 到 logcat
+        // 转发 stdout 到 logcat + 环形缓冲 + onProgress 回调
         Thread {
             val reader = BufferedReader(InputStreamReader(proc.inputStream))
             var line = reader.readLine()
             while (line != null) {
                 Log.d(TAG, "[studio] $line")
+                recordOutput(line)
+                onProgress?.invoke("[studio] $line")
                 line = reader.readLine()
             }
-            Log.i(TAG, "hermes-web-ui exited with code: ${proc.waitFor()}")
+            val code = proc.waitFor()
+            val exitLine = "hermes-web-ui exited with code: $code"
+            Log.i(TAG, exitLine)
+            recordOutput(exitLine)
+            onProgress?.invoke("[studio] $exitLine")
         }.start()
     }
 
@@ -327,7 +377,7 @@ class HermesStudioInstaller(private val context: Context) {
                     if (!watchdogRunning) break
                     onProgress("Watchdog: restarting hermes-web-ui (attempt $restartCount/$MAX_RESTARTS)…")
                     try {
-                        spawnStudioServer()
+                        spawnStudioServer(lastProgressCallback)
                         val deadline = System.currentTimeMillis() + 10000
                         var restarted = false
                         while (System.currentTimeMillis() < deadline) {

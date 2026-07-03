@@ -872,7 +872,10 @@ class MainActivity : AppCompatActivity() {
         Thread {
             val ok = studioInstaller.start { msg ->
                 runOnUiThread {
-                    if (!isFinishing) dialog.setMessage(msg)
+                    if (!isFinishing) {
+                        dialog.setMessage(msg)
+                        appendLog(msg)
+                    }
                 }
             }
             runOnUiThread {
@@ -880,11 +883,24 @@ class MainActivity : AppCompatActivity() {
                     dialog.dismiss()
                     activeProgressDialog = null
                     if (ok) openChatWebView() else {
+                        // 显示真实的服务器输出，便于用户反馈
+                        val raw = studioInstaller.getRecentOutput().trim()
+                        val detail = if (raw.isNotEmpty()) {
+                            getString(R.string.chat_start_failed) + "\n\n服务器输出（最后 200 行）：\n" +
+                                raw
+                        } else {
+                            getString(R.string.chat_start_failed) + "\n\n（无服务器输出，可能 hermes-web-ui 启动即崩溃）"
+                        }
                         MaterialAlertDialogBuilder(this)
                             .setTitle(R.string.error_title)
-                            .setMessage(getString(R.string.chat_start_failed))
+                            .setMessage(detail)
                             .setPositiveButton(R.string.retry) { _, _ -> startChatServerAndOpen() }
-                            .setNegativeButton(R.string.cancel, null)
+                            .setNegativeButton(R.string.action_copy_error) { _, _ ->
+                                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("hermes_error", detail))
+                                Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+                            }
+                            .setNeutralButton(R.string.cancel, null)
                             .setCancelable(false)
                             .show()
                     }
