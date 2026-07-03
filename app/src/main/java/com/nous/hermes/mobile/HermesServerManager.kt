@@ -525,6 +525,62 @@ class HermesServerManager(private val context: Context) {
         return code == 0
     }
 
+    /**
+     * 获取已安装的 Hermes Agent 版本号。
+     * 在后台线程调用（proot 执行）。
+     * @return 版本字符串（如 "0.18.0"），未安装返回 null
+     */
+    fun getHermesVersion(): String? {
+        if (!isHermesInstalled()) return null
+        return try {
+            val output = StringBuilder()
+            val code = processManager.runInProotExitCode(
+                "cd /root/home/hermes-agent && . .venv/bin/activate && hermes --version 2>&1",
+                30
+            ) { line -> output.appendLine(line) }
+            if (code == 0) output.toString().trim().takeIf { it.isNotEmpty() } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "getHermesVersion failed", e)
+            null
+        }
+    }
+
+    /**
+     * 检查 Hermes Agent 是否有可用更新。
+     * 在后台线程调用（proot 执行 git fetch）。
+     * @return 最新远程版本号，如果无更新或检查失败返回 null
+     */
+    fun checkHermesUpdate(): String? {
+        if (!isHermesInstalled()) return null
+        return try {
+            // git fetch 拉取远程最新
+            processManager.runInProotExitCode(
+                "cd /root/home/hermes-agent && git fetch origin 2>&1",
+                60
+            ) {}
+            // 比较本地 HEAD 和远程 HEAD
+            val output = StringBuilder()
+            val code = processManager.runInProotExitCode(
+                "cd /root/home/hermes-agent && git log HEAD..origin/HEAD --oneline 2>&1",
+                30
+            ) { line -> output.appendLine(line) }
+            if (code == 0 && output.toString().trim().isNotEmpty()) {
+                // 有新 commit，获取远程版本号
+                val versionOutput = StringBuilder()
+                processManager.runInProotExitCode(
+                    "cd /root/home/hermes-agent && git describe --tags origin/HEAD 2>/dev/null || git rev-parse --short origin/HEAD 2>&1",
+                    15
+                ) { line -> versionOutput.appendLine(line) }
+                versionOutput.toString().trim().takeIf { it.isNotEmpty() }
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "checkHermesUpdate failed", e)
+            null
+        }
+    }
+
     // ── Hermes 生命周期 ─────────────────────────────────────────────────────
 
     /**

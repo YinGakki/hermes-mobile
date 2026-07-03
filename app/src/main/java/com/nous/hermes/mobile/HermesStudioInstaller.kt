@@ -123,6 +123,56 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     /**
+     * 获取已安装的 hermes-web-ui 版本号。
+     * 在后台线程调用（proot 执行）。
+     * @return 版本字符串（如 "0.6.24"），未安装返回 null
+     */
+    fun getWebUIVersion(): String? {
+        if (!isInstalled()) return null
+        return try {
+            val output = StringBuilder()
+            val code = processManager.runInProotExitCode(
+                "hermes-web-ui --version 2>&1 | head -1", 30
+            ) { line -> output.appendLine(line) }
+            if (code == 0) {
+                // 输出形如 "hermes-web-ui/0.6.24" 或 "0.6.24"
+                val raw = output.toString().trim()
+                // 提取版本号部分
+                val versionPart = raw.substringAfterLast("/").trim()
+                versionPart.takeIf { it.isNotEmpty() && it.matches(Regex("""[\d.]+.*""")) } ?: raw
+            } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "getWebUIVersion failed", e)
+            null
+        }
+    }
+
+    /**
+     * 检查 hermes-web-ui 是否有可用更新。
+     * 在后台线程调用（proot 执行 npm view）。
+     * @return 最新版本号，如果无更新或检查失败返回 null
+     */
+    fun checkWebUIUpdate(): String? {
+        if (!isInstalled()) return null
+        return try {
+            // 获取当前安装版本
+            val currentVersion = getWebUIVersion() ?: return null
+            // 查询 npm registry 上的最新版本
+            val output = StringBuilder()
+            val code = processManager.runInProotExitCode(
+                "npm view hermes-web-ui version 2>&1", 30
+            ) { line -> output.appendLine(line) }
+            if (code == 0) {
+                val latest = output.toString().trim()
+                if (latest.isNotEmpty() && latest != currentVersion) latest else null
+            } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "checkWebUIUpdate failed", e)
+            null
+        }
+    }
+
+    /**
      * 安装 Node.js 23（从 npmmirror 下载二进制 tarball）+ npm install -g hermes-web-ui。
      *
      * Ubuntu 24.04 apt 只提供 Node.js 18.x，但 hermes-web-ui@0.6.23 要求

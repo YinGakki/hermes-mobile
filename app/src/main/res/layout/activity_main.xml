@@ -863,7 +863,29 @@
                             android:text="@string/settings_update_hermes_subtitle"
                             android:textColor="#94a3b8"
                             android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/hermesVersionText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="—"
+                            android:textColor="#64748b"
+                            android:textSize="12sp" />
                     </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/hermesUpdateBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/update_badge_bg"
+                        android:padding="4dp"
+                        android:text="有更新"
+                        android:textColor="#10b981"
+                        android:textSize="10sp"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
 
                     <ImageView
                         android:layout_width="20dp"
@@ -919,7 +941,29 @@
                             android:text="@string/settings_update_webui_subtitle"
                             android:textColor="#94a3b8"
                             android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/webuiVersionText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="—"
+                            android:textColor="#64748b"
+                            android:textSize="12sp" />
                     </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/webuiUpdateBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/update_badge_bg"
+                        android:padding="4dp"
+                        android:text="有更新"
+                        android:textColor="#10b981"
+                        android:textSize="10sp"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
 
                     <ImageView
                         android:layout_width="20dp"

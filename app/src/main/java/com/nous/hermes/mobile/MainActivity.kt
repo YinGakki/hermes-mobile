@@ -54,6 +54,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnRestoreEnv: View
     private lateinit var btnUpdateHermes: View
     private lateinit var btnUpdateWebUI: View
+    private lateinit var hermesVersionText: TextView
+    private lateinit var webuiVersionText: TextView
+    private lateinit var hermesUpdateBadge: TextView
+    private lateinit var webuiUpdateBadge: TextView
     private lateinit var spinnerProot: ProgressBar
     private lateinit var spinnerDeps: ProgressBar
     private lateinit var spinnerHermes: ProgressBar
@@ -123,6 +127,10 @@ class MainActivity : AppCompatActivity() {
         btnRestoreEnv = findViewById(R.id.btnRestoreEnv)
         btnUpdateHermes = findViewById(R.id.btnUpdateHermes)
         btnUpdateWebUI = findViewById(R.id.btnUpdateWebUI)
+        hermesVersionText = findViewById(R.id.hermesVersionText)
+        webuiVersionText = findViewById(R.id.webuiVersionText)
+        hermesUpdateBadge = findViewById(R.id.hermesUpdateBadge)
+        webuiUpdateBadge = findViewById(R.id.webuiUpdateBadge)
         spinnerProot = findViewById(R.id.spinnerProot)
         spinnerDeps = findViewById(R.id.spinnerDeps)
         spinnerHermes = findViewById(R.id.spinnerHermes)
@@ -191,6 +199,9 @@ class MainActivity : AppCompatActivity() {
 
         // Grey out tabs that require Hermes to be installed (Dashboard / Settings).
         refreshNavTabs()
+
+        // 启动时自动检测版本 + 检查更新
+        checkVersionsAndUpdates()
 
         // Step indicators are non-clickable TextViews (progress animation only).
         // Only "一键安装" and "还原环境" are action buttons.
@@ -650,6 +661,9 @@ class MainActivity : AppCompatActivity() {
                     releaseInstallLock()
                     if (ok) {
                         Toast.makeText(this, "✓ Hermes 已更新", Toast.LENGTH_LONG).show()
+                        // 重置更新 badge + 刷新版本
+                        hermesUpdateBadge.visibility = View.GONE
+                        checkVersionsAndUpdates()
                     } else {
                         Toast.makeText(this, "更新失败，详见日志", Toast.LENGTH_LONG).show()
                     }
@@ -696,6 +710,9 @@ class MainActivity : AppCompatActivity() {
                             startChatServer()
                         }
                         Toast.makeText(this, "✓ WebUI 已更新", Toast.LENGTH_LONG).show()
+                        // 重置更新 badge + 刷新版本
+                        webuiUpdateBadge.visibility = View.GONE
+                        checkVersionsAndUpdates()
                     } else {
                         Toast.makeText(this, "更新失败，详见日志", Toast.LENGTH_LONG).show()
                     }
@@ -920,6 +937,53 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             "0.1.0"
         }
+    }
+
+    /**
+     * 启动时自动检测 Hermes Agent 和 WebUI 的当前版本，
+     * 并在后台检查是否有新版本可用。有更新时亮显 badge。
+     *
+     * 版本获取和更新检查都在后台线程执行（proot 命令），
+     * UI 更新通过 runOnUiThread 回到主线程。
+     */
+    private fun checkVersionsAndUpdates() {
+        // 先显示 "检测中…"
+        hermesVersionText.text = "检测中…"
+        webuiVersionText.text = "检测中…"
+
+        Thread {
+            // ── 获取当前版本 ──
+            val hermesVer = serverManager.getHermesVersion()
+            val webuiVer = studioInstaller.getWebUIVersion()
+
+            runOnUiThread {
+                hermesVersionText.text = hermesVer ?: "未安装"
+                webuiVersionText.text = webuiVer ?: "未安装"
+            }
+
+            // ── 检查更新（仅在已安装时）──
+            if (hermesVer != null) {
+                val latestHermes = serverManager.checkHermesUpdate()
+                runOnUiThread {
+                    if (latestHermes != null) {
+                        hermesVersionText.text = "$hermesVer → $latestHermes"
+                        hermesVersionText.setTextColor(0xFF10b981.toInt())
+                        hermesUpdateBadge.visibility = View.VISIBLE
+                    }
+                }
+            }
+
+            if (webuiVer != null) {
+                val latestWebUI = studioInstaller.checkWebUIUpdate()
+                runOnUiThread {
+                    if (latestWebUI != null) {
+                        webuiVersionText.text = "$webuiVer → $latestWebUI"
+                        webuiVersionText.setTextColor(0xFF10b981.toInt())
+                        webuiUpdateBadge.visibility = View.VISIBLE
+                    }
+                }
+            }
+        }.start()
     }
 
     private fun onChatButtonClicked() {
