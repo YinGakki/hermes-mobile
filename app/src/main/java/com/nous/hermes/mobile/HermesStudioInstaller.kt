@@ -27,7 +27,7 @@ class HermesStudioInstaller(private val context: Context) {
     companion object {
         private const val TAG = "HermesStudioInstaller"
         const val STUDIO_PORT = 8648
-        const val STUDIO_BASE_URL = "http://localhost:$STUDIO_PORT"
+        const val STUDIO_BASE_URL = "http://127.0.0.1:$STUDIO_PORT"
         private const val NPM_PACKAGE = "hermes-web-ui"
 
         // hermes CLI 的 venv bin 路径（proot 内视角）。
@@ -369,6 +369,13 @@ class HermesStudioInstaller(private val context: Context) {
      */
     private fun spawnStudioServer(onProgress: ((String) -> Unit)? = null) {
         stopStudioProcess()
+        // 清理可能残留的 daemonized 服务器进程。
+        // stopStudioProcess 只杀 proot（sleep infinity），不杀 hermes-web-ui
+        // daemonize 出来的服务进程。如果不清理，新启动会报 "already running"。
+        try {
+            forceKillByPort()
+            Thread.sleep(500)
+        } catch (_: Exception) {}
         // hermes-web-ui 监听 PORT 环境变量；在 proot 里运行。
         //
         // 关键 1：hermes-web-ui 内部会 spawn('hermes', ['gateway','run','--replace'])
@@ -538,7 +545,7 @@ class HermesStudioInstaller(private val context: Context) {
     private fun isPortInUse(port: Int): Boolean {
         return try {
             val socket = java.net.Socket()
-            socket.connect(java.net.InetSocketAddress("localhost", port), 500)
+            socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 500)
             socket.close()
             true
         } catch (e: Exception) {
