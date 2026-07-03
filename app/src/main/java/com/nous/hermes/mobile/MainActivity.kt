@@ -11,6 +11,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -1162,6 +1163,13 @@ class MainActivity : AppCompatActivity() {
         dialog.setContentView(R.layout.dialog_progress)
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
         dialog.setCancelable(false)
+        // 自适应宽度：取屏幕宽度的 85%，但在 280dp~520dp 之间。
+        // 这样手机竖屏不会太窄，横屏/平板不会太宽。
+        val dm = resources.displayMetrics
+        val maxWidthPx = (520 * dm.density).toInt()
+        val minWidthPx = (280 * dm.density).toInt()
+        val targetWidth = (dm.widthPixels * 0.85).toInt().coerceIn(minWidthPx, maxWidthPx)
+        dialog.window?.setLayout(targetWidth, WindowManager.LayoutParams.WRAP_CONTENT)
         val titleView = dialog.findViewById<TextView>(R.id.progressDialogTitle)!!
         val msgView = dialog.findViewById<TextView>(R.id.progressDialogMessage)!!
         titleView.text = title

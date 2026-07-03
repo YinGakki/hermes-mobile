@@ -62,6 +62,11 @@ class ChatActivity : AppCompatActivity() {
 
         createNotificationChannel()
 
+        // 使用 FrameLayout 容器，在 WebView 上层叠加一个悬浮退出按钮。
+        // 这样无论 WebView 内部导航了多少层，点退出按钮直接回到控制台，
+        // 不需要反复按返回键逐层退出。
+        val container = android.widget.FrameLayout(this)
+
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -134,7 +139,38 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
-        setContentView(webView)
+        // 悬浮退出按钮 — 右上角半透明圆形按钮，点击直接 finish() 回到控制台
+        val exitButton = android.widget.TextView(this).apply {
+            text = "✕"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 18f
+            gravity = android.view.Gravity.CENTER
+            val pad = (12 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(0xCC1e293b.toInt())
+                setStroke(1, 0x66ffffff)
+            }
+            setOnClickListener { finish() }
+        }
+        val exitParams = android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            gravity = android.view.Gravity.TOP or android.view.Gravity.END
+            val margin = (12 * resources.displayMetrics.density).toInt()
+            topMargin = margin
+            marginEnd = margin
+        }
+
+        container.addView(webView, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        container.addView(exitButton, exitParams)
+
+        setContentView(container)
 
         Log.i(TAG, "Loading $baseUrl in WebView")
         webView.loadUrl(baseUrl)
@@ -257,8 +293,12 @@ class ChatActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
-            webView.goBack()
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (webView.canGoBack()) {
+                webView.goBack()
+            } else {
+                finish()
+            }
             return true
         }
         return super.onKeyDown(keyCode, event)

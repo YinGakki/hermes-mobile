@@ -352,6 +352,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify tag matches versionName
+        # 确保 git tag (v0.0.1) 与 app/build.gradle.kts 的 versionName (0.0.1) 一致。
+        # 避免出现 "APK 内显示 0.0.2 但 Release 标题是 v0.0.1" 的版本号错位。
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/v}"
+          version_name=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*versionName = "//;s/".*//')
+          echo "Tag: $tag"
+          echo "versionName: $version_name"
+          if [ "$tag" != "$version_name" ]; then
+            echo "ERROR: git tag ($tag) does not match versionName ($version_name)"
+            echo "Fix: update versionName in app/build.gradle.kts to match the tag, or re-tag."
+            exit 1
+          fi
+          echo "✓ Version matches"
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
