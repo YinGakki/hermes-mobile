@@ -51,8 +51,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnBuildDeps: Button
     private lateinit var btnHermes: Button
     private lateinit var btnInstallAll: Button
-    private lateinit var btnSaveEnv: Button
-    private lateinit var btnRestoreEnv: Button
+    private lateinit var btnSaveEnv: View
+    private lateinit var btnRestoreEnv: View
     private lateinit var spinnerProot: ProgressBar
     private lateinit var spinnerPython: ProgressBar
     private lateinit var spinnerBuildDeps: ProgressBar
@@ -258,13 +258,16 @@ class MainActivity : AppCompatActivity() {
         logsPage.visibility = if (page == logsPage) View.VISIBLE else View.GONE
         settingsPage.visibility = if (page == settingsPage) View.VISIBLE else View.GONE
         if (page == dashboardPage) refreshDashboardState()
+        if (page == settingsPage) refreshStepButtons()
     }
 
     /**
      * Enable/disable bottom-nav tabs based on install state.
-     * Before Hermes is installed, only Install + Logs are usable.
-     * Dashboard + Settings tabs are greyed out so users can't navigate
-     * to actions that would fail (open shell/chat need Hermes installed).
+     * Before Hermes is installed, only Dashboard is greyed out
+     * (its actions need Hermes installed). Settings is always available:
+     * it contains version info, battery opt, and env backup/restore —
+     * the latter is meant to skip install entirely, so it must be
+     * reachable before Hermes is installed.
      */
     private fun refreshNavTabs() {
         val installed = serverManager.isHermesInstalled()
@@ -272,7 +275,7 @@ class MainActivity : AppCompatActivity() {
         menu.findItem(R.id.nav_install)?.isEnabled = true
         menu.findItem(R.id.nav_logs)?.isEnabled = true
         menu.findItem(R.id.nav_dashboard)?.isEnabled = installed
-        menu.findItem(R.id.nav_settings)?.isEnabled = installed
+        menu.findItem(R.id.nav_settings)?.isEnabled = true
     }
 
     /**
@@ -776,8 +779,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showDoneScreen() {
         // Auto-switch to the Dashboard page after install completes.
-        stepsContainer.visibility = View.GONE
-        refreshNavTabs()
+        // Keep the install page's step buttons visible (all marked "✓ 已安装")
+        // so users who navigate back to the Install tab don't see a blank page.
+        showSteps()
         refreshDashboardState()
         updateChatButtonLabel()
         bottomNav.selectedItemId = R.id.nav_dashboard

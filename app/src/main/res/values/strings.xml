@@ -94,6 +94,7 @@
     <string name="settings_about">关于</string>
     <string name="settings_version">版本</string>
     <string name="settings_maintenance">维护</string>
+    <string name="settings_env_backup">环境备份</string>
     <string name="settings_rerun_setup">重新运行安装</string>
     <string name="settings_rerun_subtitle">从 bootstrap 开始重新安装</string>
     <string name="settings_battery_optimization">电池优化</string>
