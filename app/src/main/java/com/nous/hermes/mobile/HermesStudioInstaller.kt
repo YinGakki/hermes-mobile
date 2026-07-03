@@ -45,9 +45,9 @@ class HermesStudioInstaller(private val context: Context) {
 
         // Health check config
         private const val HEALTH_FIRST_DELAY_MS = 30000L
-        private const val HEALTH_INTERVAL_MS = 5000L
+        private const val HEALTH_INTERVAL_MS = 3000L
         private const val HEALTH_GRACE_MS = 120000L
-        private const val HEALTH_STARTUP_TIMEOUT_MS = 30000L
+        private const val HEALTH_STARTUP_TIMEOUT_MS = 60000L
     }
 
     private val serverMgr = HermesServerManager(context)
@@ -301,11 +301,20 @@ class HermesStudioInstaller(private val context: Context) {
                 onProgress("hermes-web-ui started on $STUDIO_BASE_URL")
                 startWatchdog(onProgress)
             } else {
-                onProgress("hermes-web-ui did not become healthy within ${HEALTH_STARTUP_TIMEOUT_MS / 1000}s")
-                // 进程可能已退出，采集退出码 + 最近输出供诊断
+                // hermes-web-ui 是 daemonizing CLI：CLI 进程启动服务后自己退出（code 0），
+                // 实际服务作为子进程运行。如果 CLI 退出码为 0 且端口在监听，
+                // 说明服务已起来，只是 /health 端点可能不存在 —— 视为成功。
                 val exitCode = studioProcess?.let {
                     try { if (!it.isAlive) it.exitValue() else null } catch (_: Exception) { null }
                 }
+                if (exitCode == 0 && isPortInUse(STUDIO_PORT)) {
+                    onProgress("hermes-web-ui CLI 已退出 (code=0)，但服务在端口 $STUDIO_PORT 监听中 —— 视为成功")
+                    serverStartTime = System.currentTimeMillis()
+                    restartCount = 0
+                    startWatchdog(onProgress)
+                    return true
+                }
+                onProgress("hermes-web-ui did not become healthy within ${HEALTH_STARTUP_TIMEOUT_MS / 1000}s")
                 if (exitCode != null) {
                     onProgress("hermes-web-ui 进程已退出，exit=$exitCode")
                 }
@@ -496,8 +505,10 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     private fun waitForHealth(onProgress: (String) -> Unit): Boolean {
+        // hermes-web-ui 是 daemonizing CLI：CLI 进程启动服务后自己退出（code 0），
+        // 实际服务作为子进程运行。初始等待 5s 让服务有时间开始监听端口。
         try {
-            Thread.sleep(3000)
+            Thread.sleep(5000)
         } catch (_: InterruptedException) {
             return false
         }
@@ -519,7 +530,8 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     private fun checkServerHealth(): Boolean {
-        return try {
+        // 优先尝试 /health 端点（如果存在，返回 200 表示完全就绪）
+        try {
             val url = URL("$STUDIO_BASE_URL/health")
             val conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 1000
@@ -528,9 +540,10 @@ class HermesStudioInstaller(private val context: Context) {
             conn.useCaches = false
             val code = conn.responseCode
             conn.disconnect()
-            code == 200
-        } catch (e: Exception) {
-            false
-        }
+            if (code == 200) return true
+        } catch (_: Exception) {}
+        // 回退：检查端口是否能建立 TCP 连接（hermes-web-ui 可能没有 /health
+        // 端点，但只要端口在监听就说明服务起来了）
+        return isPortInUse(STUDIO_PORT)
     }
 }
