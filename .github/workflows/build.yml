@@ -15,10 +15,10 @@ name: Build Release APK
 
 on:
   push:
-    branches: [main, master, refactor/openclaw-rootfs]
+    branches: [refactor/openclaw-rootfs]
     tags: ['v*']
   pull_request:
-    branches: [main, master]
+    branches: [refactor/openclaw-rootfs]
   workflow_dispatch:
 
 jobs:
@@ -340,66 +340,8 @@ jobs:
           echo "lite_dst=$lite_dst" >> "$GITHUB_ENV"
           echo "Renamed: $lite_dst ($(du -h "$lite_dst" | cut -f1))"
 
-      - name: Clear previous APKs from "latest" pre-release
-        # Rolling pre-release: delete ALL previously uploaded APK assets so
-        # the release only ever contains the latest build. Without this, every
-        # push accumulates a new `hermes-<sha>-arm64-lite.apk` and the release
-        # grows unbounded (we already had 20 stale APKs before adding this).
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          repo='${{ github.repository }}'
-          release_id=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/$repo/releases/tags/latest" | jq -r '.id // empty')
-          if [ -z "$release_id" ]; then
-            echo "No existing 'latest' release — nothing to clean"
-            exit 0
-          fi
-          echo "Cleaning assets of release $release_id…"
-          curl -fsSL -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/$repo/releases/$release_id/assets?per_page=100" \
-            | jq -r '.[] | "\(.id)\t\(.name)"' \
-            | while IFS=$'\t' read -r id name; do
-                echo "  deleting $name (asset id $id)"
-                curl -fsSL -o /dev/null -X DELETE \
-                  -H "Authorization: token $GH_TOKEN" \
-                  "https://api.github.com/repos/$repo/releases/assets/$id" \
-                  || echo "  WARN: failed to delete $name (continuing)"
-              done
-          echo "Cleanup done"
-
-      - name: Upload Lite APK to "latest" pre-release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.lite_dst }}
-          # Rolling pre-release: always overwrite the same "latest" tag,
-          # never a real published release (prerelease=true).
-          tag_name: latest
-          name: Hermes Agent (Android) — latest build
-          body: |
-            Rolling pre-release built from `${{ github.sha }}` on `${{ github.run_id }}`.
-
-            ## Lite flavor (proot + Ubuntu rootfs, self-download)
-
-            | Flavor | Size | Description |
-            |--------|------|-------------|
-            | `*-lite.apk` | ~15 MB | Ships only proot/libtalloc binaries (jniLibs). First launch downloads Ubuntu 24.04 rootfs + apt packages + pip (~1GB) via mirror fallback. |
-
-            - Architecture: proot + Ubuntu 24.04 rootfs (arm64-v8a only)
-            - Min Android: 10 (API 29) — needs Os.symlink for rootfs extraction
-            - targetSdk: 28 (intentional, see README → W^X bypass)
-            - Signed: ${{ env.HAS_KEYSTORE == '1' }}
-
-            Install: `adb install hermes-XXXXXXX-arm64-lite.apk` (or sideload from file manager).
-          prerelease: true
-          make_latest: 'false'
-          fail_on_unmatched_files: true
-
   release:
-    name: Publish stable GitHub Release (on tag)
+    name: Publish GitHub Release (on tag)
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -407,15 +349,67 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
           name: hermes-agent-arm64-release
           path: artifacts
 
-      - name: Create stable GitHub Release
+      - name: Rename APK with tag version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          apk=$(find . -name '*.apk' | head -n1)
+          tag="${GITHUB_REF#refs/tags/}"
+          new_name="hermes-${tag}-arm64-lite.apk"
+          cp "$apk" "$new_name"
+          rm -f "$apk"
+          echo "Renamed to: $new_name ($(du -h "$new_name" | cut -f1))"
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          echo "Tag: $tag"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.apk
-          generate_release_notes: true
+          name: Hermes Agent (Android) ${{ steps.version.outputs.version }}
+          body: |
+            ## ${{ steps.version.outputs.version }}
+
+            ### 下载
+
+            | 文件 | 说明 |
+            |------|------|
+            | `hermes-${{ steps.version.outputs.version }}-arm64-lite.apk` | Lite 版本，首次启动自动下载依赖（~1GB） |
+
+            ### 系统要求
+
+            - Android 10（API 29）或更高
+            - `arm64-v8a` 架构
+            - 约 2GB 可用存储空间
+            - 首次安装需网络连接
+
+            ### 安装
+
+            下载 APK 后直接安装，或通过 adb：
+            ```
+            adb install hermes-${{ steps.version.outputs.version }}-arm64-lite.apk
+            ```
+
+            ### 首次启动
+
+            应用内置 4 步安装向导（proot → 依赖 → Hermes Agent → WebUI），也可点击"一键安装全部"。
+
+            ---
+            [完整更新日志](https://github.com/${{ github.repository }}/commits/${{ steps.version.outputs.version }})
           fail_on_unmatched_files: true

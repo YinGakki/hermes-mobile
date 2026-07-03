@@ -1,213 +1,134 @@
 # Hermes Agent (Android)
 
-A self-contained Android APK that bundles a Termux bootstrap and installs
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research)
-on first launch — no root, no PC, no pre-installed Termux required.
+在 Android 上运行 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的独立 APK —— 无需 root，无需 PC，开箱即用。
 
-Inspired by (and forked from) [AnyClaw](https://github.com/friuns2/openclaw-android-assistant),
-which does the same for OpenClaw/Codex.
+通过 **proot + Ubuntu 24.04 rootfs** 在 Android 用户空间构建完整 Linux 环境，内置 hermes-web-ui Web 仪表盘。
 
-## Architecture
+## 当前版本：v0.0.1
+
+> ⚠️ 早期预览版，功能可能不稳定，仅供测试。
+
+## 架构
 
 ```
-┌──────────────────────────────────────────────┐
-│                Android APK                   │
-│  com.nous.hermes.mobile                      │
-│                                              │
-│  ┌───────────────┐    ┌─────────────────┐    │
-│  │  MainActivity │ →  │ BootstrapInstaller│    │
-│  │  (setup UI)  │    │  extracts ~30MB  │    │
-│  └───────────────┘    │  bootstrap zip   │    │
-│         ↑             └────────┬────────┘    │
-│         │                      ▼             │
-│  ┌──────┴───────────────────────────────┐    │
-│  │ /data/data/com.nous.hermes.mobile/   │    │
-│  │        files/usr/   (Termux prefix)  │    │
-│  │                                       │    │
-│  │   bin/python        bin/git           │    │
-│  │   bin/hermes        bin/proot         │    │
-│  │   ── via pkg: clang rust make node    │    │
-│  │   ── via pip: hermes-agent.[termux]   │    │
-│  └───────────────────────────────────────┘    │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                  Android APK                      │
+│  com.nous.hermes.mobile                           │
+│                                                   │
+│  ┌───────────────┐    ┌──────────────────────┐    │
+│  │  MainActivity │ →  │ proot (jniLibs)       │    │
+│  │  (安装+仪表盘) │    │ libproot.so (~3MB)    │    │
+│  └───────────────┘    └─────────┬────────────┘    │
+│         ↑                        │                 │
+│         │              ┌─────────▼────────────┐    │
+│  ┌──────┴──────────────┤ Ubuntu 24.04 rootfs  │    │
+│  │ app 数据目录         │ (~28MB 下载/解压)     │    │
+│  │                     │                       │    │
+│  │ ┌─────────────────┐ │ apt: python3, git,    │    │
+│  │ │  rootfs/        │ │   build-essential,    │    │
+│  │ │  (Ubuntu 24.04) │ │   libffi, openssl…    │    │
+│  │ │                 │ │ pip: hermes-agent     │    │
+│  │ │  bin/python3    │ │ npm: hermes-web-ui    │    │
+│  │ │  bin/hermes     │ │                       │    │
+│  │ └─────────────────┘ └───────────────────────┘    │
+│  └────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────┘
 ```
 
-## Why `targetSdk = 28`?
+## 安装流程（首次启动）
 
-Android 10+ (targetSdk 29+) enforces W^X memory protection via SELinux, which
-blocks executing binaries from the app's writable data directory. Setting
-`targetSdk = 28` is the same trick the official F-Droid Termux uses to keep
-the embedded `bin/`, `lib/`, and `libexec/` runnable.
+应用内置 4 步安装向导，也可一键安装：
 
-## Why `arm64-v8a` only?
+1. **proot** — 下载 Ubuntu 24.04 rootfs 并验证
+2. **依赖** — `apt-get install` Python 3 + build-essential + libffi/openssl 等
+3. **Hermes Agent** — `git clone` hermes-agent + 创建 venv + `pip install`
+4. **WebUI** — `npm install -g hermes-web-ui`（含 Node.js 运行时）
 
-The Termux bootstrap archive we embed only ships aarch64 binaries. Adding
-other ABIs would either need separate bootstrap zips or would silently fail
-on those devices. Restricting via `abiFilters` keeps the APK small (~30 MB)
-and matches what 99% of modern Android phones use.
+首次安装需联网，总下载量约 1GB，耗时 10-30 分钟（取决于网络）。
 
-## Minimum requirements
+## 功能
 
-- Android 7.0 (API 24) or higher
-- `arm64-v8a` device (most phones since 2017)
-- ~600 MB free storage (bootstrap + Python/Rust/Node toolchain + Hermes venv)
-- Internet access on first launch (download toolchain packages + clone hermes-agent)
+- **4 步安装向导** — proot / 依赖 / Hermes Agent / WebUI，支持单步安装或一键全装
+- **Web 仪表盘** — 内置 hermes-web-ui，通过 WebView 直接访问，无需浏览器
+- **服务启停** — 仪表盘独立控制 hermes-web-ui 服务启停
+- **Web 通知** — 通过 JS 桥接将 Web Notifications API 映射到 Android 原生通知
+- **环境备份/还原** — 导出/导入完整环境（rootfs + venv + 配置），换机不重装
+- **在线更新** — 设置页一键更新 Hermes Agent（git pull + pip）和 WebUI（npm @latest）
+- **实时日志** — 安装过程实时日志，支持当前/全部日志切换
 
-## What's skipped
+## 系统要求
 
-The first iteration intentionally skips Hermes voice support
-(`faster-whisper` → `ctranslate2`) because no Android wheel exists. This matches
-the Hermes `.[termux]` extras officially — see
-<https://hermesagent.org.cn/docs/getting-started/termux>. Voice can be added
-later via ctranslate2 source compile or an onnxruntime-android swap.
+- Android 10（API 29）或更高
+- `arm64-v8a` 架构（2017 年后绝大多数手机）
+- 约 2GB 可用存储空间
+- 首次安装需网络连接
 
----
+## 构建
 
-# Building
+### 前置条件
 
-## Option A — Local build
-
-### Prerequisites
-- Android Studio Iguana+ (or just Android SDK command-line tools)
 - JDK 17
-- `curl` (for downloading bootstrap)
+- Android SDK（compileSdk 35, build-tools 35.0.0）
 
-### 1. Download the Termux bootstrap
-
-```bash
-./scripts/download-bootstrap.sh            # aarch64 by default
-# or:
-./scripts/download-bootstrap.sh --arch aarch64
-```
-
-Drops `bootstrap-aarch64.zip` (~30 MB) into `app/src/main/assets/`.
-
-### 2. Build the APK
+### 构建 APK
 
 ```bash
-# Debug (no signing)
-./gradlew assembleDebug
-# → app/build/outputs/apk/debug/app-debug.apk
+# 下载 proot 二进制
+./scripts/fetch-proot-binaries.sh
 
-# Release (signed, requires signing env vars — see below)
+# Debug 构建
+./gradlew assembleLiteDebug
+
+# Release 构建（需签名配置）
 export SIGNING_KEYSTORE_PATH=$HOME/hermes-release.jks
 export SIGNING_KEYSTORE_PASSWORD=changeit
 export SIGNING_KEY_ALIAS=hermes
 export SIGNING_KEY_PASSWORD=changeit
-./gradlew assembleRelease
-# → app/build/outputs/apk/release/app-release.apk
+./gradlew assembleLiteRelease
 ```
 
-## Option B — GitHub Actions (recommended)
+### CI 构建
 
-The workflow at [`.github/workflows/build.yml`](.github/workflows/build.yml)
-runs on every push/PR and on `v*` tags. It will:
+推送到 `refactor/openclaw-rootfs` 分支或打 `v*` tag 时，GitHub Actions 自动构建 APK：
 
-1. Set up JDK 17 + Android SDK on `ubuntu-latest`
-2. Download the Termux bootstrap
-3. Decode your signing keystore from a GitHub Secret
-4. Run `./gradlew :app:assembleRelease`
-5. Upload the resulting APK as a workflow artifact (30-day retention)
-6. **On `v*` tags** — also create a GitHub Release and attach the APK
-
-The build job runs even without secrets (producing an unsigned APK), so forks
-can verify the build green before configuring signing.
-
-### Generate the signing keystore
+- 分支推送 → 滚动更新 `latest` pre-release
+- `v*` tag → 创建正式 Release
 
 ```bash
-keytool -genkeypair \
-  -keystore hermes-release.jks \
-  -storetype JKS \
-  -keyalg RSA -keysize 2048 -validity 10000 \
-  -alias hermes \
-  -storepass 'changeit' \
-  -keypass 'changeit' \
-  -dname "CN=Hermes Mobile, O=Self-signed, C=US"
+git tag v0.0.1
+git push origin v0.0.1
 ```
 
-### Add the four GitHub Secrets
-
-In your repo → **Settings → Secrets and variables → Actions → New repository secret**:
-
-| Secret name             | Value                                              |
-| ----------------------- | -------------------------------------------------- |
-| `KEYSTORE_BASE64`        | `base64 -w0 hermes-release.jks` output             |
-| `KEYSTORE_PASSWORD`      | `changeit` (the `-storepass` you used)            |
-| `SIGNING_KEY_ALIAS`      | `hermes` (the `-alias` you used)                   |
-| `SIGNING_KEY_PASSWORD`   | `changeit` (the `-keypass` you used)              |
-
-To get `KEYSTORE_BASE64` on Linux/macOS:
-
-```bash
-base64 -w0 hermes-release.jks    # Linux
-base64 -i hermes-release.jks     # macOS
-```
-
-### Trigger a build
-
-- Push to `main` → workflow runs
-- Pull request → workflow runs (unsigned APK)
-- **Publish a release**: `git tag v0.1.0 && git push origin v0.1.0` → release job fires
-- Or use **Actions → Build Release APK → Run workflow** for a manual trigger
-
-The signed APK ends up under the workflow run's **Artifacts** section
-(`hermes-agent-arm64-release.zip`).
-
----
-
-# First run (on the device)
-
-On first launch, the app will:
-
-1. Extract the bootstrap environment (~30 MB compressed → ~100 MB extracted)
-2. `pkg install` Python, clang, rust, make, node, ripgrep, ffmpeg, openssl, libffi…
-3. Clone `https://github.com/NousResearch/hermes-agent` into `~/hermes-agent`
-4. Create a venv and run `pip install -e '.[termux]' -c constraints-termux.txt`
-5. Write a `~/.hermes/config.yaml` skeleton (openrouter + claude-3.5-sonnet defaults)
-6. Verify with `hermes --version`
-
-Steps 1–4 only happen once. Subsequent launches skip straight to the
-"done" screen and let you open a shell.
-
-To get a shell: install the official
-[Termux](https://github.com/termux/termux/releases) APK (any recent version)
-and tap **Open Shell** in the app. Termux will auto-detect the
-`com.nous.hermes.mobile` prefix and drop you in.
-
----
-
-# Repository layout
+## 仓库结构
 
 ```
 hermes-android-apk/
-├── .github/workflows/build.yml      # GitHub Actions CI
+├── .github/workflows/build.yml          # CI 构建配置
 ├── app/
-│   ├── build.gradle.kts             # targetSdk=28, signing config, arm64-v8a
-│   ├── proguard-rules.pro
+│   ├── build.gradle.kts                 # versionName, signing, abiFilters
 │   └── src/main/
-│       ├── AndroidManifest.xml      # dataSync foreground service type
-│       ├── assets/
-│       │   ├── setup-hermes.sh      # reference manual setup (if you prefer)
-│       │   └── bootstrap-aarch64.zip # downloaded at build time, not committed
+│       ├── AndroidManifest.xml
 │       ├── java/com/nous/hermes/mobile/
-│       │   ├── BootstrapInstaller.kt   # extracts bootstrap, fixes Termux paths
-│       │   ├── HermesServerManager.kt  # installs proot/python/hermes
+│       │   ├── MainActivity.kt          # 安装向导 + 仪表盘 + 设置页
+│       │   ├── ChatActivity.kt          # WebView + 通知桥接
+│       │   ├── HermesServerManager.kt   # proot/rootfs/python/hermes 安装
+│       │   ├── HermesStudioInstaller.kt # hermes-web-ui 安装 + 启停 + watchdog
 │       │   ├── HermesForegroundService.kt
-│       │   └── MainActivity.kt         # setup flow + UI
+│       │   ├── ProotProcessManager.kt   # proot 进程管理
+│       │   └── BootstrapManager.kt      # rootfs 下载/解压/路径管理
 │       └── res/
 │           ├── layout/activity_main.xml
-│           └── values/{strings,themes}.xml
-├── gradle/wrapper/                  # gradle-wrapper.jar is committed
-├── scripts/download-bootstrap.sh
-├── settings.gradle.kts
-└── README.md                        # you are here
+│           └── values/strings.xml
+├── scripts/fetch-proot-binaries.sh
+└── README.md
 ```
 
----
+## 致谢
 
-# License
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) — Nous Research
+- [AnyClaw](https://github.com/friuns2/openclaw-android-assistant) — 项目灵感来源
+- [proot](https://github.com/proot-me/proot) — 用户空间 rootfs
 
-MIT — same as Hermes Agent and AnyClaw. See source headers for individual file
-provenance (a few files are adapted from Termux's `TermuxInstaller.java` and
-AnyClaw's `BootstrapInstaller.kt`).
+## License
+
+MIT
