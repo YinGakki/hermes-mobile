@@ -129,7 +129,7 @@
                             android:progressBackgroundTint="#1e293b" />
                     </LinearLayout>
 
-                    <!-- Step 1: proot -->
+                    <!-- Step 1: proot (progress indicator, not clickable) -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -137,14 +137,13 @@
                         android:gravity="center_vertical"
                         android:layout_marginTop="4dp">
 
-                        <Button
+                        <TextView
                             android:id="@+id/btnProot"
                             android:layout_width="0dp"
                             android:layout_weight="1"
                             android:layout_height="wrap_content"
                             android:text="@string/step_proot"
-                            android:textColor="#e2e8f0"
-                            android:background="@drawable/step_button_bg"
+                            android:textColor="#94a3b8"
                             android:padding="12dp"
                             android:layout_marginEnd="8dp" />
 
@@ -157,7 +156,7 @@
                             android:visibility="gone" />
                     </LinearLayout>
 
-                    <!-- Step 2: deps (python + build deps merged) -->
+                    <!-- Step 2: deps (progress indicator, not clickable) -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -165,14 +164,13 @@
                         android:gravity="center_vertical"
                         android:layout_marginTop="4dp">
 
-                        <Button
+                        <TextView
                             android:id="@+id/btnDeps"
                             android:layout_width="0dp"
                             android:layout_weight="1"
                             android:layout_height="wrap_content"
                             android:text="@string/step_deps"
-                            android:textColor="#e2e8f0"
-                            android:background="@drawable/step_button_bg"
+                            android:textColor="#94a3b8"
                             android:padding="12dp"
                             android:layout_marginEnd="8dp" />
 
@@ -185,7 +183,7 @@
                             android:visibility="gone" />
                     </LinearLayout>
 
-                    <!-- Step 3: hermes -->
+                    <!-- Step 3: hermes (progress indicator, not clickable) -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -193,14 +191,13 @@
                         android:gravity="center_vertical"
                         android:layout_marginTop="4dp">
 
-                        <Button
+                        <TextView
                             android:id="@+id/btnHermes"
                             android:layout_width="0dp"
                             android:layout_weight="1"
                             android:layout_height="wrap_content"
                             android:text="@string/step_hermes"
-                            android:textColor="#e2e8f0"
-                            android:background="@drawable/step_button_bg"
+                            android:textColor="#94a3b8"
                             android:padding="12dp"
                             android:layout_marginEnd="8dp" />
 
@@ -213,7 +210,7 @@
                             android:visibility="gone" />
                     </LinearLayout>
 
-                    <!-- Step 4: webui (node.js + hermes-web-ui) -->
+                    <!-- Step 4: webui (progress indicator, not clickable) -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -221,14 +218,13 @@
                         android:gravity="center_vertical"
                         android:layout_marginTop="4dp">
 
-                        <Button
+                        <TextView
                             android:id="@+id/btnWebUI"
                             android:layout_width="0dp"
                             android:layout_weight="1"
                             android:layout_height="wrap_content"
                             android:text="@string/step_webui"
-                            android:textColor="#e2e8f0"
-                            android:background="@drawable/step_button_bg"
+                            android:textColor="#94a3b8"
                             android:padding="12dp"
                             android:layout_marginEnd="8dp" />
 

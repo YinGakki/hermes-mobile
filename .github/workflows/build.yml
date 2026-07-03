@@ -15,10 +15,10 @@ name: Build Release APK
 
 on:
   push:
-    branches: [refactor/openclaw-rootfs]
+    branches: [main]
     tags: ['v*']
   pull_request:
-    branches: [refactor/openclaw-rootfs]
+    branches: [main]
   workflow_dispatch:
 
 jobs:

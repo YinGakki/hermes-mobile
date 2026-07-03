@@ -134,15 +134,6 @@ class HermesServerManager(private val context: Context) {
             File(paths.homeDir, "hermes-agent/.venv/bin/activate").exists()
     }
 
-    /**
-     * 旧 API 兼容：新模型下不再有 deb bundle（apt 在 rootfs 里直接装）。
-     * 返回 false 让 MainActivity 跳过这一步。
-     */
-    fun extractDebBundleIfPresent(onProgress: (String) -> Unit): Boolean {
-        onProgress("跳过 deb bundle（新架构用 apt-get install）")
-        return false
-    }
-
     // ── Step 1: proot + rootfs ──────────────────────────────────────────────
 
     /**

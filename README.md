@@ -89,10 +89,10 @@ export SIGNING_KEY_PASSWORD=changeit
 
 ### CI 构建
 
-推送到 `refactor/openclaw-rootfs` 分支或打 `v*` tag 时，GitHub Actions 自动构建 APK：
+推送到 `main` 分支或打 `v*` tag 时，GitHub Actions 自动构建 APK：
 
-- 分支推送 → 滚动更新 `latest` pre-release
-- `v*` tag → 创建正式 Release
+- 分支推送 → 构建 APK（CI artifact，30 天保留）
+- `v*` tag → 创建正式 Release（含版本号命名的 APK）
 
 ```bash
 git tag v0.0.1

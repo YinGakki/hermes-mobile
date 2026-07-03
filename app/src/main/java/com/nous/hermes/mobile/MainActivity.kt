@@ -45,10 +45,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var statusDetail: TextView
     private lateinit var stepsContainer: LinearLayout
-    private lateinit var btnProot: Button
-    private lateinit var btnDeps: Button
-    private lateinit var btnHermes: Button
-    private lateinit var btnWebUI: Button
+    private lateinit var btnProot: TextView
+    private lateinit var btnDeps: TextView
+    private lateinit var btnHermes: TextView
+    private lateinit var btnWebUI: TextView
     private lateinit var btnInstallAll: Button
     private lateinit var btnSaveEnv: View
     private lateinit var btnRestoreEnv: View
@@ -192,10 +192,8 @@ class MainActivity : AppCompatActivity() {
         // Grey out tabs that require Hermes to be installed (Dashboard / Settings).
         refreshNavTabs()
 
-        btnProot.setOnClickListener { runStep("proot") }
-        btnDeps.setOnClickListener { runStep("deps") }
-        btnHermes.setOnClickListener { runStep("hermes") }
-        btnWebUI.setOnClickListener { runStep("webui") }
+        // Step indicators are non-clickable TextViews (progress animation only).
+        // Only "一键安装" and "还原环境" are action buttons.
         btnInstallAll.setOnClickListener { runInstallAll() }
         btnSaveEnv.setOnClickListener { onSaveEnvClicked() }
         btnRestoreEnv.setOnClickListener { onRestoreEnvClicked() }
@@ -307,18 +305,24 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Enable/disable bottom-nav tabs based on install state.
-     * Before Hermes is installed, only Dashboard is greyed out
-     * (its actions need Hermes installed). Settings is always available:
-     * it contains version info, battery opt, and env backup/restore —
-     * the latter is meant to skip install entirely, so it must be
-     * reachable before Hermes is installed.
+     * Install tab is HIDDEN when environment is fully installed —
+     * user sees only Dashboard + Settings. When install is incomplete
+     * or user triggers "reinstall" from Settings, the Install tab
+     * reappears.
      */
     private fun refreshNavTabs() {
-        val installed = serverManager.isHermesInstalled()
+        val installed = allStepsDone()
         val menu = bottomNav.menu
-        menu.findItem(R.id.nav_install)?.isEnabled = true
+        val installItem = menu.findItem(R.id.nav_install)
+        // Show Install tab only when environment is NOT fully installed
+        installItem?.isVisible = !installed
         menu.findItem(R.id.nav_dashboard)?.isEnabled = installed
         menu.findItem(R.id.nav_settings)?.isEnabled = true
+        // If install is done and user is still on install page, switch to dashboard
+        if (installed && installPage.visibility == View.VISIBLE) {
+            bottomNav.selectedItemId = R.id.nav_dashboard
+            switchPage(dashboardPage)
+        }
     }
 
     /**
@@ -355,7 +359,6 @@ class MainActivity : AppCompatActivity() {
         activeThread = Thread {
             try {
                 BootstrapManager.ensureSystemConfig(this)
-                serverManager.extractDebBundleIfPresent { msg -> appendLog(msg) }
                 runOnUiThread { showSteps() }
             } catch (e: Exception) {
                 Log.e(TAG, "Bootstrap failed", e)
@@ -367,6 +370,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restartFromBootstrap() {
+        // Make Install tab visible again (it's hidden when env is installed)
+        bottomNav.menu.findItem(R.id.nav_install)?.isVisible = true
         // Switch to install page to show bootstrap progress.
         switchPage(installPage)
         bottomNav.selectedItemId = R.id.nav_install
@@ -411,16 +416,8 @@ class MainActivity : AppCompatActivity() {
         // Switch to install page so the progress bar is visible.
         switchPage(installPage)
         bottomNav.selectedItemId = R.id.nav_install
-        // Dim ALL buttons (alpha, NOT isEnabled=false, so they stay visible)
-        btnProot.alpha = 0.35f
-        btnDeps.alpha = 0.35f
-        btnHermes.alpha = 0.35f
-        btnWebUI.alpha = 0.35f
+        // Dim the install button (step indicators stay visible as progress animation)
         btnInstallAll.alpha = 0.35f
-        btnProot.isEnabled = false
-        btnDeps.isEnabled = false
-        btnHermes.isEnabled = false
-        btnWebUI.isEnabled = false
         btnInstallAll.isEnabled = false
         // Show the overall progress bar, seeded with however many of the 4
         // steps are already complete before this run begins.
@@ -812,42 +809,26 @@ class MainActivity : AppCompatActivity() {
     private fun refreshStepButtons() {
         val prootDone = serverManager.isProotInstalled()
         btnProot.text = if (prootDone) getString(R.string.step_done) else getString(R.string.step_proot)
-        btnProot.isEnabled = !prootDone && !isInstallInProgress
-        btnProot.alpha = when {
-            prootDone -> 0.6f
-            isInstallInProgress -> 0.35f
-            else -> 1f
-        }
+        btnProot.alpha = if (prootDone) 0.6f else 1f
+        btnProot.setTextColor(if (prootDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
         spinnerProot.visibility = View.GONE
 
         val depsDone = serverManager.isPythonInstalled() && isBuildDepsInstalled()
         btnDeps.text = if (depsDone) getString(R.string.step_done) else getString(R.string.step_deps)
-        btnDeps.isEnabled = !depsDone && !isInstallInProgress
-        btnDeps.alpha = when {
-            depsDone -> 0.6f
-            isInstallInProgress -> 0.35f
-            else -> 1f
-        }
+        btnDeps.alpha = if (depsDone) 0.6f else 1f
+        btnDeps.setTextColor(if (depsDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
         spinnerDeps.visibility = View.GONE
 
         val hermesDone = serverManager.isHermesInstalled()
         btnHermes.text = if (hermesDone) getString(R.string.step_done) else getString(R.string.step_hermes)
-        btnHermes.isEnabled = !hermesDone && !isInstallInProgress
-        btnHermes.alpha = when {
-            hermesDone -> 0.6f
-            isInstallInProgress -> 0.35f
-            else -> 1f
-        }
+        btnHermes.alpha = if (hermesDone) 0.6f else 1f
+        btnHermes.setTextColor(if (hermesDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
         spinnerHermes.visibility = View.GONE
 
         val webuiDone = studioInstaller.isInstalled()
         btnWebUI.text = if (webuiDone) getString(R.string.step_done) else getString(R.string.step_webui)
-        btnWebUI.isEnabled = !webuiDone && !isInstallInProgress
-        btnWebUI.alpha = when {
-            webuiDone -> 0.6f
-            isInstallInProgress -> 0.35f
-            else -> 1f
-        }
+        btnWebUI.alpha = if (webuiDone) 0.6f else 1f
+        btnWebUI.setTextColor(if (webuiDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
         spinnerWebUI.visibility = View.GONE
 
         val allDone = prootDone && depsDone && hermesDone && webuiDone
@@ -884,10 +865,10 @@ class MainActivity : AppCompatActivity() {
             "webui" -> btnWebUI to spinnerWebUI
             else -> return
         }
-        btn.isEnabled = !installing
         if (installing) {
             btn.text = getString(R.string.step_installing)
-            btn.alpha = 1f  // keep fully visible
+            btn.alpha = 1f
+            btn.setTextColor(0xFF818cf8.toInt())
             spinner.visibility = View.VISIBLE
         }
     }
