@@ -30,6 +30,11 @@ class HermesStudioInstaller(private val context: Context) {
         const val STUDIO_BASE_URL = "http://localhost:$STUDIO_PORT"
         private const val NPM_PACKAGE = "hermes-web-ui"
 
+        // hermes CLI 的 venv bin 路径（proot 内视角）。
+        // hermes-web-ui 启动时会 spawn('hermes', ['gateway','run','--replace'])，
+        // 必须把这个路径加到 PATH 里，否则 ENOENT。
+        private const val HERMES_VENV_BIN = "/root/home/hermes-agent/.venv/bin"
+
         // Watchdog config (from openclaw-termux GatewayService.kt)
         private const val MAX_RESTARTS = 5
         private const val INITIAL_BACKOFF_MS = 2000L
@@ -271,15 +276,18 @@ class HermesStudioInstaller(private val context: Context) {
             try { Thread.sleep(1000) } catch (_: InterruptedException) {}
         }
 
-        // 预检：确认 hermes-web-ui 在 PATH 里且 node 版本达标，避免"启动即崩溃"
-        // 却看不到错误的盲区。
-        onProgress("预检: 验证 hermes-web-ui 可执行…")
+        // 预检：确认 hermes-web-ui + node + hermes CLI 都可用，避免"启动即崩溃"
+        // 却看不到错误的盲区。hermes-web-ui 内部会 spawn('hermes', ...)，
+        // 所以 hermes CLI 必须在 PATH 里（它在 venv bin 里，不在默认 PATH）。
+        onProgress("预检: 验证 hermes-web-ui + hermes CLI 可执行…")
         val preflight = processManager.runInProotExitCode(
-            "command -v hermes-web-ui && node --version && npm --version", 15
+            "command -v hermes-web-ui && node --version && npm --version && " +
+                "PATH=\"$HERMES_VENV_BIN:\$PATH\" command -v hermes",
+            15
         ) { onProgress("[preflight] $it") }
         if (preflight != 0) {
-            onProgress("错误：预检失败 — hermes-web-ui 或 node 不在 PATH 里 (exit=$preflight)")
-            recordOutput("preflight failed: exit=$preflight")
+            onProgress("错误：预检失败 — hermes-web-ui / node / hermes CLI 不在 PATH 里 (exit=$preflight)")
+            recordOutput("preflight failed: exit=$preflight (hermes CLI missing?)")
             return false
         }
 
@@ -319,7 +327,12 @@ class HermesStudioInstaller(private val context: Context) {
         stopStudioProcess()
         // hermes-web-ui 监听 PORT 环境变量；在 proot 里前台运行（proot 进程
         // 保持存活，--kill-on-exit 确保停止时清理子进程）。
-        val cmd = "PORT=$STUDIO_PORT NODE_ENV=production exec hermes-web-ui 2>&1"
+        //
+        // 关键：hermes-web-ui 内部会 spawn('hermes', ['gateway','run','--replace'])
+        // 调用 hermes CLI，但 hermes 装在 venv 里（/root/home/hermes-agent/.venv/bin），
+        // 不在默认 PATH。必须把 venv bin 加到 PATH 最前面，否则 ENOENT。
+        val cmd = "PORT=$STUDIO_PORT NODE_ENV=production " +
+            "PATH=\"$HERMES_VENV_BIN:\$PATH\" exec hermes-web-ui 2>&1"
         val proc = processManager.startProotProcess(cmd)
         studioProcess = proc
         // 转发 stdout 到 logcat + 环形缓冲 + onProgress 回调
