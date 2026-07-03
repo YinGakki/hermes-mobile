@@ -29,9 +29,9 @@
     <!-- Step buttons -->
     <string name="steps_title">安装步骤</string>
     <string name="step_proot">1. 安装 proot</string>
-    <string name="step_python">2. 安装 Python</string>
-    <string name="step_build_deps">3. 安装 build deps</string>
-    <string name="step_hermes">4. 安装 Hermes Agent</string>
+    <string name="step_deps">2. 安装依赖</string>
+    <string name="step_hermes">3. 安装 Hermes Agent</string>
+    <string name="step_webui">4. 安装 WebUI</string>
     <string name="step_install_all">一键安装全部</string>
     <string name="step_done">✓ 已安装</string>
     <string name="step_installing">安装中…</string>
@@ -108,6 +108,11 @@
     <string name="settings_version">版本</string>
     <string name="settings_maintenance">维护</string>
     <string name="settings_env_backup">环境备份</string>
+    <string name="settings_updates">检查更新</string>
+    <string name="settings_update_hermes">更新 Hermes Agent</string>
+    <string name="settings_update_hermes_subtitle">git pull + pip install 更新到最新版</string>
+    <string name="settings_update_webui">更新 WebUI</string>
+    <string name="settings_update_webui_subtitle">npm install -g hermes-web-ui@latest</string>
     <string name="settings_rerun_setup">重新运行安装</string>
     <string name="settings_rerun_subtitle">从 bootstrap 开始重新安装</string>
     <string name="settings_battery_optimization">电池优化</string>

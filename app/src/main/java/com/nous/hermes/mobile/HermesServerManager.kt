@@ -215,6 +215,47 @@ class HermesServerManager(private val context: Context) {
     // ── Step 3: build deps ──────────────────────────────────────────────────
 
     /**
+     * 合并安装 Python + 编译依赖（一次 apt-get update，省去重复网络请求）。
+     * 原 installPython + installHermesBuildDeps 的合并版。
+     */
+    fun installDependencies(onProgress: (String) -> Unit): Boolean {
+        val pyOk = isPythonInstalled()
+        val depsOk = File(paths.configDir, ".build-deps-v1").exists()
+        if (pyOk && depsOk) {
+            onProgress("deps: Python + build deps 已安装（缓存）")
+            return true
+        }
+        return try {
+            runWithRetry(onProgress = onProgress, what = "install dependencies") {
+                onProgress("deps: apt-get update…")
+                processManager.runInProotSync(
+                    "apt-get update 2>&1 | tail -5", 600
+                ) { onProgress(it) }
+                // 一次性安装 python + build deps
+                onProgress("deps: apt-get install python3 python3-pip python3-venv " +
+                    "build-essential git make pkg-config libffi-dev libssl-dev " +
+                    "libsqlite3-dev zlib1g-dev ripgrep…")
+                processManager.runInProotSync(
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y " +
+                        "python3 python3-pip python3-venv " +
+                        "build-essential git make pkg-config " +
+                        "libffi-dev libssl-dev libsqlite3-dev zlib1g-dev " +
+                        "ripgrep 2>&1 | tail -20",
+                    1800
+                ) { onProgress(it) }
+                // 写 marker
+                val marker = File(paths.configDir, ".build-deps-v1")
+                marker.parentFile?.mkdirs()
+                marker.writeText("ok")
+                isPythonInstalled()
+            }
+        } catch (e: Exception) {
+            onProgress("错误：依赖安装失败 — ${e.message}")
+            false
+        }
+    }
+
+    /**
      * apt-get install Hermes 编译依赖（git/make/pkg-config/libffi-dev 等）。
      * rootfs 里这些是标准 Ubuntu 包，apt 自动解析依赖。
      */
@@ -441,6 +482,46 @@ class HermesServerManager(private val context: Context) {
                 """.trimIndent() + "\n"
             )
             Log.i(TAG, "Wrote Hermes config skeleton to $configFile")
+        }
+    }
+
+    /**
+     * 更新 Hermes Agent：git pull + pip install -e '.[termux]'（在 venv 里）。
+     * 假设 hermes-agent 已 clone 过（installHermes 跑过）。
+     */
+    fun updateHermes(onProgress: (String) -> Unit): Boolean {
+        val repoDir = File(paths.homeDir, "hermes-agent")
+        if (!repoDir.exists()) {
+            onProgress("错误：hermes-agent 目录不存在，请先安装")
+            return false
+        }
+        return try {
+            onProgress("hermes: git pull…")
+            val pullCode = processManager.runInProotExitCode(
+                "cd /root/home/hermes-agent && git pull 2>&1", 300
+            ) { onProgress(it) }
+            if (pullCode != 0) {
+                onProgress("警告：git pull 退出码 $pullCode（可能有本地修改或网络问题）")
+            }
+            onProgress("hermes: pip install -e '.[termux]'（更新依赖）…")
+            val cmd = """
+                cd /root/home/hermes-agent &&
+                . .venv/bin/activate &&
+                pip install --progress-bar off --retries 3 --timeout 120 \
+                    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+                    --trusted-host pypi.tuna.tsinghua.edu.cn \
+                    -e '.[termux]' 2>&1
+            """.trimIndent()
+            val pipCode = processManager.runInProotExitCode(cmd, 1200) { onProgress(it) }
+            if (pipCode != 0) {
+                onProgress("错误：pip install 失败 (exit=$pipCode)")
+                return false
+            }
+            onProgress("✓ Hermes 更新完成")
+            true
+        } catch (e: Exception) {
+            onProgress("错误：Hermes 更新失败 — ${e.message}")
+            false
         }
     }
 

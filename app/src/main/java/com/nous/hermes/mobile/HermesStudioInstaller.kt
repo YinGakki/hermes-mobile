@@ -154,6 +154,41 @@ class HermesStudioInstaller(private val context: Context) {
     }
 
     /**
+     * 更新 hermes-web-ui：npm install -g hermes-web-ui@latest。
+     * 如果服务正在运行，先停止再更新再重启。
+     */
+    fun update(onProgress: (String) -> Unit): Boolean {
+        if (!isInstalled()) {
+            onProgress("错误：hermes-web-ui 未安装，请先安装")
+            return false
+        }
+        // 如果服务在跑，先停掉（否则 npm 全局更新可能因文件占用失败）
+        val wasRunning = isRunning
+        if (wasRunning) {
+            onProgress("webui: 停止运行中的服务以更新…")
+            stop()
+        }
+        onProgress("webui: npm install -g hermes-web-ui@latest…")
+        val ok = serverMgr.runWithRetry(
+            maxAttempts = 3,
+            baseDelayMs = 3000L,
+            onProgress = onProgress,
+            what = "npm install -g hermes-web-ui@latest",
+        ) {
+            val code = processManager.runInProotExitCode(
+                "npm install -g $NPM_PACKAGE@latest 2>&1", 1200
+            ) { onProgress(it) }
+            code == 0 && isInstalled()
+        }
+        if (!ok) {
+            onProgress("错误：hermes-web-ui 更新失败")
+            return false
+        }
+        onProgress("✓ hermes-web-ui 更新完成")
+        return true
+    }
+
+    /**
      * 从 npmmirror 下载 Node.js 23 二进制 tarball，解压到 /usr/local。
      *
      * Ubuntu 24.04 apt 只有 Node.js 18.x，但 hermes-web-ui 要求 >=23。

@@ -46,16 +46,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusDetail: TextView
     private lateinit var stepsContainer: LinearLayout
     private lateinit var btnProot: Button
-    private lateinit var btnPython: Button
-    private lateinit var btnBuildDeps: Button
+    private lateinit var btnDeps: Button
     private lateinit var btnHermes: Button
+    private lateinit var btnWebUI: Button
     private lateinit var btnInstallAll: Button
     private lateinit var btnSaveEnv: View
     private lateinit var btnRestoreEnv: View
+    private lateinit var btnUpdateHermes: View
+    private lateinit var btnUpdateWebUI: View
     private lateinit var spinnerProot: ProgressBar
-    private lateinit var spinnerPython: ProgressBar
-    private lateinit var spinnerBuildDeps: ProgressBar
+    private lateinit var spinnerDeps: ProgressBar
     private lateinit var spinnerHermes: ProgressBar
+    private lateinit var spinnerWebUI: ProgressBar
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private lateinit var logPanel: View
@@ -113,16 +115,18 @@ class MainActivity : AppCompatActivity() {
         statusDetail = findViewById(R.id.statusDetail)
         stepsContainer = findViewById(R.id.stepsContainer)
         btnProot = findViewById(R.id.btnProot)
-        btnPython = findViewById(R.id.btnPython)
-        btnBuildDeps = findViewById(R.id.btnBuildDeps)
+        btnDeps = findViewById(R.id.btnDeps)
         btnHermes = findViewById(R.id.btnHermes)
+        btnWebUI = findViewById(R.id.btnWebUI)
         btnInstallAll = findViewById(R.id.btnInstallAll)
         btnSaveEnv = findViewById(R.id.btnSaveEnv)
         btnRestoreEnv = findViewById(R.id.btnRestoreEnv)
+        btnUpdateHermes = findViewById(R.id.btnUpdateHermes)
+        btnUpdateWebUI = findViewById(R.id.btnUpdateWebUI)
         spinnerProot = findViewById(R.id.spinnerProot)
-        spinnerPython = findViewById(R.id.spinnerPython)
-        spinnerBuildDeps = findViewById(R.id.spinnerBuildDeps)
+        spinnerDeps = findViewById(R.id.spinnerDeps)
         spinnerHermes = findViewById(R.id.spinnerHermes)
+        spinnerWebUI = findViewById(R.id.spinnerWebUI)
         logView = findViewById(R.id.logView)
         logScroll = findViewById(R.id.logScroll)
         logPanel = findViewById(R.id.logPanel)
@@ -189,12 +193,14 @@ class MainActivity : AppCompatActivity() {
         refreshNavTabs()
 
         btnProot.setOnClickListener { runStep("proot") }
-        btnPython.setOnClickListener { runStep("python") }
-        btnBuildDeps.setOnClickListener { runStep("buildDeps") }
+        btnDeps.setOnClickListener { runStep("deps") }
         btnHermes.setOnClickListener { runStep("hermes") }
+        btnWebUI.setOnClickListener { runStep("webui") }
         btnInstallAll.setOnClickListener { runInstallAll() }
         btnSaveEnv.setOnClickListener { onSaveEnvClicked() }
         btnRestoreEnv.setOnClickListener { onRestoreEnvClicked() }
+        btnUpdateHermes.setOnClickListener { onUpdateHermesClicked() }
+        btnUpdateWebUI.setOnClickListener { onUpdateWebUIClicked() }
 
         openShellButton.setOnClickListener {
             // 新架构（proot+rootfs）下 app 自带完整 Linux 环境，
@@ -402,14 +408,14 @@ class MainActivity : AppCompatActivity() {
         bottomNav.selectedItemId = R.id.nav_install
         // Dim ALL buttons (alpha, NOT isEnabled=false, so they stay visible)
         btnProot.alpha = 0.35f
-        btnPython.alpha = 0.35f
-        btnBuildDeps.alpha = 0.35f
+        btnDeps.alpha = 0.35f
         btnHermes.alpha = 0.35f
+        btnWebUI.alpha = 0.35f
         btnInstallAll.alpha = 0.35f
         btnProot.isEnabled = false
-        btnPython.isEnabled = false
-        btnBuildDeps.isEnabled = false
+        btnDeps.isEnabled = false
         btnHermes.isEnabled = false
+        btnWebUI.isEnabled = false
         btnInstallAll.isEnabled = false
         // Show the overall progress bar, seeded with however many of the 4
         // steps are already complete before this run begins.
@@ -444,9 +450,9 @@ class MainActivity : AppCompatActivity() {
                 beginStepProgress(step)
                 when (step) {
                     "proot" -> installProot()
-                    "python" -> installPython()
-                    "buildDeps" -> installBuildDeps()
+                    "deps" -> installDeps()
                     "hermes" -> installHermes()
+                    "webui" -> installWebUI()
                 }
                 completeStepProgress(step)
                 if (allStepsDone()) applyProgressUi(100, getString(R.string.progress_done))
@@ -478,20 +484,20 @@ class MainActivity : AppCompatActivity() {
                     installProot()
                     completeStepProgress("proot")
                 }
-                if (!serverManager.isPythonInstalled()) {
-                    beginStepProgress("python")
-                    installPython()
-                    completeStepProgress("python")
-                }
-                if (!isBuildDepsInstalled()) {
-                    beginStepProgress("buildDeps")
-                    installBuildDeps()
-                    completeStepProgress("buildDeps")
+                if (!serverManager.isPythonInstalled() || !isBuildDepsInstalled()) {
+                    beginStepProgress("deps")
+                    installDeps()
+                    completeStepProgress("deps")
                 }
                 if (!serverManager.isHermesInstalled()) {
                     beginStepProgress("hermes")
                     installHermes()
                     completeStepProgress("hermes")
+                }
+                if (!studioInstaller.isInstalled()) {
+                    beginStepProgress("webui")
+                    installWebUI()
+                    completeStepProgress("webui")
                 }
                 applyProgressUi(100, getString(R.string.progress_done))
                 runOnUiThread {
@@ -519,17 +525,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     @Throws(Exception::class)
-    private fun installPython() {
-        val ok = serverManager.installPython { msg -> appendLog(msg) }
-        if (!ok) throw RuntimeException("Failed to install Python")
-        appendLog("✓ Python 已安装")
-    }
-
-    @Throws(Exception::class)
-    private fun installBuildDeps() {
-        val ok = serverManager.installHermesBuildDeps { msg -> appendLog(msg) }
-        if (!ok) throw RuntimeException("Failed to install build dependencies")
-        appendLog("✓ build deps 已安装")
+    private fun installDeps() {
+        val ok = serverManager.installDependencies { msg -> appendLog(msg) }
+        if (!ok) throw RuntimeException("Failed to install dependencies")
+        appendLog("✓ 依赖已安装（Python + build deps）")
     }
 
     @Throws(Exception::class)
@@ -557,6 +556,13 @@ class MainActivity : AppCompatActivity() {
         // 不再调 healthCheck —— installHermes 内部已用 `hermes --version`
         // 验证过，重复跑只浪费时间和日志行。
         appendLog("✓ Hermes Agent 已安装")
+    }
+
+    @Throws(Exception::class)
+    private fun installWebUI() {
+        val ok = studioInstaller.install { msg -> appendLog(msg) }
+        if (!ok) throw RuntimeException("Failed to install hermes-web-ui")
+        appendLog("✓ WebUI 已安装")
     }
 
     // ── Environment backup / restore ───────────────────────────────────────
@@ -621,7 +627,91 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 在后台线程执行环境备份。进度通过 indeterminate ProgressDialog +
+     * 更新 Hermes Agent：git pull + pip install。后台执行 + 进度弹窗。
+     */
+    private fun onUpdateHermesClicked() {
+        if (!tryAcquireInstallLock()) return
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.settings_update_hermes),
+            message = "正在更新 Hermes Agent…",
+            onCancel = { activeThread?.interrupt() },
+        )
+        activeThread = Thread {
+            try {
+                val ok = serverManager.updateHermes { msg ->
+                    runOnUiThread { styled.messageView.text = msg }
+                    appendLog("[update-hermes] $msg")
+                }
+                runOnUiThread {
+                    styled.dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    if (ok) {
+                        Toast.makeText(this, "✓ Hermes 已更新", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this, "更新失败，详见日志", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Hermes update failed", e)
+                runOnUiThread {
+                    styled.dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    Toast.makeText(this, "更新失败：${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.also { it.start() }
+    }
+
+    /**
+     * 更新 WebUI：npm install -g hermes-web-ui@latest。后台执行 + 进度弹窗。
+     * 如果服务在运行，更新后自动重启。
+     */
+    private fun onUpdateWebUIClicked() {
+        if (!tryAcquireInstallLock()) return
+        val wasRunning = studioInstaller.isRunning
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.settings_update_webui),
+            message = "正在更新 WebUI…",
+            onCancel = { activeThread?.interrupt() },
+        )
+        activeThread = Thread {
+            try {
+                val ok = studioInstaller.update { msg ->
+                    runOnUiThread { styled.messageView.text = msg }
+                    appendLog("[update-webui] $msg")
+                }
+                runOnUiThread {
+                    styled.dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    if (ok) {
+                        refreshStepButtons()
+                        // 如果更新前服务在运行，更新后自动重启
+                        if (wasRunning) {
+                            appendLog("[update-webui] 服务之前在运行，重启中…")
+                            startChatServer()
+                        }
+                        Toast.makeText(this, "✓ WebUI 已更新", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this, "更新失败，详见日志", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "WebUI update failed", e)
+                runOnUiThread {
+                    styled.dialog.dismiss()
+                    activeProgressDialog = null
+                    releaseInstallLock()
+                    Toast.makeText(this, "更新失败：${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.also { it.start() }
+    }
+
+    /**
+     * 在后台线程执行环境备份。进度通过 styled progress dialog +
      * 日志页同步显示。完成后弹 toast 告知结果。
      */
     private fun runEnvBackup(targetUri: Uri) {
@@ -725,25 +815,15 @@ class MainActivity : AppCompatActivity() {
         }
         spinnerProot.visibility = View.GONE
 
-        val pythonDone = serverManager.isPythonInstalled()
-        btnPython.text = if (pythonDone) getString(R.string.step_done) else getString(R.string.step_python)
-        btnPython.isEnabled = !pythonDone && !isInstallInProgress
-        btnPython.alpha = when {
-            pythonDone -> 0.6f
-            isInstallInProgress -> 0.35f
-            else -> 1f
-        }
-        spinnerPython.visibility = View.GONE
-
-        val depsDone = isBuildDepsInstalled()
-        btnBuildDeps.text = if (depsDone) getString(R.string.step_done) else getString(R.string.step_build_deps)
-        btnBuildDeps.isEnabled = !depsDone && !isInstallInProgress
-        btnBuildDeps.alpha = when {
+        val depsDone = serverManager.isPythonInstalled() && isBuildDepsInstalled()
+        btnDeps.text = if (depsDone) getString(R.string.step_done) else getString(R.string.step_deps)
+        btnDeps.isEnabled = !depsDone && !isInstallInProgress
+        btnDeps.alpha = when {
             depsDone -> 0.6f
             isInstallInProgress -> 0.35f
             else -> 1f
         }
-        spinnerBuildDeps.visibility = View.GONE
+        spinnerDeps.visibility = View.GONE
 
         val hermesDone = serverManager.isHermesInstalled()
         btnHermes.text = if (hermesDone) getString(R.string.step_done) else getString(R.string.step_hermes)
@@ -755,7 +835,17 @@ class MainActivity : AppCompatActivity() {
         }
         spinnerHermes.visibility = View.GONE
 
-        val allDone = prootDone && pythonDone && depsDone && hermesDone
+        val webuiDone = studioInstaller.isInstalled()
+        btnWebUI.text = if (webuiDone) getString(R.string.step_done) else getString(R.string.step_webui)
+        btnWebUI.isEnabled = !webuiDone && !isInstallInProgress
+        btnWebUI.alpha = when {
+            webuiDone -> 0.6f
+            isInstallInProgress -> 0.35f
+            else -> 1f
+        }
+        spinnerWebUI.visibility = View.GONE
+
+        val allDone = prootDone && depsDone && hermesDone && webuiDone
         btnInstallAll.isEnabled = !allDone && !isInstallInProgress
         btnInstallAll.text = if (allDone) getString(R.string.step_done) else getString(R.string.step_install_all)
         btnInstallAll.alpha = when {
@@ -784,9 +874,9 @@ class MainActivity : AppCompatActivity() {
     private fun setStepButtonState(step: String, installing: Boolean) {
         val (btn, spinner) = when (step) {
             "proot" -> btnProot to spinnerProot
-            "python" -> btnPython to spinnerPython
-            "buildDeps" -> btnBuildDeps to spinnerBuildDeps
+            "deps" -> btnDeps to spinnerDeps
             "hermes" -> btnHermes to spinnerHermes
+            "webui" -> btnWebUI to spinnerWebUI
             else -> return
         }
         btn.isEnabled = !installing
@@ -810,6 +900,7 @@ class MainActivity : AppCompatActivity() {
                 && serverManager.isPythonInstalled()
                 && isBuildDepsInstalled()
                 && serverManager.isHermesInstalled()
+                && studioInstaller.isInstalled()
     }
 
     // ── Screen transitions ──────────────────────────────────────────────────
@@ -1172,9 +1263,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun stepLabel(step: String): String = when (step) {
         "proot" -> getString(R.string.step_proot)
-        "python" -> getString(R.string.step_python)
-        "buildDeps" -> getString(R.string.step_build_deps)
+        "deps" -> getString(R.string.step_deps)
         "hermes" -> getString(R.string.step_hermes)
+        "webui" -> getString(R.string.step_webui)
         else -> getString(R.string.progress_starting)
     }
 
@@ -1220,12 +1311,11 @@ class MainActivity : AppCompatActivity() {
     private var lastProgressTime = 0L
 
     // ── Sub-step progress (live progress bar within each step) ──────────────
-    // Band allocation is proportional to ACTUAL measured install time under
-    // the new proot+rootfs architecture:
-    //   proot     ~1-2min   → 0–30%   (Ubuntu rootfs 28MB download + extract)
-    //   python    ~1-2min   → 30–45%  (apt-get update + install python3)
-    //   buildDeps ~2-3min   → 45–60%  (apt-get install build-essential + libs)
-    //   hermes    5-15min   → 60–100% (git clone + venv + pip install)
+    // Band allocation is proportional to ACTUAL measured install time:
+    //   proot  ~1-2min   → 0–25%   (Ubuntu rootfs download + extract)
+    //   deps   ~3-5min   → 25–50%  (apt-get install python + build-essential)
+    //   hermes ~5-15min  → 50–80%  (git clone + venv + pip install)
+    //   webui  ~2-5min   → 80–100% (node.js + npm install hermes-web-ui)
     // On step start, the bar jumps to bandStart + 1 (visible "started"
     // movement). The heartbeat tick below nudges it +1 every 5s, capping at
     // bandEnd - 1 so the bar never reaches the step's full band until the
@@ -1236,10 +1326,10 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var currentStepPct = 0
 
     private fun stepBand(step: String): Pair<Int, Int> = when (step) {
-        "proot" -> 0 to 30
-        "python" -> 30 to 45
-        "buildDeps" -> 45 to 60
-        "hermes" -> 60 to 100
+        "proot" -> 0 to 25
+        "deps" -> 25 to 50
+        "hermes" -> 50 to 80
+        "webui" -> 80 to 100
         else -> 0 to 100
     }
 

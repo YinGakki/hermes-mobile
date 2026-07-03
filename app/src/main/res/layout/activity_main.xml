@@ -157,7 +157,7 @@
                             android:visibility="gone" />
                     </LinearLayout>
 
-                    <!-- Step 2: python -->
+                    <!-- Step 2: deps (python + build deps merged) -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -166,18 +166,18 @@
                         android:layout_marginTop="4dp">
 
                         <Button
-                            android:id="@+id/btnPython"
+                            android:id="@+id/btnDeps"
                             android:layout_width="0dp"
                             android:layout_weight="1"
                             android:layout_height="wrap_content"
-                            android:text="@string/step_python"
+                            android:text="@string/step_deps"
                             android:textColor="#e2e8f0"
                             android:background="@drawable/step_button_bg"
                             android:padding="12dp"
                             android:layout_marginEnd="8dp" />
 
                         <ProgressBar
-                            android:id="@+id/spinnerPython"
+                            android:id="@+id/spinnerDeps"
                             android:layout_width="24dp"
                             android:layout_height="24dp"
                             android:indeterminate="true"
@@ -185,35 +185,7 @@
                             android:visibility="gone" />
                     </LinearLayout>
 
-                    <!-- Step 3: build deps -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical"
-                        android:layout_marginTop="4dp">
-
-                        <Button
-                            android:id="@+id/btnBuildDeps"
-                            android:layout_width="0dp"
-                            android:layout_weight="1"
-                            android:layout_height="wrap_content"
-                            android:text="@string/step_build_deps"
-                            android:textColor="#e2e8f0"
-                            android:background="@drawable/step_button_bg"
-                            android:padding="12dp"
-                            android:layout_marginEnd="8dp" />
-
-                        <ProgressBar
-                            android:id="@+id/spinnerBuildDeps"
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:indeterminate="true"
-                            android:indeterminateTint="#818cf8"
-                            android:visibility="gone" />
-                    </LinearLayout>
-
-                    <!-- Step 4: hermes -->
+                    <!-- Step 3: hermes -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -234,6 +206,34 @@
 
                         <ProgressBar
                             android:id="@+id/spinnerHermes"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:indeterminate="true"
+                            android:indeterminateTint="#818cf8"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <!-- Step 4: webui (node.js + hermes-web-ui) -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginTop="4dp">
+
+                        <Button
+                            android:id="@+id/btnWebUI"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="wrap_content"
+                            android:text="@string/step_webui"
+                            android:textColor="#e2e8f0"
+                            android:background="@drawable/step_button_bg"
+                            android:padding="12dp"
+                            android:layout_marginEnd="8dp" />
+
+                        <ProgressBar
+                            android:id="@+id/spinnerWebUI"
                             android:layout_width="24dp"
                             android:layout_height="24dp"
                             android:indeterminate="true"
@@ -805,6 +805,131 @@
                             android:textSize="15sp"
                             android:textStyle="bold" />
                     </LinearLayout>
+                </LinearLayout>
+
+                <!-- Update section -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginTop="16dp"
+                    android:layout_marginBottom="8dp"
+                    android:text="@string/settings_updates"
+                    android:textColor="#64748b"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.1" />
+
+                <LinearLayout
+                    android:id="@+id/btnUpdateHermes"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="@drawable/card_bg_clickable"
+                    android:padding="16dp"
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <LinearLayout
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:gravity="center"
+                        android:background="@drawable/icon_tile_bg">
+
+                        <ImageView
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:src="@drawable/ic_refresh"
+                            android:contentDescription="@null" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/settings_update_hermes"
+                            android:textColor="#e2e8f0"
+                            android:textSize="15sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="@string/settings_update_hermes_subtitle"
+                            android:textColor="#94a3b8"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_chevron"
+                        android:contentDescription="@null" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/btnUpdateWebUI"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="@drawable/card_bg_clickable"
+                    android:padding="16dp"
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <LinearLayout
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:gravity="center"
+                        android:background="@drawable/icon_tile_bg">
+
+                        <ImageView
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:src="@drawable/ic_refresh"
+                            android:contentDescription="@null" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/settings_update_webui"
+                            android:textColor="#e2e8f0"
+                            android:textSize="15sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="@string/settings_update_webui_subtitle"
+                            android:textColor="#94a3b8"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_chevron"
+                        android:contentDescription="@null" />
                 </LinearLayout>
 
                 <!-- Maintenance section -->
