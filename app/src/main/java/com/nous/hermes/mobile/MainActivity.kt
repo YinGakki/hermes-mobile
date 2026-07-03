@@ -891,13 +891,27 @@ class MainActivity : AppCompatActivity() {
                     styled.dialog.dismiss()
                     activeProgressDialog = null
                     if (ok) openChatWebView() else {
-                        // 显示真实的服务器输出，便于用户反馈
+                        // 优先读取 hermes-web-ui 的 server.log（含真实错误原因），
+                        // 其次显示进程 stdout 输出
+                        val serverLog = studioInstaller.getServerLog()?.trim()
                         val raw = studioInstaller.getRecentOutput().trim()
-                        val detail = if (raw.isNotEmpty()) {
-                            getString(R.string.chat_start_failed) + "\n\n服务器输出（最后 200 行）：\n" +
-                                raw
-                        } else {
-                            getString(R.string.chat_start_failed) + "\n\n（无服务器输出，可能 hermes-web-ui 启动即崩溃）"
+                        val detail = buildString {
+                            append(getString(R.string.chat_start_failed))
+                            if (!serverLog.isNullOrEmpty()) {
+                                append("\n\n═══ server.log（真实错误日志）═══\n")
+                                append(serverLog)
+                            }
+                            if (raw.isNotEmpty()) {
+                                append("\n\n═══ 进程输出（最后 200 行）═══\n")
+                                append(raw)
+                            }
+                            if (serverLog.isNullOrEmpty() && raw.isEmpty()) {
+                                append("\n\n（无服务器输出，可能 hermes-web-ui 启动即崩溃）")
+                            }
+                        }
+                        appendLog("[error] hermes-web-ui 启动失败")
+                        if (!serverLog.isNullOrEmpty()) {
+                            appendLog("[error] server.log:\n$serverLog")
                         }
                         MaterialAlertDialogBuilder(this)
                             .setTitle(R.string.error_title)

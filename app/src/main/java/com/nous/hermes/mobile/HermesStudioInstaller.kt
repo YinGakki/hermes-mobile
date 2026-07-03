@@ -77,6 +77,25 @@ class HermesStudioInstaller(private val context: Context) {
         recentOutput.joinToString("\n")
     }
 
+    /**
+     * 读取 hermes-web-ui 的 server.log（npm 包内部写入的真实错误日志）。
+     *
+     * hermes-web-ui 启动失败时会提示 "Check log: /root/.hermes-web-ui/server.log"，
+     * 这个文件在 proot rootfs 内，对应 host 路径 ${rootfsDir}/root/.hermes-web-ui/server.log。
+     * 返回文件内容（最后 200 行），文件不存在时返回 null。
+     */
+    fun getServerLog(): String? {
+        // proot 内 /root/.hermes-web-ui/server.log → host rootfsDir/root/.hermes-web-ui/server.log
+        val logFile = File(paths.rootfsDir, "root/.hermes-web-ui/server.log")
+        if (!logFile.exists() || !logFile.isFile) return null
+        return try {
+            logFile.readLines().takeLast(200).joinToString("\n")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read server.log: ${e.message}")
+            null
+        }
+    }
+
     val isRunning: Boolean
         get() = checkServerHealth()
 
