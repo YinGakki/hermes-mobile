@@ -77,9 +77,17 @@
     <string name="dashboard_not_ready_subtitle">请先在「安装」页完成 Hermes Agent 安装</string>
     <string name="card_open_shell_title">打开终端</string>
     <string name="card_open_shell_subtitle">查看 Hermes 使用方法</string>
+    <string name="card_service_start_title">启动服务</string>
+    <string name="card_service_start_subtitle">启动 hermes-web-ui Web 仪表盘</string>
+    <string name="card_service_stop_title">停止服务</string>
+    <string name="card_service_stop_subtitle">停止 hermes-web-ui 释放内存</string>
+    <string name="card_service_starting">正在启动服务…</string>
+    <string name="card_service_stopping">正在停止服务…</string>
     <string name="card_open_chat_title">聊天界面</string>
     <string name="card_open_chat_subtitle_install">安装 hermes-web-ui (npm, ~30MB)</string>
     <string name="card_open_chat_subtitle_open">打开 Hermes Web 聊天界面</string>
+    <string name="card_open_chat_subtitle_stopped">服务未运行，请先启动</string>
+    <string name="card_open_chat_subtitle_running">点击打开 Web 聊天界面</string>
     <string name="card_rerun_title">重新运行安装</string>
     <string name="card_rerun_subtitle">重新执行 bootstrap 和安装步骤</string>
     <string name="dashboard_version">Hermes Agent v%1$s</string>

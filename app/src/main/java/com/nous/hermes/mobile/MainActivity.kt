@@ -66,6 +66,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var dashboardReady: View
     private lateinit var dashboardNotReady: View
     private lateinit var openShellButton: View
+    private lateinit var serviceToggleButton: View
+    private lateinit var serviceToggleTitle: TextView
+    private lateinit var serviceToggleSubtitle: TextView
     private lateinit var chatButton: View
     private lateinit var retryButton: View
     private lateinit var chatCardTitle: TextView
@@ -130,6 +133,9 @@ class MainActivity : AppCompatActivity() {
         dashboardReady = findViewById(R.id.dashboardReady)
         dashboardNotReady = findViewById(R.id.dashboardNotReady)
         openShellButton = findViewById(R.id.openShellButton)
+        serviceToggleButton = findViewById(R.id.serviceToggleButton)
+        serviceToggleTitle = findViewById(R.id.serviceToggleTitle)
+        serviceToggleSubtitle = findViewById(R.id.serviceToggleSubtitle)
         chatButton = findViewById(R.id.chatButton)
         retryButton = findViewById(R.id.retryButton)
         chatCardTitle = findViewById(R.id.chatCardTitle)
@@ -195,6 +201,7 @@ class MainActivity : AppCompatActivity() {
             // 不再需要跳转 Termux。直接显示使用说明。
             showShellInstructions()
         }
+        serviceToggleButton.setOnClickListener { onServiceToggleClicked() }
         chatButton.setOnClickListener { onChatButtonClicked() }
         retryButton.setOnClickListener { restartFromBootstrap() }
 
@@ -307,14 +314,27 @@ class MainActivity : AppCompatActivity() {
      * Show the "ready" header if Hermes is installed, otherwise the
      * "not ready" placeholder. The quick-action cards are hidden until
      * installation completes so users don't tap actions that can't work.
+     * Service toggle card label updates based on whether service is running.
      */
     private fun refreshDashboardState() {
         val installed = serverManager.isHermesInstalled()
+        val running = studioInstaller.isRunning
         dashboardReady.visibility = if (installed) View.VISIBLE else View.GONE
         dashboardNotReady.visibility = if (installed) View.GONE else View.VISIBLE
         openShellButton.visibility = if (installed) View.VISIBLE else View.GONE
+        serviceToggleButton.visibility = if (installed) View.VISIBLE else View.GONE
         chatButton.visibility = if (installed) View.VISIBLE else View.GONE
         retryButton.visibility = if (installed) View.VISIBLE else View.GONE
+        // Service toggle: start ↔ stop
+        if (running) {
+            serviceToggleTitle.text = getString(R.string.card_service_stop_title)
+            serviceToggleSubtitle.text = getString(R.string.card_service_stop_subtitle)
+            chatCardSubtitle.text = getString(R.string.card_open_chat_subtitle_running)
+        } else {
+            serviceToggleTitle.text = getString(R.string.card_service_start_title)
+            serviceToggleSubtitle.text = getString(R.string.card_service_start_subtitle)
+            chatCardSubtitle.text = getString(R.string.card_open_chat_subtitle_stopped)
+        }
     }
 
     private fun extractBootstrap() {
@@ -830,7 +850,109 @@ class MainActivity : AppCompatActivity() {
             installChatUi()
             return
         }
-        startChatServerAndOpen()
+        if (!studioInstaller.isRunning) {
+            Toast.makeText(this, R.string.card_open_chat_subtitle_stopped, Toast.LENGTH_SHORT).show()
+            return
+        }
+        openChatWebView()
+    }
+
+    /**
+     * 服务启停切换：运行中→停止，已停止→启动。
+     * hermes-web-ui 必须已安装才能启动（否则提示先安装）。
+     */
+    private fun onServiceToggleClicked() {
+        if (studioInstaller.isRunning) {
+            stopChatServer()
+        } else {
+            if (!studioInstaller.isInstalled()) {
+                installChatUi()
+                return
+            }
+            startChatServer()
+        }
+    }
+
+    /**
+     * 启动服务（不自动打开 WebView）。用户可之后点"聊天界面"打开。
+     */
+    private fun startChatServer() {
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.card_service_start_title),
+            message = getString(R.string.chat_starting),
+        )
+        Thread {
+            val ok = studioInstaller.start { msg ->
+                runOnUiThread {
+                    if (!isFinishing) {
+                        styled.messageView.text = msg
+                        appendLog(msg)
+                    }
+                }
+            }
+            runOnUiThread {
+                if (!isFinishing) {
+                    styled.dialog.dismiss()
+                    activeProgressDialog = null
+                    refreshDashboardState()
+                    if (ok) {
+                        Toast.makeText(this, "✓ 服务已启动", Toast.LENGTH_SHORT).show()
+                    } else {
+                        // 显示真实的服务器输出 + server.log
+                        val serverLog = studioInstaller.getServerLog()?.trim()
+                        val raw = studioInstaller.getRecentOutput().trim()
+                        val detail = buildString {
+                            append(getString(R.string.chat_start_failed))
+                            if (!serverLog.isNullOrEmpty()) {
+                                append("\n\n═══ server.log ═══\n")
+                                append(serverLog)
+                            }
+                            if (raw.isNotEmpty()) {
+                                append("\n\n═══ 进程输出 ═══\n")
+                                append(raw)
+                            }
+                        }
+                        appendLog("[error] hermes-web-ui 启动失败")
+                        if (!serverLog.isNullOrEmpty()) {
+                            appendLog("[error] server.log:\n$serverLog")
+                        }
+                        MaterialAlertDialogBuilder(this)
+                            .setTitle(R.string.error_title)
+                            .setMessage(detail)
+                            .setPositiveButton(R.string.retry) { _, _ -> startChatServer() }
+                            .setNegativeButton(R.string.action_copy_error) { _, _ ->
+                                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("hermes_error", detail))
+                                Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+                            }
+                            .setNeutralButton(R.string.cancel, null)
+                            .setCancelable(false)
+                            .show()
+                    }
+                }
+            }
+        }.also { activeThread = it; it.start() }
+    }
+
+    /**
+     * 停止服务。
+     */
+    private fun stopChatServer() {
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.card_service_stop_title),
+            message = getString(R.string.card_service_stopping),
+        )
+        Thread {
+            studioInstaller.stop()
+            runOnUiThread {
+                if (!isFinishing) {
+                    styled.dialog.dismiss()
+                    activeProgressDialog = null
+                    refreshDashboardState()
+                    Toast.makeText(this, "✓ 服务已停止", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.also { activeThread = it; it.start() }
     }
 
     private fun installChatUi() {
@@ -853,7 +975,9 @@ class MainActivity : AppCompatActivity() {
                     activeProgressDialog = null
                     if (ok) {
                         updateChatButtonLabel()
-                        startChatServerAndOpen()
+                        refreshDashboardState()
+                        // 安装完成后自动启动服务
+                        startChatServer()
                     } else {
                         MaterialAlertDialogBuilder(this)
                             .setTitle(R.string.error_title)
@@ -868,68 +992,6 @@ class MainActivity : AppCompatActivity() {
         }.also { activeThread = it; it.start() }
     }
 
-    private fun startChatServerAndOpen() {
-        if (studioInstaller.isRunning) {
-            openChatWebView()
-            return
-        }
-        val styled = showStyledProgressDialog(
-            title = getString(R.string.action_open_chat),
-            message = getString(R.string.chat_starting),
-        )
-        Thread {
-            val ok = studioInstaller.start { msg ->
-                runOnUiThread {
-                    if (!isFinishing) {
-                        styled.messageView.text = msg
-                        appendLog(msg)
-                    }
-                }
-            }
-            runOnUiThread {
-                if (!isFinishing) {
-                    styled.dialog.dismiss()
-                    activeProgressDialog = null
-                    if (ok) openChatWebView() else {
-                        // 优先读取 hermes-web-ui 的 server.log（含真实错误原因），
-                        // 其次显示进程 stdout 输出
-                        val serverLog = studioInstaller.getServerLog()?.trim()
-                        val raw = studioInstaller.getRecentOutput().trim()
-                        val detail = buildString {
-                            append(getString(R.string.chat_start_failed))
-                            if (!serverLog.isNullOrEmpty()) {
-                                append("\n\n═══ server.log（真实错误日志）═══\n")
-                                append(serverLog)
-                            }
-                            if (raw.isNotEmpty()) {
-                                append("\n\n═══ 进程输出（最后 200 行）═══\n")
-                                append(raw)
-                            }
-                            if (serverLog.isNullOrEmpty() && raw.isEmpty()) {
-                                append("\n\n（无服务器输出，可能 hermes-web-ui 启动即崩溃）")
-                            }
-                        }
-                        appendLog("[error] hermes-web-ui 启动失败")
-                        if (!serverLog.isNullOrEmpty()) {
-                            appendLog("[error] server.log:\n$serverLog")
-                        }
-                        MaterialAlertDialogBuilder(this)
-                            .setTitle(R.string.error_title)
-                            .setMessage(detail)
-                            .setPositiveButton(R.string.retry) { _, _ -> startChatServerAndOpen() }
-                            .setNegativeButton(R.string.action_copy_error) { _, _ ->
-                                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("hermes_error", detail))
-                                Toast.makeText(this, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
-                            }
-                            .setNeutralButton(R.string.cancel, null)
-                            .setCancelable(false)
-                            .show()
-                    }
-                }
-            }
-        }.also { activeThread = it; it.start() }
-    }
 
     private fun openChatWebView() {
         val intent = Intent(this, ChatActivity::class.java).apply {

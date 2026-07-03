@@ -334,14 +334,21 @@ class HermesStudioInstaller(private val context: Context) {
      */
     private fun spawnStudioServer(onProgress: ((String) -> Unit)? = null) {
         stopStudioProcess()
-        // hermes-web-ui 监听 PORT 环境变量；在 proot 里前台运行（proot 进程
-        // 保持存活，--kill-on-exit 确保停止时清理子进程）。
+        // hermes-web-ui 监听 PORT 环境变量；在 proot 里运行。
         //
-        // 关键：hermes-web-ui 内部会 spawn('hermes', ['gateway','run','--replace'])
+        // 关键 1：hermes-web-ui 内部会 spawn('hermes', ['gateway','run','--replace'])
         // 调用 hermes CLI，但 hermes 装在 venv 里（/root/home/hermes-agent/.venv/bin），
         // 不在默认 PATH。必须把 venv bin 加到 PATH 最前面，否则 ENOENT。
+        //
+        // 关键 2：hermes-web-ui 是 daemonizing CLI —— CLI 启动服务后自己退出
+        // （code 0），实际服务作为子进程运行。如果用 exec hermes-web-ui，
+        // CLI 退出后 proot 进程也退出，--kill-on-exit 会杀掉服务子进程。
+        // 所以不用 exec，改为 hermes-web-ui; exec sleep infinity —— CLI 退出后
+        // bash 继续 sleep infinity，proot 进程保持存活，服务子进程（proot 的
+        // 孙子进程）继续运行。停止时 destroy proot 进程，--kill-on-exit 清理。
         val cmd = "PORT=$STUDIO_PORT NODE_ENV=production " +
-            "PATH=\"$HERMES_VENV_BIN:\$PATH\" exec hermes-web-ui 2>&1"
+            "PATH=\"$HERMES_VENV_BIN:\$PATH\" hermes-web-ui 2>&1; " +
+            "exec sleep infinity"
         val proc = processManager.startProotProcess(cmd)
         studioProcess = proc
         // 转发 stdout 到 logcat + 环形缓冲 + onProgress 回调
