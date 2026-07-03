@@ -127,8 +127,7 @@ hermes-android-apk/
 
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) — Nous Research，核心 AI Agent
 - [Hermes Studio](https://github.com/EKKOLearnAI/hermes-studio) — hermes-web-ui Web 仪表盘
-- [OpenClaw Termux](https://github.com/mithun50/openclaw-termux) — proot + Ubuntu rootfs 安卓方案参考
-- [AnyClaw](https://github.com/friuns2/openclaw-android-assistant) — 项目灵感来源
+- [OpenClaw Termux](https://github.com/mithun50/openclaw-termux) — 项目灵感来源，proot + Ubuntu rootfs 安卓方案
 - [proot](https://github.com/proot-me/proot) — 用户空间 rootfs
 
 ## License
