@@ -39,7 +39,6 @@ class MainActivity : AppCompatActivity() {
     // Views
     private lateinit var installPage: View
     private lateinit var dashboardPage: View
-    private lateinit var logsPage: View
     private lateinit var settingsPage: View
     private lateinit var bottomNav: BottomNavigationView
     private lateinit var progressBar: ProgressBar
@@ -59,6 +58,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spinnerHermes: ProgressBar
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
+    private lateinit var logPanel: View
+    private lateinit var logPanelTitle: TextView
+    private lateinit var btnToggleLog: Button
     private lateinit var btnClearLogs: Button
     private lateinit var btnCopyLogs: Button
     private lateinit var dashboardReady: View
@@ -89,8 +91,11 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile private var isInstallInProgress = false
     @Volatile private var activeThread: Thread? = null
-    private var activeProgressDialog: android.app.ProgressDialog? = null
+    private var activeProgressDialog: android.app.Dialog? = null
     private val recentLog = java.util.ArrayDeque<String>(30)
+    // 完整日志缓冲（不限大小），用于"显示全部"模式
+    private val fullLog = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    @Volatile private var showAllLogs = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,7 +103,6 @@ class MainActivity : AppCompatActivity() {
 
         installPage = findViewById(R.id.installPage)
         dashboardPage = findViewById(R.id.dashboardPage)
-        logsPage = findViewById(R.id.logsPage)
         settingsPage = findViewById(R.id.settingsPage)
         bottomNav = findViewById(R.id.bottomNav)
         progressBar = findViewById(R.id.progressBar)
@@ -118,6 +122,9 @@ class MainActivity : AppCompatActivity() {
         spinnerHermes = findViewById(R.id.spinnerHermes)
         logView = findViewById(R.id.logView)
         logScroll = findViewById(R.id.logScroll)
+        logPanel = findViewById(R.id.logPanel)
+        logPanelTitle = findViewById(R.id.logPanelTitle)
+        btnToggleLog = findViewById(R.id.btnToggleLog)
         btnClearLogs = findViewById(R.id.btnClearLogs)
         btnCopyLogs = findViewById(R.id.btnCopyLogs)
         dashboardReady = findViewById(R.id.dashboardReady)
@@ -143,7 +150,6 @@ class MainActivity : AppCompatActivity() {
             when (item.itemId) {
                 R.id.nav_install -> switchPage(installPage)
                 R.id.nav_dashboard -> switchPage(dashboardPage)
-                R.id.nav_logs -> switchPage(logsPage)
                 R.id.nav_settings -> switchPage(settingsPage)
             }
             true
@@ -192,13 +198,34 @@ class MainActivity : AppCompatActivity() {
         chatButton.setOnClickListener { onChatButtonClicked() }
         retryButton.setOnClickListener { restartFromBootstrap() }
 
-        // Logs page actions
+        // Logs panel actions (embedded in install page)
+        btnToggleLog.setOnClickListener {
+            showAllLogs = !showAllLogs
+            if (showAllLogs) {
+                btnToggleLog.text = getString(R.string.log_show_current)
+                logPanelTitle.text = getString(R.string.logs_copy_all)
+                logScroll.layoutParams.height = (resources.displayMetrics.heightPixels * 2 / 3)
+                rebuildFullLogView()
+            } else {
+                btnToggleLog.text = getString(R.string.log_show_all)
+                logPanelTitle.text = getString(R.string.log_current)
+                logScroll.layoutParams.height = (160 * resources.displayMetrics.density).toInt()
+                rebuildCurrentLogView()
+            }
+            logScroll.requestLayout()
+        }
         btnClearLogs.setOnClickListener {
+            synchronized(recentLog) { recentLog.clear() }
+            fullLog.clear()
             logView.text = ""
             Toast.makeText(this, R.string.logs_clear, Toast.LENGTH_SHORT).show()
         }
         btnCopyLogs.setOnClickListener {
-            val text = logView.text?.toString() ?: ""
+            val text = if (showAllLogs) {
+                fullLog.joinToString("\n")
+            } else {
+                synchronized(recentLog) { recentLog.joinToString("\n") }
+            }
             if (text.isBlank()) {
                 Toast.makeText(this, R.string.logs_empty, Toast.LENGTH_SHORT).show()
             } else {
@@ -255,7 +282,6 @@ class MainActivity : AppCompatActivity() {
     private fun switchPage(page: View) {
         installPage.visibility = if (page == installPage) View.VISIBLE else View.GONE
         dashboardPage.visibility = if (page == dashboardPage) View.VISIBLE else View.GONE
-        logsPage.visibility = if (page == logsPage) View.VISIBLE else View.GONE
         settingsPage.visibility = if (page == settingsPage) View.VISIBLE else View.GONE
         if (page == dashboardPage) refreshDashboardState()
         if (page == settingsPage) refreshStepButtons()
@@ -273,7 +299,6 @@ class MainActivity : AppCompatActivity() {
         val installed = serverManager.isHermesInstalled()
         val menu = bottomNav.menu
         menu.findItem(R.id.nav_install)?.isEnabled = true
-        menu.findItem(R.id.nav_logs)?.isEnabled = true
         menu.findItem(R.id.nav_dashboard)?.isEnabled = installed
         menu.findItem(R.id.nav_settings)?.isEnabled = true
     }
@@ -315,10 +340,13 @@ class MainActivity : AppCompatActivity() {
         switchPage(installPage)
         bottomNav.selectedItemId = R.id.nav_install
         stepsContainer.visibility = View.GONE
+        logPanel.visibility = View.GONE
         progressBar.visibility = View.VISIBLE
         statusText.visibility = View.VISIBLE
         statusText.text = getString(R.string.status_initializing)
         logView.text = ""
+        synchronized(recentLog) { recentLog.clear() }
+        fullLog.clear()
         // Disable Dashboard/Settings tabs again until install completes.
         refreshNavTabs()
         extractBootstrap()
@@ -329,6 +357,7 @@ class MainActivity : AppCompatActivity() {
         statusText.visibility = View.GONE
         statusDetail.visibility = View.GONE
         stepsContainer.visibility = View.VISIBLE
+        logPanel.visibility = View.VISIBLE
         refreshStepButtons()
         refreshNavTabs()
     }
@@ -420,6 +449,8 @@ class MainActivity : AppCompatActivity() {
         if (!tryAcquireInstallLock()) return
         btnInstallAll.text = getString(R.string.step_installing)
         logView.text = ""
+        synchronized(recentLog) { recentLog.clear() }
+        fullLog.clear()
         activeThread = Thread {
             try {
                 if (!serverManager.isProotInstalled()) {
@@ -575,27 +606,20 @@ class MainActivity : AppCompatActivity() {
      */
     private fun runEnvBackup(targetUri: Uri) {
         if (!tryAcquireInstallLock()) return
-        val dialog = android.app.ProgressDialog(this).apply {
-            setTitle(R.string.env_save_progress_title)
-            setMessage("正在打包环境…")
-            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
-            setCancelable(false)
-            setButton(android.app.ProgressDialog.BUTTON_NEGATIVE, getString(R.string.cancel)) { d, _ ->
-                activeThread?.interrupt()
-                d.dismiss()
-            }
-        }
-        dialog.show()
-        activeProgressDialog = dialog
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.env_save_progress_title),
+            message = "正在打包环境…",
+            onCancel = { activeThread?.interrupt() },
+        )
 
         activeThread = Thread {
             try {
                 val ok = envBackup.backup(targetUri) { msg ->
-                    runOnUiThread { dialog.setMessage(msg) }
+                    runOnUiThread { styled.messageView.text = msg }
                     appendLog("[backup] $msg")
                 }
                 runOnUiThread {
-                    dialog.dismiss()
+                    styled.dialog.dismiss()
                     activeProgressDialog = null
                     releaseInstallLock()
                     if (ok) {
@@ -607,7 +631,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "Env backup failed", e)
                 runOnUiThread {
-                    dialog.dismiss()
+                    styled.dialog.dismiss()
                     activeProgressDialog = null
                     releaseInstallLock()
                     Toast.makeText(this, "保存失败：${e.message}", Toast.LENGTH_LONG).show()
@@ -622,18 +646,11 @@ class MainActivity : AppCompatActivity() {
      */
     private fun runEnvRestore(sourceUri: Uri) {
         if (!tryAcquireInstallLock()) return
-        val dialog = android.app.ProgressDialog(this).apply {
-            setTitle(R.string.env_restore_progress_title)
-            setMessage("正在还原环境…")
-            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
-            setCancelable(false)
-            setButton(android.app.ProgressDialog.BUTTON_NEGATIVE, getString(R.string.cancel)) { d, _ ->
-                activeThread?.interrupt()
-                d.dismiss()
-            }
-        }
-        dialog.show()
-        activeProgressDialog = dialog
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.env_restore_progress_title),
+            message = "正在还原环境…",
+            onCancel = { activeThread?.interrupt() },
+        )
 
         activeThread = Thread {
             try {
@@ -646,11 +663,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val ok = envBackup.restore(sourceUri) { msg ->
-                    runOnUiThread { dialog.setMessage(msg) }
+                    runOnUiThread { styled.messageView.text = msg }
                     appendLog("[restore] $msg")
                 }
                 runOnUiThread {
-                    dialog.dismiss()
+                    styled.dialog.dismiss()
                     activeProgressDialog = null
                     releaseInstallLock()
                     if (ok) {
@@ -666,7 +683,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "Env restore failed", e)
                 runOnUiThread {
-                    dialog.dismiss()
+                    styled.dialog.dismiss()
                     activeProgressDialog = null
                     releaseInstallLock()
                     Toast.makeText(this, "还原失败：${e.message}", Toast.LENGTH_LONG).show()
@@ -778,14 +795,13 @@ class MainActivity : AppCompatActivity() {
     // ── Screen transitions ──────────────────────────────────────────────────
 
     private fun showDoneScreen() {
-        // Auto-switch to the Dashboard page after install completes.
-        // Keep the install page's step buttons visible (all marked "✓ 已安装")
-        // so users who navigate back to the Install tab don't see a blank page.
+        // 安装完成：保持安装页步骤按钮可见（显示"✓ 已安装"）+ 解锁导航。
+        // 不再自动跳转 dashboard —— 用户可手动切到仪表盘使用 Hermes。
         showSteps()
         refreshDashboardState()
         updateChatButtonLabel()
-        bottomNav.selectedItemId = R.id.nav_dashboard
-        switchPage(dashboardPage)
+        refreshNavTabs()
+        appendLog("✓ 全部安装完成！可切到「仪表盘」开始使用")
     }
 
     // ── Chat UI ─────────────────────────────────────────────────────────────
@@ -818,26 +834,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun installChatUi() {
-        val dialog = android.app.ProgressDialog(this).apply {
-            setMessage(getString(R.string.chat_installing))
-            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
-            isIndeterminate = true
-            setCancelable(false)
-            show()
-        }
-        activeProgressDialog = dialog
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.action_install_chat),
+            message = getString(R.string.chat_installing),
+        )
         Thread {
             val ok = studioInstaller.install { msg ->
                 runOnUiThread {
                     if (!isFinishing) {
-                        dialog.setMessage(msg)
+                        styled.messageView.text = msg
                         appendLog(msg)
                     }
                 }
             }
             runOnUiThread {
                 if (!isFinishing) {
-                    dialog.dismiss()
+                    styled.dialog.dismiss()
                     activeProgressDialog = null
                     if (ok) {
                         updateChatButtonLabel()
@@ -861,26 +873,22 @@ class MainActivity : AppCompatActivity() {
             openChatWebView()
             return
         }
-        val dialog = android.app.ProgressDialog(this).apply {
-            setMessage(getString(R.string.chat_starting))
-            setProgressStyle(android.app.ProgressDialog.STYLE_SPINNER)
-            isIndeterminate = true
-            setCancelable(false)
-            show()
-        }
-        activeProgressDialog = dialog
+        val styled = showStyledProgressDialog(
+            title = getString(R.string.action_open_chat),
+            message = getString(R.string.chat_starting),
+        )
         Thread {
             val ok = studioInstaller.start { msg ->
                 runOnUiThread {
                     if (!isFinishing) {
-                        dialog.setMessage(msg)
+                        styled.messageView.text = msg
                         appendLog(msg)
                     }
                 }
             }
             runOnUiThread {
                 if (!isFinishing) {
-                    dialog.dismiss()
+                    styled.dialog.dismiss()
                     activeProgressDialog = null
                     if (ok) openChatWebView() else {
                         // 显示真实的服务器输出，便于用户反馈
@@ -917,6 +925,43 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ── Dialogs ──────────────────────────────────────────────────────────────
+
+    /**
+     * 创建美化进度对话框（深色卡片样式，替换系统 ProgressDialog）。
+     * 返回 dialog 和 message TextView，调用方可通过 setMessage 更新消息。
+     */
+    private data class StyledProgressDialog(
+        val dialog: android.app.Dialog,
+        val messageView: TextView,
+        val titleView: TextView,
+    )
+
+    private fun showStyledProgressDialog(
+        title: String,
+        message: String,
+        onCancel: (() -> Unit)? = null,
+    ): StyledProgressDialog {
+        val dialog = android.app.Dialog(this)
+        dialog.setContentView(R.layout.dialog_progress)
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.setCancelable(false)
+        val titleView = dialog.findViewById<TextView>(R.id.progressDialogTitle)!!
+        val msgView = dialog.findViewById<TextView>(R.id.progressDialogMessage)!!
+        titleView.text = title
+        msgView.text = message
+        val cancelBtn = dialog.findViewById<Button>(R.id.progressDialogCancel)!!
+        if (onCancel != null) {
+            cancelBtn.setOnClickListener {
+                onCancel()
+                dialog.dismiss()
+            }
+        } else {
+            cancelBtn.visibility = View.GONE
+        }
+        dialog.show()
+        activeProgressDialog = dialog
+        return StyledProgressDialog(dialog, msgView, titleView)
+    }
 
     private fun showShellInstructions() {
         val paths = BootstrapManager.getPaths(this)
@@ -1064,16 +1109,34 @@ class MainActivity : AppCompatActivity() {
             if (pendingLogs.isEmpty()) {
                 return
             }
-            val sb = StringBuilder()
+            val newLines = mutableListOf<String>()
             var line = pendingLogs.poll()
             while (line != null) {
-                sb.append(line).append('\n')
+                newLines.add(line)
                 line = pendingLogs.poll()
             }
-            val text = sb.toString()
-            logView.append(text)
+            if (showAllLogs) {
+                // 全部模式：直接追加
+                val sb = StringBuilder()
+                newLines.forEach { sb.append(it).append('\n') }
+                logView.append(sb.toString())
+            } else {
+                // 当前模式：用最近 30 行重建，避免无限增长
+                rebuildCurrentLogView()
+            }
             logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
         }
+    }
+
+    /** 重建"当前操作"视图：只显示 recentLog 里的最近 30 行。 */
+    private fun rebuildCurrentLogView() {
+        val text = synchronized(recentLog) { recentLog.joinToString("\n") }
+        logView.text = if (text.isEmpty()) "" else text + "\n"
+    }
+
+    /** 重建"全部日志"视图：从 fullLog 重建。 */
+    private fun rebuildFullLogView() {
+        logView.text = fullLog.joinToString("\n").let { if (it.isEmpty()) "" else it + "\n" }
     }
 
     private val heartbeatHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -1188,13 +1251,12 @@ class MainActivity : AppCompatActivity() {
             recentLog.addLast(text)
             while (recentLog.size > 30) recentLog.pollFirst()
         }
+        fullLog.add(text)
+        // 限制 fullLog 大小，避免内存爆炸（保留最近 5000 行）
+        while (fullLog.size > 5000) fullLog.poll()
         lastProgressTime = System.currentTimeMillis()
         pendingLogs.add(text)
         // Drive progress bar by matching real install log output.
-        // Each line is checked against known milestones from actual
-        // device logs, and the bar jumps to the matching percentage.
-        // This is more accurate than a heartbeat timer because it
-        // reflects what's ACTUALLY happening, not just elapsed time.
         applyLogBasedProgress(text)
         // Batch flush every 200ms instead of per-line to avoid
         // flooding the main thread with UI updates

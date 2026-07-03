@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Bottom navigation menu: 4 tabs (Install / Dashboard / Logs / Settings).
-     Matches openclaw-termux's multi-screen navigation pattern. -->
+<!-- Bottom navigation menu: 3 tabs (Install / Dashboard / Settings).
+     Logs tab removed — log viewer is embedded in the Install page. -->
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item
         android:id="@+id/nav_install"
@@ -10,10 +10,6 @@
         android:id="@+id/nav_dashboard"
         android:icon="@drawable/ic_nav_dashboard"
         android:title="@string/tab_dashboard" />
-    <item
-        android:id="@+id/nav_logs"
-        android:icon="@drawable/ic_nav_logs"
-        android:title="@string/tab_logs" />
     <item
         android:id="@+id/nav_settings"
         android:icon="@drawable/ic_nav_settings"

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 美化的进度对话框：圆角卡片 + 标题 + 可变消息 + 进度条 + 取消按钮。
+     替换系统 ProgressDialog（在深色主题下样式不一致）。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/dialog_card_bg"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/progressDialogTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#e2e8f0"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <ProgressBar
+        android:id="@+id/progressDialogBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:layout_marginBottom="12dp"
+        android:indeterminate="true"
+        android:progressTint="#818cf8"
+        android:progressBackgroundTint="#1e293b" />
+
+    <TextView
+        android:id="@+id/progressDialogMessage"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#94a3b8"
+        android:textSize="14sp"
+        android:minHeight="48dp" />
+
+    <Button
+        android:id="@+id/progressDialogCancel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:layout_marginTop="16dp"
+        android:text="@string/cancel"
+        android:textColor="#818cf8"
+        android:background="?android:attr/selectableItemBackground"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:padding="8dp" />
+
+</LinearLayout>

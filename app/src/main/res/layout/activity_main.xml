@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Root: vertical layout — page container on top, bottom nav at bottom.
-     Multi-page navigation inspired by openclaw-termux's Dashboard/Logs/Settings
-     screen separation. Pages are toggled via visibility (no Fragment overhead). -->
+     Install page now embeds the log viewer (no separate Logs tab).
+     Before Hermes is installed, navigation is locked to the Install page. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
@@ -17,241 +17,348 @@
 
         <!-- ═══════════════════════════════════════════════════════════════
              PAGE 1: INSTALL
-             Bootstrap progress + step buttons + overall progress bar.
-             Logs are on a separate page now; this page auto-switches to the
-             Logs page when an install step starts running.
+             Bootstrap progress + step buttons + overall progress bar +
+             embedded log viewer + WebUI install card + restore env button.
              ═══════════════════════════════════════════════════════════════ -->
-        <LinearLayout
+        <ScrollView
             android:id="@+id/installPage"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:gravity="center_horizontal"
-            android:orientation="vertical"
-            android:padding="24dp">
+            android:fillViewport="true">
 
-            <!-- Bootstrap progress (hidden after bootstrap) -->
-            <ProgressBar
-                android:id="@+id/progressBar"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginTop="48dp"
-                android:indeterminate="true"
-                android:indeterminateTint="#818cf8" />
-
-            <TextView
-                android:id="@+id/statusText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/status_initializing"
-                android:textColor="#94a3b8"
-                android:textSize="16sp"
-                android:gravity="center" />
-
-            <TextView
-                android:id="@+id/statusDetail"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:textColor="#64748b"
-                android:textSize="13sp"
-                android:gravity="center"
-                android:visibility="gone" />
-
-            <!-- Step buttons (shown after bootstrap completes) -->
             <LinearLayout
-                android:id="@+id/stepsContainer"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:gravity="center"
-                android:layout_marginTop="16dp"
-                android:visibility="gone">
+                android:padding="20dp">
+
+                <!-- Bootstrap progress (hidden after bootstrap) -->
+                <ProgressBar
+                    android:id="@+id/progressBar"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="24dp"
+                    android:layout_gravity="center_horizontal"
+                    android:indeterminate="true"
+                    android:indeterminateTint="#818cf8" />
 
                 <TextView
+                    android:id="@+id/statusText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="@string/steps_title"
-                    android:textColor="#818cf8"
-                    android:textSize="18sp"
-                    android:textStyle="bold"
-                    android:layout_marginBottom="8dp" />
+                    android:layout_marginTop="16dp"
+                    android:layout_gravity="center_horizontal"
+                    android:text="@string/status_initializing"
+                    android:textColor="#94a3b8"
+                    android:textSize="16sp"
+                    android:gravity="center" />
 
-                <!-- Overall install progress (shown only while installing) -->
+                <TextView
+                    android:id="@+id/statusDetail"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:layout_gravity="center_horizontal"
+                    android:textColor="#64748b"
+                    android:textSize="13sp"
+                    android:gravity="center"
+                    android:visibility="gone" />
+
+                <!-- Step buttons (shown after bootstrap completes) -->
                 <LinearLayout
-                    android:id="@+id/installProgressContainer"
+                    android:id="@+id/stepsContainer"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:layout_marginBottom="12dp"
+                    android:gravity="center"
+                    android:layout_marginTop="16dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/steps_title"
+                        android:textColor="#818cf8"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp" />
+
+                    <!-- Overall install progress (shown only while installing) -->
+                    <LinearLayout
+                        android:id="@+id/installProgressContainer"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:layout_marginBottom="12dp"
+                        android:visibility="gone">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <TextView
+                                android:id="@+id/progressStepLabel"
+                                android:layout_width="0dp"
+                                android:layout_weight="1"
+                                android:layout_height="wrap_content"
+                                android:textColor="#e2e8f0"
+                                android:textSize="14sp"
+                                android:text="@string/progress_starting" />
+
+                            <TextView
+                                android:id="@+id/progressPercent"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:textColor="#818cf8"
+                                android:textSize="14sp"
+                                android:textStyle="bold"
+                                android:text="0%" />
+                        </LinearLayout>
+
+                        <ProgressBar
+                            android:id="@+id/installProgressBar"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="10dp"
+                            android:layout_marginTop="4dp"
+                            android:max="100"
+                            android:progress="0"
+                            android:progressTint="#10b981"
+                            android:progressBackgroundTint="#1e293b" />
+                    </LinearLayout>
+
+                    <!-- Step 1: proot -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginTop="4dp">
+
+                        <Button
+                            android:id="@+id/btnProot"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="wrap_content"
+                            android:text="@string/step_proot"
+                            android:textColor="#e2e8f0"
+                            android:background="@drawable/step_button_bg"
+                            android:padding="12dp"
+                            android:layout_marginEnd="8dp" />
+
+                        <ProgressBar
+                            android:id="@+id/spinnerProot"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:indeterminate="true"
+                            android:indeterminateTint="#818cf8"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <!-- Step 2: python -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginTop="4dp">
+
+                        <Button
+                            android:id="@+id/btnPython"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="wrap_content"
+                            android:text="@string/step_python"
+                            android:textColor="#e2e8f0"
+                            android:background="@drawable/step_button_bg"
+                            android:padding="12dp"
+                            android:layout_marginEnd="8dp" />
+
+                        <ProgressBar
+                            android:id="@+id/spinnerPython"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:indeterminate="true"
+                            android:indeterminateTint="#818cf8"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <!-- Step 3: build deps -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginTop="4dp">
+
+                        <Button
+                            android:id="@+id/btnBuildDeps"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="wrap_content"
+                            android:text="@string/step_build_deps"
+                            android:textColor="#e2e8f0"
+                            android:background="@drawable/step_button_bg"
+                            android:padding="12dp"
+                            android:layout_marginEnd="8dp" />
+
+                        <ProgressBar
+                            android:id="@+id/spinnerBuildDeps"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:indeterminate="true"
+                            android:indeterminateTint="#818cf8"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <!-- Step 4: hermes -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginTop="4dp">
+
+                        <Button
+                            android:id="@+id/btnHermes"
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:layout_height="wrap_content"
+                            android:text="@string/step_hermes"
+                            android:textColor="#e2e8f0"
+                            android:background="@drawable/step_button_bg"
+                            android:padding="12dp"
+                            android:layout_marginEnd="8dp" />
+
+                        <ProgressBar
+                            android:id="@+id/spinnerHermes"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:indeterminate="true"
+                            android:indeterminateTint="#818cf8"
+                            android:visibility="gone" />
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/btnInstallAll"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:text="@string/step_install_all"
+                        android:backgroundTint="#10b981" />
+
+                    <!-- 还原环境：让用户从备份恢复，跳过 10-30 分钟编译 -->
+                    <Button
+                        android:id="@+id/btnRestoreEnv"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/env_restore"
+                        android:backgroundTint="#f59e0b"
+                        android:textColor="#ffffff" />
+
+                </LinearLayout>
+
+                <!-- ══ Embedded log viewer ══
+                     Default shows only the "current operation" (latest lines,
+                     auto-scrolling). A toggle button switches to full log view.
+                     Shown after bootstrap completes. -->
+                <LinearLayout
+                    android:id="@+id/logPanel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_marginTop="16dp"
                     android:visibility="gone">
 
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="horizontal"
-                        android:gravity="center_vertical">
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="6dp">
 
                         <TextView
-                            android:id="@+id/progressStepLabel"
+                            android:id="@+id/logPanelTitle"
                             android:layout_width="0dp"
                             android:layout_weight="1"
                             android:layout_height="wrap_content"
-                            android:textColor="#e2e8f0"
-                            android:textSize="14sp"
-                            android:text="@string/progress_starting" />
+                            android:text="@string/log_current"
+                            android:textColor="#64748b"
+                            android:textSize="12sp"
+                            android:textStyle="bold"
+                            android:letterSpacing="0.1" />
 
-                        <TextView
-                            android:id="@+id/progressPercent"
+                        <Button
+                            android:id="@+id/btnToggleLog"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
+                            android:text="@string/log_show_all"
                             android:textColor="#818cf8"
-                            android:textSize="14sp"
-                            android:textStyle="bold"
-                            android:text="0%" />
+                            android:background="?android:attr/selectableItemBackground"
+                            android:padding="6dp"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"
+                            android:textSize="12sp" />
+
+                        <Button
+                            android:id="@+id/btnCopyLogs"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="@string/logs_copy_all"
+                            android:textColor="#818cf8"
+                            android:background="?android:attr/selectableItemBackground"
+                            android:padding="6dp"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"
+                            android:textSize="12sp" />
+
+                        <Button
+                            android:id="@+id/btnClearLogs"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="@string/logs_clear"
+                            android:textColor="#ef4444"
+                            android:background="?android:attr/selectableItemBackground"
+                            android:padding="6dp"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"
+                            android:textSize="12sp" />
                     </LinearLayout>
 
-                    <ProgressBar
-                        android:id="@+id/installProgressBar"
-                        style="?android:attr/progressBarStyleHorizontal"
+                    <!-- Height-limited scrollable log area.
+                         In "current" mode we limit to a few lines via height;
+                         in "all" mode the container expands. -->
+                    <ScrollView
+                        android:id="@+id/logScroll"
                         android:layout_width="match_parent"
-                        android:layout_height="10dp"
-                        android:layout_marginTop="4dp"
-                        android:max="100"
-                        android:progress="0"
-                        android:progressTint="#10b981"
-                        android:progressBackgroundTint="#1e293b" />
+                        android:layout_height="160dp"
+                        android:background="#0f172a"
+                        android:padding="8dp">
+
+                        <TextView
+                            android:id="@+id/logView"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="monospace"
+                            android:textColor="#475569"
+                            android:textSize="11sp"
+                            android:textIsSelectable="true" />
+
+                    </ScrollView>
+
                 </LinearLayout>
-
-                <!-- Step 1: proot -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="4dp">
-
-                    <Button
-                        android:id="@+id/btnProot"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:text="@string/step_proot"
-                        android:textColor="#e2e8f0"
-                        android:background="@drawable/step_button_bg"
-                        android:padding="12dp"
-                        android:layout_marginEnd="8dp" />
-
-                    <ProgressBar
-                        android:id="@+id/spinnerProot"
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
-                        android:indeterminate="true"
-                        android:indeterminateTint="#818cf8"
-                        android:visibility="gone" />
-                </LinearLayout>
-
-                <!-- Step 2: python -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="4dp">
-
-                    <Button
-                        android:id="@+id/btnPython"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:text="@string/step_python"
-                        android:textColor="#e2e8f0"
-                        android:background="@drawable/step_button_bg"
-                        android:padding="12dp"
-                        android:layout_marginEnd="8dp" />
-
-                    <ProgressBar
-                        android:id="@+id/spinnerPython"
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
-                        android:indeterminate="true"
-                        android:indeterminateTint="#818cf8"
-                        android:visibility="gone" />
-                </LinearLayout>
-
-                <!-- Step 3: build deps -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="4dp">
-
-                    <Button
-                        android:id="@+id/btnBuildDeps"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:text="@string/step_build_deps"
-                        android:textColor="#e2e8f0"
-                        android:background="@drawable/step_button_bg"
-                        android:padding="12dp"
-                        android:layout_marginEnd="8dp" />
-
-                    <ProgressBar
-                        android:id="@+id/spinnerBuildDeps"
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
-                        android:indeterminate="true"
-                        android:indeterminateTint="#818cf8"
-                        android:visibility="gone" />
-                </LinearLayout>
-
-                <!-- Step 4: hermes -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:layout_marginTop="4dp">
-
-                    <Button
-                        android:id="@+id/btnHermes"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:text="@string/step_hermes"
-                        android:textColor="#e2e8f0"
-                        android:background="@drawable/step_button_bg"
-                        android:padding="12dp"
-                        android:layout_marginEnd="8dp" />
-
-                    <ProgressBar
-                        android:id="@+id/spinnerHermes"
-                        android:layout_width="24dp"
-                        android:layout_height="24dp"
-                        android:indeterminate="true"
-                        android:indeterminateTint="#818cf8"
-                        android:visibility="gone" />
-                </LinearLayout>
-
-                <Button
-                    android:id="@+id/btnInstallAll"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:text="@string/step_install_all"
-                    android:backgroundTint="#10b981" />
 
             </LinearLayout>
-
-        </LinearLayout>
+        </ScrollView>
 
         <!-- ═══════════════════════════════════════════════════════════════
              PAGE 2: DASHBOARD
              Post-install action cards (open shell / chat / re-run).
-             When Hermes is not yet installed, shows a "not ready" placeholder
-             instead of the action cards.
              ═══════════════════════════════════════════════════════════════ -->
         <ScrollView
             android:id="@+id/dashboardPage"
@@ -564,84 +671,9 @@
         </ScrollView>
 
         <!-- ═══════════════════════════════════════════════════════════════
-             PAGE 3: LOGS
-             Full-screen log viewer with clear + copy actions.
-             logView is shared — install steps append here; this page
-             auto-opens when an install step starts.
-             ═══════════════════════════════════════════════════════════════ -->
-        <LinearLayout
-            android:id="@+id/logsPage"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical"
-            android:padding="16dp"
-            android:visibility="gone">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginBottom="8dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="wrap_content"
-                    android:text="@string/tab_logs"
-                    android:textColor="#e2e8f0"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-
-                <Button
-                    android:id="@+id/btnCopyLogs"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/logs_copy_all"
-                    android:textColor="#818cf8"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:padding="8dp"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp" />
-
-                <Button
-                    android:id="@+id/btnClearLogs"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="@string/logs_clear"
-                    android:textColor="#ef4444"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:padding="8dp"
-                    android:minWidth="0dp"
-                    android:minHeight="0dp" />
-            </LinearLayout>
-
-            <ScrollView
-                android:id="@+id/logScroll"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1"
-                android:background="#0f172a"
-                android:padding="8dp">
-
-                <TextView
-                    android:id="@+id/logView"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:fontFamily="monospace"
-                    android:textColor="#475569"
-                    android:textSize="11sp"
-                    android:textIsSelectable="true" />
-
-            </ScrollView>
-
-        </LinearLayout>
-
-        <!-- ═══════════════════════════════════════════════════════════════
-             PAGE 4: SETTINGS
+             PAGE 3: SETTINGS
              About / version / maintenance (re-run setup, battery opt) /
-             shortcuts (open shell, open chat).
+             env backup (save env lives here; restore env lives on install page).
              ═══════════════════════════════════════════════════════════════ -->
         <ScrollView
             android:id="@+id/settingsPage"
@@ -832,7 +864,7 @@
                     </LinearLayout>
                 </LinearLayout>
 
-                <!-- Environment backup / restore section -->
+                <!-- Environment backup section (save env only; restore is on install page) -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -901,68 +933,13 @@
                         android:contentDescription="@null" />
                 </LinearLayout>
 
-                <LinearLayout
-                    android:id="@+id/btnRestoreEnv"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:background="@drawable/card_bg_clickable"
-                    android:padding="16dp"
-                    android:layout_marginBottom="10dp"
-                    android:clickable="true"
-                    android:focusable="true">
-
-                    <LinearLayout
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:gravity="center"
-                        android:background="@drawable/icon_tile_bg">
-
-                        <ImageView
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:src="@drawable/ic_refresh"
-                            android:contentDescription="@null" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="16dp"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/env_restore"
-                            android:textColor="#e2e8f0"
-                            android:textSize="15sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/env_restore_subtitle"
-                            android:textColor="#94a3b8"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:src="@drawable/ic_chevron"
-                        android:contentDescription="@null" />
-                </LinearLayout>
-
             </LinearLayout>
         </ScrollView>
 
     </FrameLayout>
 
-    <!-- Bottom navigation: switches between the 4 pages above. -->
+    <!-- Bottom navigation: 3 tabs (Install / Dashboard / Settings).
+         Logs tab removed — log viewer is embedded in the Install page. -->
     <com.google.android.material.bottomnavigation.BottomNavigationView
         android:id="@+id/bottomNav"
         android:layout_width="match_parent"

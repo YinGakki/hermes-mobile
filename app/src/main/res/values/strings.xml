@@ -64,6 +64,11 @@
     <string name="progress_starting">准备安装…</string>
     <string name="progress_done">安装完成</string>
 
+    <!-- Embedded log viewer -->
+    <string name="log_current">当前操作</string>
+    <string name="log_show_all">显示全部日志</string>
+    <string name="log_show_current">只看当前</string>
+
     <!-- Dashboard (post-install) -->
     <string name="dashboard_quick_actions">快捷操作</string>
     <string name="dashboard_status_ready">Hermes Agent 已就绪</string>
