@@ -130,19 +130,48 @@ class HermesStudioInstaller(private val context: Context) {
     fun getWebUIVersion(): String? {
         if (!isInstalled()) return null
         return try {
+            // 先尝试 hermes-web-ui --version
             val output = StringBuilder()
             val code = processManager.runInProotExitCode(
                 "hermes-web-ui --version 2>&1 | head -1", 30
             ) { line -> output.appendLine(line) }
             if (code == 0) {
-                // 输出形如 "hermes-web-ui/0.6.24" 或 "0.6.24"
                 val raw = output.toString().trim()
-                // 提取版本号部分
-                val versionPart = raw.substringAfterLast("/").trim()
-                versionPart.takeIf { it.isNotEmpty() && it.matches(Regex("""[\d.]+.*""")) } ?: raw
-            } else null
+                // 输出形如 "hermes-web-ui/0.6.24" 或 "0.6.24" 或 "v0.6.24"
+                val versionPart = raw.substringAfterLast("/").trim().removePrefix("v")
+                if (versionPart.isNotEmpty() && versionPart.matches(Regex("""[\d.]+.*"""))) {
+                    versionPart
+                } else if (raw.matches(Regex("""[\d.]+.*"""))) {
+                    raw.removePrefix("v")
+                } else {
+                    // 兜底：用 npm list 查版本
+                    getWebUIVersionViaNpm()
+                }
+            } else {
+                // --version 失败，用 npm list 兜底
+                getWebUIVersionViaNpm()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "getWebUIVersion failed", e)
+            null
+        }
+    }
+
+    /** 用 npm list -g 查询 hermes-web-ui 版本（兜底方案） */
+    private fun getWebUIVersionViaNpm(): String? {
+        return try {
+            val output = StringBuilder()
+            val code = processManager.runInProotExitCode(
+                "npm list -g hermes-web-ui --depth=0 2>/dev/null | grep hermes-web-ui", 30
+            ) { line -> output.appendLine(line) }
+            if (code == 0) {
+                // 输出形如 "└── hermes-web-ui@0.6.24"
+                val raw = output.toString().trim()
+                val version = raw.substringAfter("@", "").trim()
+                if (version.isNotEmpty()) version else null
+            } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "getWebUIVersionViaNpm failed", e)
             null
         }
     }
@@ -571,23 +600,44 @@ class HermesStudioInstaller(private val context: Context) {
      */
     fun stop() {
         stopWatchdog()
-        stopStudioProcess()
         serviceRunning = false
+        // 先停 proot 宿主进程（会触发 --kill-on-exit 清理子进程）
+        stopStudioProcess()
+        // 再尝试 CLI 优雅停止（可能已经不需要了，但作为兜底）
+        // 注意：这里 runInPrefix 会启动一个新的 proot 进程来执行
+        // hermes-web-ui stop，如果 proot 本身有问题可能超时。
+        // 用 try-catch 包住，避免崩溃应用。
+        try {
+            Thread.sleep(500)
+        } catch (_: InterruptedException) {}
         if (!isInstalled()) return
         try {
             // 尝试 CLI 优雅停止（读 PID 文件发 SIGTERM）
-            serverMgr.runInPrefix(
-                "hermes-web-ui stop 2>&1 || true",
-                onOutput = { Log.d(TAG, "[stop] $it") },
-            )
-            Thread.sleep(1000)
+            // 超时 10s，避免卡住 UI
+            val stopThread = Thread {
+                try {
+                    serverMgr.runInPrefix(
+                        "hermes-web-ui stop 2>&1 || true",
+                        onOutput = { Log.d(TAG, "[stop] $it") },
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "CLI stop failed: ${e.message}")
+                }
+            }
+            stopThread.isDaemon = true
+            stopThread.start()
+            stopThread.join(10000) // 最多等 10s
+            if (stopThread.isAlive) {
+                Log.w(TAG, "CLI stop timed out, force killing by port")
+                stopThread.interrupt()
+            }
             if (checkServerHealth()) {
                 Log.w(TAG, "Server still alive, force killing")
                 forceKillByPort()
             }
         } catch (e: Exception) {
             Log.w(TAG, "stop() failed: ${e.message}")
-            forceKillByPort()
+            try { forceKillByPort() } catch (_: Exception) {}
         }
     }
 

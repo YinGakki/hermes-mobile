@@ -215,9 +215,8 @@ class MainActivity : AppCompatActivity() {
         btnUpdateWebUI.setOnClickListener { onUpdateWebUIClicked() }
 
         openShellButton.setOnClickListener {
-            // 新架构（proot+rootfs）下 app 自带完整 Linux 环境，
-            // 不再需要跳转 Termux。直接显示使用说明。
-            showShellInstructions()
+            // 打开内置终端，在 proot rootfs 里运行交互式 bash shell
+            startActivity(Intent(this, TerminalActivity::class.java))
         }
         serviceToggleButton.setOnClickListener { onServiceToggleClicked() }
         chatButton.setOnClickListener { onChatButtonClicked() }
@@ -983,20 +982,37 @@ class MainActivity : AppCompatActivity() {
         // 先显示 "检测中…"
         hermesVersionText.text = "检测中…"
         webuiVersionText.text = "检测中…"
+        hermesUpdateBadge.visibility = View.GONE
+        webuiUpdateBadge.visibility = View.GONE
 
         Thread {
             // ── 获取当前版本 ──
-            val hermesVer = serverManager.getHermesVersion()
-            val webuiVer = studioInstaller.getWebUIVersion()
+            val hermesVer = try { serverManager.getHermesVersion() } catch (e: Exception) {
+                Log.e(TAG, "getHermesVersion failed", e); null
+            }
+            val webuiVer = try { studioInstaller.getWebUIVersion() } catch (e: Exception) {
+                Log.e(TAG, "getWebUIVersion failed", e); null
+            }
+
+            Log.i(TAG, "checkVersionsAndUpdates: hermes=$hermesVer webui=$webuiVer")
 
             runOnUiThread {
                 hermesVersionText.text = hermesVer ?: "未安装"
                 webuiVersionText.text = webuiVer ?: "未安装"
+                // 如果已安装但版本获取失败，显示提示
+                if (hermesVer == null && serverManager.isHermesInstalled()) {
+                    hermesVersionText.text = "已安装（版本获取失败）"
+                }
+                if (webuiVer == null && studioInstaller.isInstalled()) {
+                    webuiVersionText.text = "已安装（版本获取失败）"
+                }
             }
 
             // ── 检查更新（仅在已安装时）──
             if (hermesVer != null) {
-                val latestHermes = serverManager.checkHermesUpdate()
+                val latestHermes = try { serverManager.checkHermesUpdate() } catch (e: Exception) {
+                    Log.e(TAG, "checkHermesUpdate failed", e); null
+                }
                 runOnUiThread {
                     if (latestHermes != null) {
                         hermesVersionText.text = "$hermesVer → $latestHermes"
@@ -1007,7 +1023,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             if (webuiVer != null) {
-                val latestWebUI = studioInstaller.checkWebUIUpdate()
+                val latestWebUI = try { studioInstaller.checkWebUIUpdate() } catch (e: Exception) {
+                    Log.e(TAG, "checkWebUIUpdate failed", e); null
+                }
                 runOnUiThread {
                     if (latestWebUI != null) {
                         webuiVersionText.text = "$webuiVer → $latestWebUI"
@@ -1195,12 +1213,12 @@ class MainActivity : AppCompatActivity() {
         dialog.setContentView(R.layout.dialog_progress)
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
         dialog.setCancelable(false)
-        // 自适应宽度：取屏幕宽度的 85%，但在 280dp~520dp 之间。
-        // 这样手机竖屏不会太窄，横屏/平板不会太宽。
+        // 自适应宽度：取屏幕宽度的 92%，但在 320dp~720dp 之间。
+        // 这样手机竖屏占满大部分宽度，横屏/平板不会过宽。
         val dm = resources.displayMetrics
-        val maxWidthPx = (520 * dm.density).toInt()
-        val minWidthPx = (280 * dm.density).toInt()
-        val targetWidth = (dm.widthPixels * 0.85).toInt().coerceIn(minWidthPx, maxWidthPx)
+        val maxWidthPx = (720 * dm.density).toInt()
+        val minWidthPx = (320 * dm.density).toInt()
+        val targetWidth = (dm.widthPixels * 0.92).toInt().coerceIn(minWidthPx, maxWidthPx)
         dialog.window?.setLayout(targetWidth, WindowManager.LayoutParams.WRAP_CONTENT)
         val titleView = dialog.findViewById<TextView>(R.id.progressDialogTitle)!!
         val msgView = dialog.findViewById<TextView>(R.id.progressDialogMessage)!!
