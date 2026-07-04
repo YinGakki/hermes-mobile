@@ -33,7 +33,11 @@
     <string name="step_hermes">3. 安装 Hermes Agent</string>
     <string name="step_webui">4. 安装 WebUI</string>
     <string name="step_install_all">一键安装全部</string>
-    <string name="step_done">✓ 已安装</string>
+    <string name="step_done_proot">✓ proot 已完成</string>
+    <string name="step_done_deps">✓ 依赖 已完成</string>
+    <string name="step_done_hermes">✓ Hermes Agent 已完成</string>
+    <string name="step_done_webui">✓ WebUI 已完成</string>
+    <string name="step_done_all">✓ 全部安装完成</string>
     <string name="step_installing">安装中…</string>
 
     <!-- Environment backup / restore -->

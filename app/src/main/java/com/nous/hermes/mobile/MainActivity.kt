@@ -106,6 +106,8 @@ class MainActivity : AppCompatActivity() {
     // 完整日志缓冲（不限大小），用于"显示全部"模式
     private val fullLog = java.util.concurrent.ConcurrentLinkedQueue<String>()
     @Volatile private var showAllLogs = false
+    /** 当前正在安装的步骤名（"proot"/"deps"/"hermes"/"webui"），null=无 */
+    @Volatile private var currentInstallStep: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -317,23 +319,37 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Enable/disable bottom-nav tabs based on install state.
-     * Install tab is HIDDEN when environment is fully installed —
-     * user sees only Dashboard + Settings. When install is incomplete
-     * or user triggers "reinstall" from Settings, the Install tab
-     * reappears.
+     *
+     * NOT installed: only show "安装" tab. Dashboard and Settings are
+     * hidden — user must complete installation first.
+     *
+     * Installed: hide "安装" tab, show Dashboard + Settings. The install
+     * tab only reappears when user triggers "重新安装环境" from Settings.
      */
     private fun refreshNavTabs() {
         val installed = allStepsDone()
         val menu = bottomNav.menu
         val installItem = menu.findItem(R.id.nav_install)
-        // Show Install tab only when environment is NOT fully installed
-        installItem?.isVisible = !installed
-        menu.findItem(R.id.nav_dashboard)?.isEnabled = installed
-        menu.findItem(R.id.nav_settings)?.isEnabled = true
-        // If install is done and user is still on install page, switch to dashboard
-        if (installed && installPage.visibility == View.VISIBLE) {
-            bottomNav.selectedItemId = R.id.nav_dashboard
-            switchPage(dashboardPage)
+        val dashboardItem = menu.findItem(R.id.nav_dashboard)
+        val settingsItem = menu.findItem(R.id.nav_settings)
+
+        if (installed) {
+            // 环境已安装：隐藏安装 tab，显示仪表盘+设置
+            installItem?.isVisible = false
+            dashboardItem?.isVisible = true
+            dashboardItem?.isEnabled = true
+            settingsItem?.isVisible = true
+            settingsItem?.isEnabled = true
+            // 如果用户还在安装页，自动跳到仪表盘
+            if (installPage.visibility == View.VISIBLE) {
+                bottomNav.selectedItemId = R.id.nav_dashboard
+                switchPage(dashboardPage)
+            }
+        } else {
+            // 环境未安装：只显示安装 tab，隐藏仪表盘+设置
+            installItem?.isVisible = true
+            dashboardItem?.isVisible = false
+            settingsItem?.isVisible = false
         }
     }
 
@@ -382,8 +398,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restartFromBootstrap() {
-        // Make Install tab visible again (it's hidden when env is installed)
+        // 用户点了"重新安装环境" — 环境当前还是已安装状态，
+        // 所以不能依赖 refreshNavTabs()（它会认为已安装而隐藏安装 tab）。
+        // 手动设置 tab 可见性：显示安装，隐藏仪表盘+设置。
         bottomNav.menu.findItem(R.id.nav_install)?.isVisible = true
+        bottomNav.menu.findItem(R.id.nav_dashboard)?.isVisible = false
+        bottomNav.menu.findItem(R.id.nav_settings)?.isVisible = false
         // Switch to install page to show bootstrap progress.
         switchPage(installPage)
         bottomNav.selectedItemId = R.id.nav_install
@@ -395,8 +415,6 @@ class MainActivity : AppCompatActivity() {
         logView.text = ""
         synchronized(recentLog) { recentLog.clear() }
         fullLog.clear()
-        // Disable Dashboard/Settings tabs again until install completes.
-        refreshNavTabs()
         extractBootstrap()
     }
 
@@ -445,6 +463,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun releaseInstallLock() {
         isInstallInProgress = false
+        // 清除当前安装步骤标记，让 refreshStepButtons 能正确显示完成状态
+        currentInstallStep = null
         stopHeartbeat()
         // Flush any remaining pending logs
         logUpdateHandler.removeCallbacks(logFlushRunnable)
@@ -826,32 +846,41 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshStepButtons() {
         val prootDone = serverManager.isProotInstalled()
-        btnProot.text = if (prootDone) getString(R.string.step_done) else getString(R.string.step_proot)
-        btnProot.alpha = if (prootDone) 0.6f else 1f
-        btnProot.setTextColor(if (prootDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
-        spinnerProot.visibility = View.GONE
+        // 如果当前步骤正在安装，不覆盖其状态
+        if (currentInstallStep != "proot") {
+            btnProot.text = if (prootDone) getString(R.string.step_done_proot) else getString(R.string.step_proot)
+            btnProot.alpha = if (prootDone) 0.6f else 1f
+            btnProot.setTextColor(if (prootDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
+            spinnerProot.visibility = View.GONE
+        }
 
         val depsDone = serverManager.isPythonInstalled() && isBuildDepsInstalled()
-        btnDeps.text = if (depsDone) getString(R.string.step_done) else getString(R.string.step_deps)
-        btnDeps.alpha = if (depsDone) 0.6f else 1f
-        btnDeps.setTextColor(if (depsDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
-        spinnerDeps.visibility = View.GONE
+        if (currentInstallStep != "deps") {
+            btnDeps.text = if (depsDone) getString(R.string.step_done_deps) else getString(R.string.step_deps)
+            btnDeps.alpha = if (depsDone) 0.6f else 1f
+            btnDeps.setTextColor(if (depsDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
+            spinnerDeps.visibility = View.GONE
+        }
 
         val hermesDone = serverManager.isHermesInstalled()
-        btnHermes.text = if (hermesDone) getString(R.string.step_done) else getString(R.string.step_hermes)
-        btnHermes.alpha = if (hermesDone) 0.6f else 1f
-        btnHermes.setTextColor(if (hermesDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
-        spinnerHermes.visibility = View.GONE
+        if (currentInstallStep != "hermes") {
+            btnHermes.text = if (hermesDone) getString(R.string.step_done_hermes) else getString(R.string.step_hermes)
+            btnHermes.alpha = if (hermesDone) 0.6f else 1f
+            btnHermes.setTextColor(if (hermesDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
+            spinnerHermes.visibility = View.GONE
+        }
 
         val webuiDone = studioInstaller.isInstalled()
-        btnWebUI.text = if (webuiDone) getString(R.string.step_done) else getString(R.string.step_webui)
-        btnWebUI.alpha = if (webuiDone) 0.6f else 1f
-        btnWebUI.setTextColor(if (webuiDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
-        spinnerWebUI.visibility = View.GONE
+        if (currentInstallStep != "webui") {
+            btnWebUI.text = if (webuiDone) getString(R.string.step_done_webui) else getString(R.string.step_webui)
+            btnWebUI.alpha = if (webuiDone) 0.6f else 1f
+            btnWebUI.setTextColor(if (webuiDone) 0xFF10b981.toInt() else 0xFF94a3b8.toInt())
+            spinnerWebUI.visibility = View.GONE
+        }
 
         val allDone = prootDone && depsDone && hermesDone && webuiDone
         btnInstallAll.isEnabled = !allDone && !isInstallInProgress
-        btnInstallAll.text = if (allDone) getString(R.string.step_done) else getString(R.string.step_install_all)
+        btnInstallAll.text = if (allDone) getString(R.string.step_done_all) else getString(R.string.step_install_all)
         btnInstallAll.alpha = when {
             allDone -> 0.6f
             isInstallInProgress -> 0.35f
@@ -884,10 +913,13 @@ class MainActivity : AppCompatActivity() {
             else -> return
         }
         if (installing) {
+            currentInstallStep = step
             btn.text = getString(R.string.step_installing)
             btn.alpha = 1f
             btn.setTextColor(0xFF818cf8.toInt())
             spinner.visibility = View.VISIBLE
+        } else {
+            if (currentInstallStep == step) currentInstallStep = null
         }
     }
 
@@ -1361,9 +1393,20 @@ class MainActivity : AppCompatActivity() {
         logView.text = if (text.isEmpty()) "" else text + "\n"
     }
 
-    /** 重建"全部日志"视图：从 fullLog 重建。 */
+    /** 重建"全部日志"视图：从 fullLog 重建。
+     *  如果日志超过 2000 行，只显示最后 2000 行（TextView 渲染限制），
+     *  并在顶部注明总行数。 */
     private fun rebuildFullLogView() {
-        logView.text = fullLog.joinToString("\n").let { if (it.isEmpty()) "" else it + "\n" }
+        val total = fullLog.size
+        val displayLimit = 2000
+        val lines = if (total > displayLimit) {
+            val header = "…（显示最近 $displayLimit 行，共 $total 行）\n\n"
+            val tail = fullLog.toList().takeLast(displayLimit)
+            header + tail.joinToString("\n")
+        } else {
+            fullLog.joinToString("\n")
+        }
+        logView.text = if (lines.isEmpty()) "" else lines + "\n"
     }
 
     private val heartbeatHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -1478,8 +1521,9 @@ class MainActivity : AppCompatActivity() {
             while (recentLog.size > 30) recentLog.pollFirst()
         }
         fullLog.add(text)
-        // 限制 fullLog 大小，避免内存爆炸（保留最近 5000 行）
-        while (fullLog.size > 5000) fullLog.poll()
+        // 限制 fullLog 大小，避免内存爆炸（保留最近 50000 行）
+        // 5000 太小 — apt-get + pip install + git clone 单次安装就能超过
+        while (fullLog.size > 50000) fullLog.poll()
         lastProgressTime = System.currentTimeMillis()
         pendingLogs.add(text)
         // Drive progress bar by matching real install log output.

@@ -1,14 +1,67 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon foreground: stylized "H" with circuit nodes and wing accents.
+     Hermes Agent brand icon — H letterform with tech/messenger motifs.
+     Cyan (#06b6d4) on transparent, centered within 108x108 viewport.
+     Safe zone: content within 54±27 (i.e. 27..81 on each axis). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <group
-        android:translateX="27"
-        android:translateY="27">
-        <path
-            android:fillColor="#818cf8"
-            android:pathData="M27,0C12.09,0 0,12.09 0,27C0,41.91 12.09,54 27,54C41.91,54 54,41.91 54,27C54,12.09 41.91,0 27,0ZM38.7,20.7L24.7,34.7C24.31,35.09 23.68,35.09 23.29,34.7L15.29,26.7C14.9,26.31 14.9,25.68 15.29,25.29C15.68,24.9 16.31,24.9 16.7,25.29L24,32.59L37.29,19.29C37.68,18.9 38.31,18.9 38.7,19.29C39.09,19.68 39.09,20.31 38.7,20.7Z" />
-    </group>
+
+    <!-- Left vertical bar of H -->
+    <path
+        android:fillColor="#06b6d4"
+        android:pathData="M36,34h8v40h-8z" />
+
+    <!-- Right vertical bar of H -->
+    <path
+        android:fillColor="#06b6d4"
+        android:pathData="M64,34h8v40h-8z" />
+
+    <!-- Crossbar of H -->
+    <path
+        android:fillColor="#06b6d4"
+        android:pathData="M36,50h36v8h-36z" />
+
+    <!-- Wing accent: left side of crossbar (3 horizontal lines) -->
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M28,48h6v2h-6z" />
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M26,52h8v2h-8z" />
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M28,56h6v2h-6z" />
+
+    <!-- Wing accent: right side of crossbar (3 horizontal lines) -->
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M74,48h6v2h-6z" />
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M74,52h8v2h-8z" />
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M74,56h6v2h-6z" />
+
+    <!-- Circuit nodes (small circles at bar endpoints) -->
+    <path
+        android:fillColor="#67e8f9"
+        android:pathData="M40,30m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+    <path
+        android:fillColor="#67e8f9"
+        android:pathData="M68,30m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+    <path
+        android:fillColor="#67e8f9"
+        android:pathData="M40,78m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+    <path
+        android:fillColor="#67e8f9"
+        android:pathData="M68,78m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+
+    <!-- Center node on crossbar -->
+    <path
+        android:fillColor="#67e8f9"
+        android:pathData="M54,54m-3,0a3,3 0,1 0,6 0a3,3 0,1 0,-6 0" />
 </vector>
