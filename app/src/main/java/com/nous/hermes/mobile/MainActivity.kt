@@ -35,6 +35,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "HermesMainActivity"
         private const val COMPILE_DIALOG_TIMEOUT_SEC = 120L
+        const val PREF_UPDATE_SOURCE = "update_source"
+        const val PREF_UPDATE_CHANNEL = "update_channel"
+        const val NOTIF_CHANNEL_UPDATES = "hermes_update_notifications"
     }
 
     // Views
@@ -59,6 +62,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webuiVersionText: TextView
     private lateinit var hermesUpdateBadge: TextView
     private lateinit var webuiUpdateBadge: TextView
+    private lateinit var btnUpdateApk: View
+    private lateinit var apkVersionText: TextView
+    private lateinit var apkUpdateBadge: TextView
+    private lateinit var btnSourceGithub: TextView
+    private lateinit var btnSourceChina: TextView
+    private lateinit var btnChannelStable: TextView
+    private lateinit var btnChannelBeta: TextView
     private lateinit var spinnerProot: ProgressBar
     private lateinit var spinnerDeps: ProgressBar
     private lateinit var spinnerHermes: ProgressBar
@@ -134,6 +144,13 @@ class MainActivity : AppCompatActivity() {
         webuiVersionText = findViewById(R.id.webuiVersionText)
         hermesUpdateBadge = findViewById(R.id.hermesUpdateBadge)
         webuiUpdateBadge = findViewById(R.id.webuiUpdateBadge)
+        btnUpdateApk = findViewById(R.id.btnUpdateApk)
+        apkVersionText = findViewById(R.id.apkVersionText)
+        apkUpdateBadge = findViewById(R.id.apkUpdateBadge)
+        btnSourceGithub = findViewById(R.id.btnSourceGithub)
+        btnSourceChina = findViewById(R.id.btnSourceChina)
+        btnChannelStable = findViewById(R.id.btnChannelStable)
+        btnChannelBeta = findViewById(R.id.btnChannelBeta)
         spinnerProot = findViewById(R.id.spinnerProot)
         spinnerDeps = findViewById(R.id.spinnerDeps)
         spinnerHermes = findViewById(R.id.spinnerHermes)
@@ -213,6 +230,10 @@ class MainActivity : AppCompatActivity() {
         btnRestoreEnv.setOnClickListener { onRestoreEnvClicked() }
         btnUpdateHermes.setOnClickListener { onUpdateHermesClicked() }
         btnUpdateWebUI.setOnClickListener { onUpdateWebUIClicked() }
+        btnUpdateApk.setOnClickListener { onApkUpdateClicked() }
+
+        // 更新源 / 通道选择
+        initUpdatePreferences()
 
         openShellButton.setOnClickListener {
             // 打开内置终端，在 proot rootfs 里运行交互式 bash shell
@@ -366,7 +387,8 @@ class MainActivity : AppCompatActivity() {
         openShellButton.visibility = if (installed) View.VISIBLE else View.GONE
         serviceToggleButton.visibility = if (installed) View.VISIBLE else View.GONE
         chatButton.visibility = if (installed) View.VISIBLE else View.GONE
-        retryButton.visibility = if (installed) View.VISIBLE else View.GONE
+        // 仪表盘不再提供"重新安装环境"入口，统一由设置页的"重新安装"按钮触发
+        retryButton.visibility = View.GONE
         // Service toggle: start ↔ stop
         if (running) {
             serviceToggleTitle.text = getString(R.string.card_service_stop_title)
@@ -397,24 +419,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restartFromBootstrap() {
-        // 用户点了"重新安装环境" — 环境当前还是已安装状态，
-        // 所以不能依赖 refreshNavTabs()（它会认为已安装而隐藏安装 tab）。
-        // 手动设置 tab 可见性：显示安装，隐藏仪表盘+设置。
+        // 用户点了"重新安装" — 显示完整的安装界面（4 步骤 + 日志面板），
+        // 让用户可以重新点击"一键安装"执行安装。
+        // 不调用 tryAcquireInstallLock（那会显示进度条，但还没开始安装），
+        // 也不调用 extractBootstrap（那会刷新配置后弹回仪表盘）。
+
+        // 手动设置 tab 可见性：显示安装，隐藏仪表盘+设置
         bottomNav.menu.findItem(R.id.nav_install)?.isVisible = true
         bottomNav.menu.findItem(R.id.nav_dashboard)?.isVisible = false
         bottomNav.menu.findItem(R.id.nav_settings)?.isVisible = false
-        // Switch to install page to show bootstrap progress.
+        // 切换到安装页，显示步骤 + 日志面板（不显示进度条）
         switchPage(installPage)
         bottomNav.selectedItemId = R.id.nav_install
-        stepsContainer.visibility = View.GONE
-        logPanel.visibility = View.GONE
-        progressBar.visibility = View.VISIBLE
-        statusText.visibility = View.VISIBLE
-        statusText.text = getString(R.string.status_initializing)
+        progressBar.visibility = View.GONE
+        statusText.visibility = View.GONE
+        statusDetail.visibility = View.GONE
+        stepsContainer.visibility = View.VISIBLE
+        logPanel.visibility = View.VISIBLE
+        // 清空之前的日志
         logView.text = ""
         synchronized(recentLog) { recentLog.clear() }
         fullLog.clear()
-        extractBootstrap()
+        // 刷新步骤按钮显示（反映当前安装状态）
+        refreshStepButtons()
+        // 确保"一键安装"按钮可用
+        btnInstallAll.alpha = 1f
+        btnInstallAll.isEnabled = true
+        // 隐藏进度条容器（如果之前显示着）
+        installProgressContainer.visibility = View.GONE
     }
 
     private fun showSteps() {
@@ -1034,7 +1066,336 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+
+            // ── 检查 APK 更新 ──
+            val apkVer = getVersionName()
+            val updateChannel = getUpdateChannel()
+            val updateSource = getUpdateSource()
+            val apkUpdate = try {
+                ApkUpdateChecker.checkUpdate(apkVer, updateChannel, updateSource)
+            } catch (e: Exception) {
+                Log.e(TAG, "checkApkUpdate failed", e); null
+            }
+            runOnUiThread {
+                if (apkUpdate != null) {
+                    apkVersionText.text = "$apkVer → ${apkUpdate.version}"
+                    apkVersionText.setTextColor(0xFF10b981.toInt())
+                    apkUpdateBadge.visibility = View.VISIBLE
+                    // 后台检测到更新时发通知
+                    notifyApkUpdateAvailable(apkUpdate)
+                } else {
+                    apkVersionText.text = apkVer
+                }
+            }
         }.start()
+    }
+
+    // ── APK 更新相关 ────────────────────────────────────────────────────────
+
+    /** 当前 APK 更新信息（检查后缓存，供点击时使用） */
+    private var lastApkUpdateInfo: ApkUpdateInfo? = null
+
+    /** 获取更新源设置 */
+    private fun getUpdateSource(): String {
+        val prefs = getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+        return prefs.getString(PREF_UPDATE_SOURCE, ApkUpdateChecker.SOURCE_GITHUB)
+            ?: ApkUpdateChecker.SOURCE_GITHUB
+    }
+
+    /** 获取更新通道设置 */
+    private fun getUpdateChannel(): String {
+        val prefs = getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+        return prefs.getString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_BETA)
+            ?: ApkUpdateChecker.CHANNEL_BETA
+    }
+
+    /** 初始化更新源/通道选择按钮，根据偏好设置高亮状态 */
+    private fun initUpdatePreferences() {
+        updateSourceToggleUI()
+        updateChannelToggleUI()
+
+        btnSourceGithub.setOnClickListener {
+            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+                .edit().putString(PREF_UPDATE_SOURCE, ApkUpdateChecker.SOURCE_GITHUB).apply()
+            updateSourceToggleUI()
+            // 切换后重新检测
+            checkVersionsAndUpdates()
+        }
+        btnSourceChina.setOnClickListener {
+            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+                .edit().putString(PREF_UPDATE_SOURCE, ApkUpdateChecker.SOURCE_GITEE).apply()
+            updateSourceToggleUI()
+            checkVersionsAndUpdates()
+        }
+        btnChannelStable.setOnClickListener {
+            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+                .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_STABLE).apply()
+            updateChannelToggleUI()
+            checkVersionsAndUpdates()
+        }
+        btnChannelBeta.setOnClickListener {
+            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+                .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_BETA).apply()
+            updateChannelToggleUI()
+            checkVersionsAndUpdates()
+        }
+    }
+
+    /** 更新源按钮高亮切换 */
+    private fun updateSourceToggleUI() {
+        val source = getUpdateSource()
+        if (source == ApkUpdateChecker.SOURCE_GITHUB) {
+            btnSourceGithub.setTextColor(0xFF10b981.toInt())
+            btnSourceChina.setTextColor(0xFF94a3b8.toInt())
+        } else {
+            btnSourceGithub.setTextColor(0xFF94a3b8.toInt())
+            btnSourceChina.setTextColor(0xFF10b981.toInt())
+        }
+    }
+
+    /** 通道按钮高亮切换 */
+    private fun updateChannelToggleUI() {
+        val channel = getUpdateChannel()
+        if (channel == ApkUpdateChecker.CHANNEL_STABLE) {
+            btnChannelStable.setTextColor(0xFF10b981.toInt())
+            btnChannelBeta.setTextColor(0xFF94a3b8.toInt())
+        } else {
+            btnChannelStable.setTextColor(0xFF94a3b8.toInt())
+            btnChannelBeta.setTextColor(0xFF10b981.toInt())
+        }
+    }
+
+    /** APK 更新卡片点击事件 */
+    private fun onApkUpdateClicked() {
+        val currentVer = getVersionName()
+        val channel = getUpdateChannel()
+        val source = getUpdateSource()
+
+        apkVersionText.text = "检测中…"
+        apkUpdateBadge.visibility = View.GONE
+
+        Thread {
+            val update = ApkUpdateChecker.checkUpdate(currentVer, channel, source)
+            lastApkUpdateInfo = update
+
+            runOnUiThread {
+                if (update != null) {
+                    apkVersionText.text = "$currentVer → ${update.version}"
+                    apkVersionText.setTextColor(0xFF10b981.toInt())
+                    apkUpdateBadge.visibility = View.VISIBLE
+                    showApkUpdateDialog(update)
+                } else {
+                    apkVersionText.text = currentVer
+                    apkVersionText.setTextColor(0xFF64748b.toInt())
+                    Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
+    }
+
+    /** 显示更新日志对话框，用户可选择下载更新 */
+    private fun showApkUpdateDialog(update: ApkUpdateInfo) {
+        val channelLabel = if (update.isBeta) "测试版" else "正式版"
+        val sourceLabel = if (getUpdateSource() == ApkUpdateChecker.SOURCE_GITEE) "Gitee" else "GitHub"
+
+        // 格式化更新日志：去除 markdown 标记符号
+        val changelog = formatChangelog(update.changelog)
+
+        val message = buildString {
+            append("版本：${update.version}（$channelLabel）\n")
+            append("来源：$sourceLabel\n")
+            if (update.fileSize > 0) {
+                append("大小：${update.fileSize / 1024 / 1024}MB\n")
+            }
+            append("\n更新日志：\n\n")
+            append(changelog)
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("发现新版本 ${update.tagName}")
+            .setMessage(message)
+            .setPositiveButton("下载更新") { _, _ ->
+                downloadAndInstallApk(update)
+            }
+            .setNegativeButton("稍后再说", null)
+            .setCancelable(true)
+            .show()
+    }
+
+    /** 格式化 markdown 更新日志为纯文本 */
+    private fun formatChangelog(md: String): String {
+        return md
+            .replace(Regex("^#{1,6}\\s*"), "", RegexOption.MULTILINE)  // 标题标记
+            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")                  // 粗体
+            .replace(Regex("`(.+?)`"), "$1")                            // 行内代码
+            .replace("---", "────────────────")                         // 分隔线
+            .trim()
+            .ifEmpty { "（无更新日志）" }
+    }
+
+    /** 下载 APK 并触发安装 */
+    private fun downloadAndInstallApk(update: ApkUpdateInfo) {
+        val source = getUpdateSource()
+
+        // 根据更新源构建下载 URL 列表：
+        // - GitHub 源：ghproxy 代理加速 + GitHub 直连兜底（逐个尝试）
+        // - Gitee 源：Gitee 直链（国内可直连，无需代理）
+        val urls = ApkUpdateChecker.getDownloadUrls(update.downloadUrl, source)
+
+        // 创建更新目录
+        val updateDir = File(externalCacheDir ?: cacheDir, "updates").apply { mkdirs() }
+        val apkFile = File(updateDir, "hermes-${update.tagName}.apk")
+
+        // 进度对话框
+        val progressDialog = MaterialAlertDialogBuilder(this)
+            .setTitle("正在下载 ${update.tagName}")
+            .setMessage("准备下载…")
+            .setCancelable(false)
+            .setNegativeButton("取消") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .create()
+
+        Thread {
+            var success = false
+            var lastError: String? = null
+
+            for (url in urls) {
+                try {
+                    runOnUiThread {
+                        progressDialog.setMessage("正在下载（${url.substringBefore("://")}）…\n0%")
+                    }
+
+                    Log.i(TAG, "Downloading APK from: $url")
+                    val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.setRequestProperty("User-Agent", "HermesAndroid/1.0")
+                    conn.connectTimeout = 30000
+                    conn.readTimeout = 30000
+                    conn.instanceFollowRedirects = true
+
+                    val code = conn.responseCode
+                    if (code != 200) {
+                        lastError = "HTTP $code"
+                        conn.disconnect()
+                        Log.w(TAG, "Download failed from $url: HTTP $code")
+                        continue
+                    }
+
+                    val totalSize = conn.contentLengthLong
+                    var downloaded = 0L
+                    val input = conn.inputStream
+                    val output = java.io.FileOutputStream(apkFile)
+                    val buffer = ByteArray(8192)
+                    var lastProgress = -1
+                    var bytes = input.read(buffer)
+
+                    while (bytes > 0) {
+                        output.write(buffer, 0, bytes)
+                        downloaded += bytes
+                        if (totalSize > 0) {
+                            val pct = (downloaded * 100 / totalSize).toInt()
+                            if (pct != lastProgress && pct % 5 == 0) {
+                                lastProgress = pct
+                                runOnUiThread {
+                                    progressDialog.setMessage("正在下载…\n$pct%")
+                                }
+                            }
+                        }
+                        bytes = input.read(buffer)
+                    }
+
+                    output.flush()
+                    output.close()
+                    input.close()
+                    conn.disconnect()
+
+                    if (downloaded > 0) {
+                        success = true
+                        Log.i(TAG, "APK downloaded: ${apkFile.absolutePath} (${downloaded} bytes)")
+                        break
+                    }
+                } catch (e: Exception) {
+                    lastError = e.message
+                    Log.w(TAG, "Download failed from $url: ${e.message}")
+                }
+            }
+
+            runOnUiThread {
+                progressDialog.dismiss()
+                if (success) {
+                    Toast.makeText(this, "下载完成，正在启动安装…", Toast.LENGTH_SHORT).show()
+                    installApk(apkFile)
+                } else {
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle("下载失败")
+                        .setMessage("所有下载源均失败：${lastError ?: "未知错误"}\n\n可尝试切换更新源后重试。")
+                        .setPositiveButton("确定", null)
+                        .show()
+                }
+            }
+        }.start()
+
+        progressDialog.show()
+    }
+
+    /** 触发系统 APK 安装界面 */
+    private fun installApk(apkFile: File) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "${packageName}.fileprovider",
+                apkFile
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "installApk failed", e)
+            Toast.makeText(this, "无法启动安装：${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** 后台检测到 APK 更新时发通知 */
+    private fun notifyApkUpdateAvailable(update: ApkUpdateInfo) {
+        try {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+            // 创建通知渠道（如果不存在）
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    NOTIF_CHANNEL_UPDATES,
+                    "Hermes 应用更新",
+                    android.app.NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "检测到新版本时提醒更新"
+                }
+                manager.createNotificationChannel(channel)
+            }
+
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pi = android.app.PendingIntent.getActivity(
+                this, 0, intent,
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val notification = androidx.core.app.NotificationCompat.Builder(this, NOTIF_CHANNEL_UPDATES)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("发现新版本 ${update.tagName}")
+                .setContentText("点击查看更新日志并下载")
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+
+            manager.notify(2001, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "notifyApkUpdateAvailable failed", e)
+        }
     }
 
     private fun onChatButtonClicked() {

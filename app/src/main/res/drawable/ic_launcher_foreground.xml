@@ -1,67 +1,93 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Adaptive icon foreground: stylized "H" with circuit nodes and wing accents.
-     Hermes Agent brand icon — H letterform with tech/messenger motifs.
-     Cyan (#06b6d4) on transparent, centered within 108x108 viewport.
-     Safe zone: content within 54±27 (i.e. 27..81 on each axis). -->
+<!-- Adaptive icon foreground: Stylized "H" for Hermes Agent.
+     Design elements:
+     - Central "H" letterform
+     - Wing shapes (Hermes' messenger wings - talaria)
+     - Terminal prompt ">_" in center (Linux/CLI)
+     - Glowing nodes at corners (AI/neural)
+     - Safe zone: content within 27..81 on each axis -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Left vertical bar of H -->
+    <!-- Subtle outer glow -->
+    <path
+        android:pathData="M54,54m-30,0a30,30 0,1 0,60 0a30,30 0,1 0,-60 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="32"
+                android:startColor="#2206b6d4"
+                android:endColor="#00000000" />
+        </aapt:attr>
+    </path>
+
+    <!-- Left wing feathers (3 layers, darker to lighter going out) -->
+    <path
+        android:fillColor="#0e7490"
+        android:pathData="M22,64 Q14,60 20,52 Q28,50 34,56 L34,62 Q28,66 24,66 Q22,66 22,64 Z" />
+    <path
+        android:fillColor="#0891b2"
+        android:pathData="M18,54 Q10,48 16,40 Q26,38 34,46 L34,54 Q26,58 20,58 Q18,58 18,54 Z" />
     <path
         android:fillColor="#06b6d4"
-        android:pathData="M36,34h8v40h-8z" />
+        android:pathData="M22,44 Q16,36 24,30 Q32,30 36,38 L36,46 Q30,50 24,48 Q22,48 22,44 Z" />
 
-    <!-- Right vertical bar of H -->
+    <!-- Right wing feathers (mirror) -->
+    <path
+        android:fillColor="#0e7490"
+        android:pathData="M86,64 Q94,60 88,52 Q80,50 74,56 L74,62 Q80,66 84,66 Q86,66 86,64 Z" />
+    <path
+        android:fillColor="#0891b2"
+        android:pathData="M90,54 Q98,48 92,40 Q82,38 74,46 L74,54 Q82,58 88,58 Q90,58 90,54 Z" />
     <path
         android:fillColor="#06b6d4"
-        android:pathData="M64,34h8v40h-8z" />
+        android:pathData="M86,44 Q92,36 84,30 Q76,30 72,38 L72,46 Q78,50 84,48 Q86,48 86,44 Z" />
 
-    <!-- Crossbar of H -->
+    <!-- H letterform - vertical bars -->
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M37,33h7v17h-7z" />
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M37,58h7v17h-7z" />
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M64,33h7v17h-7z" />
+    <path
+        android:fillColor="#22d3ee"
+        android:pathData="M64,58h7v17h-7z" />
+
+    <!-- H crossbar -->
     <path
         android:fillColor="#06b6d4"
-        android:pathData="M36,50h36v8h-36z" />
+        android:pathData="M37,50h34v8h-34z" />
 
-    <!-- Wing accent: left side of crossbar (3 horizontal lines) -->
+    <!-- Terminal prompt: > -->
     <path
-        android:fillColor="#22d3ee"
-        android:pathData="M28,48h6v2h-6z" />
+        android:fillColor="#ecfeff"
+        android:pathData="M48,52l5,3 -5,3z" />
+    <!-- Cursor: _ -->
     <path
-        android:fillColor="#22d3ee"
-        android:pathData="M26,52h8v2h-8z" />
-    <path
-        android:fillColor="#22d3ee"
-        android:pathData="M28,56h6v2h-6z" />
+        android:fillColor="#a5f3fc"
+        android:pathData="M56,57h6v2h-6z" />
 
-    <!-- Wing accent: right side of crossbar (3 horizontal lines) -->
-    <path
-        android:fillColor="#22d3ee"
-        android:pathData="M74,48h6v2h-6z" />
-    <path
-        android:fillColor="#22d3ee"
-        android:pathData="M74,52h8v2h-8z" />
-    <path
-        android:fillColor="#22d3ee"
-        android:pathData="M74,56h6v2h-6z" />
-
-    <!-- Circuit nodes (small circles at bar endpoints) -->
+    <!-- Glowing nodes at corners -->
     <path
         android:fillColor="#67e8f9"
-        android:pathData="M40,30m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+        android:pathData="M40.5,33m-3,0a3,3 0,1 0,6 0a3,3 0,1 0,-6 0" />
     <path
         android:fillColor="#67e8f9"
-        android:pathData="M68,30m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+        android:pathData="M67.5,33m-3,0a3,3 0,1 0,6 0a3,3 0,1 0,-6 0" />
     <path
         android:fillColor="#67e8f9"
-        android:pathData="M40,78m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
+        android:pathData="M40.5,75m-3,0a3,3 0,1 0,6 0a3,3 0,1 0,-6 0" />
     <path
         android:fillColor="#67e8f9"
-        android:pathData="M68,78m-4,0a4,4 0,1 0,8 0a4,4 0,1 0,-8 0" />
-
-    <!-- Center node on crossbar -->
-    <path
-        android:fillColor="#67e8f9"
-        android:pathData="M54,54m-3,0a3,3 0,1 0,6 0a3,3 0,1 0,-6 0" />
+        android:pathData="M67.5,75m-3,0a3,3 0,1 0,6 0a3,3 0,1 0,-6 0" />
 </vector>

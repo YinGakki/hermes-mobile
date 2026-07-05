@@ -7,6 +7,10 @@ android {
     namespace = "com.nous.hermes.mobile"
     compileSdk = 35
 
+    // NDK 版本：用于编译 PTY JNI 代码（pty.c → libhermespty.so）
+    // 必须与 CI 中安装的 NDK 版本一致
+    ndkVersion = "27.0.12077973"
+
     defaultConfig {
         applicationId = "com.nous.hermes.mobile"
         // minSdk 29：proot+rootfs 方案需要 Android 10+ 的 Os.symlink 等 API。
@@ -18,11 +22,28 @@ android {
         // 不过为保守起见，沿用 28（与 Termux F-Droid 同策略）。
         targetSdk = 28
         versionCode = 2
-        versionName = "0.0.2"
+        versionName = "0.0.2-test"
 
         // Restrict to arm64-v8a — proot 二进制和 Ubuntu rootfs 只支持 aarch64。
         ndk {
             abiFilters += listOf("arm64-v8a")
+        }
+
+        // PTY native 代码构建配置（CMake → libhermespty.so）
+        externalNativeBuild {
+            cmake {
+                // 纯 C 代码，不需要 C++ STL
+                arguments("-DANDROID_STL=none")
+                cFlags("-std=c11")
+            }
+        }
+    }
+
+    // CMake 构建：编译 pty.c → libhermespty.so（PTY JNI 桥接）
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 

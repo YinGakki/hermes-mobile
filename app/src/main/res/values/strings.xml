@@ -115,9 +115,11 @@
     <string name="settings_env_backup">环境备份</string>
     <string name="settings_updates">检查更新</string>
     <string name="settings_update_hermes">更新 Hermes Agent</string>
-    <string name="settings_update_hermes_subtitle">git pull + pip install 更新到最新版</string>
+    <string name="settings_update_hermes_subtitle">Hermes Agent 核心服务</string>
     <string name="settings_update_webui">更新 WebUI</string>
-    <string name="settings_update_webui_subtitle">npm install -g hermes-web-ui@latest</string>
+    <string name="settings_update_webui_subtitle">WebUI 仪表盘界面</string>
+    <string name="settings_update_apk">更新应用 (APK)</string>
+    <string name="settings_update_apk_subtitle">Hermes Android 应用本身</string>
     <string name="settings_rerun_setup">重新运行安装</string>
     <string name="settings_rerun_subtitle">从 bootstrap 开始重新安装</string>
     <string name="settings_battery_optimization">电池优化</string>

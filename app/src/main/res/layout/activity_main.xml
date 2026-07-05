@@ -972,7 +972,175 @@
                         android:contentDescription="@null" />
                 </LinearLayout>
 
-                <!-- Maintenance section -->
+                <!-- ③ APK 更新卡片 -->
+                <LinearLayout
+                    android:id="@+id/btnUpdateApk"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="@drawable/card_bg_clickable"
+                    android:padding="16dp"
+                    android:layout_marginBottom="10dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <LinearLayout
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:gravity="center"
+                        android:background="@drawable/icon_tile_bg">
+
+                        <ImageView
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:src="@drawable/ic_refresh"
+                            android:contentDescription="@null" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/settings_update_apk"
+                            android:textColor="#e2e8f0"
+                            android:textSize="15sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="@string/settings_update_apk_subtitle"
+                            android:textColor="#94a3b8"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/apkVersionText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="—"
+                            android:textColor="#64748b"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/apkUpdateBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/update_badge_bg"
+                        android:padding="4dp"
+                        android:text="有更新"
+                        android:textColor="#10b981"
+                        android:textSize="10sp"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_chevron"
+                        android:contentDescription="@null" />
+                </LinearLayout>
+
+                <!-- 更新设置：更新源选择 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginTop="8dp"
+                    android:layout_marginBottom="6dp"
+                    android:text="更新源"
+                    android:textColor="#64748b"
+                    android:textSize="11sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="8dp">
+
+                    <TextView
+                        android:id="@+id/btnSourceGithub"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="36dp"
+                        android:gravity="center"
+                        android:text="GitHub"
+                        android:textColor="#e2e8f0"
+                        android:textSize="13sp"
+                        android:background="@drawable/card_bg_clickable"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:layout_marginEnd="4dp" />
+
+                    <TextView
+                        android:id="@+id/btnSourceChina"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="36dp"
+                        android:gravity="center"
+                        android:text="Gitee"
+                        android:textColor="#94a3b8"
+                        android:textSize="13sp"
+                        android:background="@drawable/card_bg_clickable"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:layout_marginStart="4dp" />
+                </LinearLayout>
+
+                <!-- 更新设置：通道选择 -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginBottom="6dp"
+                    android:text="更新通道"
+                    android:textColor="#64748b"
+                    android:textSize="11sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="10dp">
+
+                    <TextView
+                        android:id="@+id/btnChannelStable"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="36dp"
+                        android:gravity="center"
+                        android:text="正式版"
+                        android:textColor="#e2e8f0"
+                        android:textSize="13sp"
+                        android:background="@drawable/card_bg_clickable"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:layout_marginEnd="4dp" />
+
+                    <TextView
+                        android:id="@+id/btnChannelBeta"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="36dp"
+                        android:gravity="center"
+                        android:text="测试版"
+                        android:textColor="#94a3b8"
+                        android:textSize="13sp"
+                        android:background="@drawable/card_bg_clickable"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:layout_marginStart="4dp" />
+                </LinearLayout>
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"

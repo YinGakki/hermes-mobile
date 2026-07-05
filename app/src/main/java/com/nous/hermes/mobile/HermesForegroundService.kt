@@ -93,10 +93,10 @@ class HermesForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Hermes Agent Running",
+                "Hermes Agent 运行中",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Keeps the Hermes Agent runtime alive in the background"
+                description = "保持 Hermes Agent 运行时在后台持续运行"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -121,8 +121,8 @@ class HermesForegroundService : Service() {
         }
 
         return builder
-            .setContentTitle("Hermes Agent is running")
-            .setContentText("Runtime ready — launch hermes from your shell")
+            .setContentTitle("Hermes Agent 正在运行")
+            .setContentText("运行时已就绪，可在终端中启动 hermes")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
             .setOngoing(true)

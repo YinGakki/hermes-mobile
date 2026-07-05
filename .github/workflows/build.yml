@@ -3,15 +3,18 @@ name: Build Release APK
 # Build a self-signed release APK that embeds the Termux bootstrap and
 # installs Hermes Agent on first launch.
 #
+# 发版流程（Gitee 为主仓库）：
+#   1. 在 Gitee 上打 tag（如 v0.0.3）发版
+#   2. Gitee Push 镜像自动同步代码 + tag 到 GitHub
+#   3. GitHub 检测到 tag push，触发本 workflow 的 release job
+#   4. release job 编译 APK → 创建 GitHub Release → 同步 Release + APK 到 Gitee
+#
 # Required GitHub Secrets:
 #   KEYSTORE_BASE64        Base64-encoded .jks keystore (from `keytool -genkeypair`)
 #   KEYSTORE_PASSWORD      Keystore password
 #   SIGNING_KEY_ALIAS      Alias of the signing key inside the keystore
 #   SIGNING_KEY_PASSWORD   Password for that alias
-#
-# Optional (used only by the "release" job to publish a GitHub Release):
-#   (none — releases are created from pushed tags; the workflow uploads
-#    the APK as a build artifact in all cases)
+#   GITEE_TOKEN            Gitee 私人令牌（用于同步 Release + APK 到 Gitee）
 
 on:
   push:
@@ -50,8 +53,8 @@ jobs:
           # `packages` is a single space-separated string, NOT a YAML literal block.
           # The action already installs `tools platform-tools` by default; this
           # adds the platform + build-tools versions matching compileSdk in
-          # app/build.gradle.kts.
-          packages: 'platforms;android-35 build-tools;35.0.0'
+          # app/build.gradle.kts, plus NDK + CMake for the PTY native build.
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.0.12077973 cmake;3.22.1'
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -369,6 +372,22 @@ jobs:
           fi
           echo "✓ Version matches"
 
+      - name: Detect Gitee token
+        # secrets 不能直接在 step 级别的 if: 里使用，先转发到 env，
+        # 再用一个 bash step 设置 step output，后续 step 用 output 判断。
+        id: has_gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        shell: bash
+        run: |
+          if [ -n "$GITEE_TOKEN" ]; then
+            echo "has_gitee=true" >> "$GITHUB_OUTPUT"
+            echo "GITEE_TOKEN secret present (length: ${#GITEE_TOKEN})"
+          else
+            echo "has_gitee=false" >> "$GITHUB_OUTPUT"
+            echo "WARNING: GITEE_TOKEN secret not set — skipping Gitee sync"
+          fi
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
@@ -458,3 +477,90 @@ jobs:
             ---
             [完整更新日志](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
           fail_on_unmatched_files: true
+
+      # ─────────────────────────────────────────────────────────────────────
+      # 同步 Release + APK 到 Gitee（国内用户下载源）
+      # Gitee 仓库通过 Push 镜像自动同步 GitHub 代码 + tag，
+      # 但 Release 和附件（APK）需要通过 API 手动同步。
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Sync Release to Gitee
+        if: steps.has_gitee.outputs.has_gitee == 'true'
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "=== 同步 Release $tag 到 Gitee ==="
+
+          # 1. 用 CHANGELOG 内容作为 Release body
+          changelog=$(awk -v tag="## [${tag}]" '
+            $0 ~ "^" tag { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed '/^---$/d' | sed '/./,$!d')
+          if [ -z "$changelog" ]; then
+            changelog="（CHANGELOG.md 中未找到 ${tag} 的更新日志）"
+          fi
+
+          # 2. 判断是否为测试版（tag 或 CHANGELOG 中包含"测试版"）
+          is_prerelease="false"
+          if echo "$changelog" | grep -q "测试版"; then
+            is_prerelease="true"
+          fi
+
+          # 3. 在 Gitee 创建 Release
+          echo "创建 Gitee Release..."
+          create_resp=$(curl -s -X POST "https://gitee.com/api/v5/repos/yingakki/hermes-mobile/releases" \
+            -H "Content-Type: application/json" \
+            -d "$(python3 -c "
+          import json
+          print(json.dumps({
+              'access_token': '$GITEE_TOKEN',
+              'tag_name': '$tag',
+              'name': 'Hermes Agent (Android) $tag',
+              'body': '''$changelog''',
+              'prerelease': $is_prerelease,
+              'target_commitish': 'main'
+          }))
+          ")")
+
+          release_id=$(echo "$create_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+          if [ -z "$release_id" ]; then
+            echo "⚠ Gitee Release 创建失败（可能已存在），尝试获取已有 Release ID"
+            release_id=$(curl -s "https://gitee.com/api/v5/repos/yingakki/hermes-mobile/releases?per_page=20" \
+              | python3 -c "
+          import sys,json
+          for r in json.load(sys.stdin):
+              if r.get('tag_name') == '$tag':
+                  print(r['id']); break
+          " 2>/dev/null || echo "")
+          fi
+
+          if [ -z "$release_id" ]; then
+            echo "✗ 无法获取 Gitee Release ID，跳过 APK 上传"
+            exit 0
+          fi
+          echo "✓ Gitee Release ID: $release_id"
+
+          # 4. 上传 APK 到 Gitee Release
+          apk_file="artifacts/hermes-${tag}-arm64-lite.apk"
+          if [ ! -f "$apk_file" ]; then
+            echo "⚠ APK 文件不存在: $apk_file"
+            exit 0
+          fi
+          echo "上传 APK 到 Gitee Release $release_id..."
+          upload_resp=$(curl -s -X POST \
+            "https://gitee.com/api/v5/repos/yingakki/hermes-mobile/releases/${release_id}/attach_files" \
+            -F "access_token=${GITEE_TOKEN}" \
+            -F "name=hermes-${tag}-arm64-lite.apk" \
+            -F "file=@${apk_file}")
+
+          download_url=$(echo "$upload_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('browser_download_url',''))" 2>/dev/null || echo "")
+          if [ -n "$download_url" ]; then
+            echo "✓ APK 上传成功: $download_url"
+          else
+            echo "⚠ APK 上传可能失败: $upload_resp"
+          fi
+
+          echo "=== Gitee 同步完成 ==="

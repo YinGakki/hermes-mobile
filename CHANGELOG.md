@@ -7,17 +7,36 @@
 
 ---
 
+## [v0.0.2-test] — 2026-07-05
+
+测试版。CI 流程验证版本，用于测试「Gitee 发版 → GitHub 自动编译 → 同步回 Gitee」的完整链路。
+
+### 变更
+
+- **CI 修复** — 修复 `Sync Release to Gitee` 步骤的 `if` 条件：原 `if: env.GITEE_TOKEN != ''` 在 step 级别 `if:` 评估时 `env:` 尚未生效，会导致条件永远为假、永远跳过同步。改为新增 `Detect Gitee token` 步骤输出 `has_gitee`，再用 `if: steps.has_gitee.outputs.has_gitee == 'true'` 判断
+- **发版流程** — 调整为以 Gitee 为主仓库：Gitee 打 tag 发版 → Push 镜像同步代码 + tag 到 GitHub → GitHub CI 自动编译 → 同步 Release + APK 回 Gitee
+
+---
+
 ## [v0.0.2] — 2026-07-05
 
-测试版。修复 v0.0.1 的多项问题，新增内置终端和应用图标。
+测试版。修复 v0.0.1 的多项问题，新增 Termux 风格 PTY 终端、应用图标和中文化通知。
 
 ### 新增
 
-- **内置终端** — 打开终端按钮不再只显示说明，而是启动交互式 bash shell，在 proot rootfs 里直接运行 hermes 命令
-- **应用图标** — 替换默认对勾图标为项目专属 H logo（深靛蓝渐变背景 + 青色 H + 电路节点 + 翼形装饰）
+- **PTY 终端** — 内置终端从 ProcessBuilder 管道升级为真正的伪终端（PTY），支持交互式 TUI 程序（hermes setup 向导、vim、htop 等）；界面改为 Termux 风格全屏终端，直接在终端内输入（无独立输入框）；底部功能键栏（ESC、Tab、Ctrl、方向键）适配软键盘；ANSI 转义序列处理（剥离颜色、\r 行覆盖）；支持 Ctrl+C / Ctrl+D 等控制字符
+- **应用图标** — 替换默认对勾图标为项目专属 H logo：深空渐变背景（深石板蓝 → 深青）+ 青色 H 字母主体 + 双侧三层 Hermes 信使翅膀（渐变羽毛）+ 横杠中央终端提示符 `>_` + 四角发光节点（AI 神经网络意象）
 - **版本号显示** — 设置页更新卡片显示当前安装版本号
 - **启动时自动检测更新** — Hermes Agent 用 git fetch 检查，WebUI 用 npm view 检查，有更新时绿色亮显 + badge
 - **CI 版本号校验** — release job 打 tag 时校验 git tag 与 versionName 一致
+- **CI 自动提取更新日志** — release job 从 CHANGELOG.md 自动提取对应版本内容作为 Release body
+- **APK 自更新检测** — 每次启动后台检查 GitHub Releases 是否有新版本，有更新时发通知提醒；设置页新增 APK 更新卡片，显示当前版本→最新版本
+- **更新通道选择** — 支持选择"正式版"或"测试版"通道：正式版只检查非 prerelease，测试版包含 prerelease（基于 GitHub Release 的 prerelease 标志）
+- **更新源选择** — 支持选择"GitHub"或"Gitee"更新源：GitHub 走 api.github.com（海外用户直连，下载时使用 ghproxy 代理兜底）；Gitee 走 gitee.com/api/v5（国内用户直连，无需翻墙）
+- **Gitee 镜像仓库** — 新增 Gitee 镜像仓库（gitee.com/yingakki/hermes-mobile），与 GitHub 双向同步代码；CI 发版后自动同步 Release + APK 附件到 Gitee，国内用户可直接从 Gitee 下载
+- **发版流程调整** — 改为以 Gitee 为主仓库：在 Gitee 打 tag 发版 → Gitee Push 镜像自动同步代码 + tag 到 GitHub → GitHub CI 自动编译 APK 并创建 Release → 同步 APK 回 Gitee Release
+- **更新日志对话框** — 点击 APK 更新卡片显示发布页面的更新日志（Release body），去除 markdown 标记后以纯文本展示，包含版本号、通道、文件大小信息
+- **APK 下载安装** — 对话框点击"下载更新"后后台下载 APK（带进度百分比），下载完成自动触发系统安装界面；使用 FileProvider 共享文件，需 REQUEST_INSTALL_PACKAGES 权限
 
 ### 修复
 
@@ -26,19 +45,36 @@
 - **步骤状态显示** — 正在安装的步骤不会被错误标记为"已完成"，完成文案改为步骤专属（"✓ Hermes Agent 已完成"等）
 - **全部日志显示** — fullLog 容量从 5000 提升到 50000 行，超长时显示最后 2000 行
 - **弹窗宽度自适应** — 从 85%/280-520dp 改为 92%/320-720dp
-- **聊天页退出** — 右上角悬浮 ✕ 按钮直接退出回控制台
+- **聊天页退出方式优化** — 移除悬浮按钮，改为左边缘滑动手势退出：从屏幕左边缘向右滑动显示跟随手指的"← 退出"指示器，滑动超过 100dp 松手即退出，未超过则回弹隐藏；首次进入 Toast 提示手势；界面完全干净无常驻按钮
+- **设置页重新安装按钮** — 修复点击无反应问题：原逻辑调用 extractBootstrap 后被 refreshNavTabs 弹回仪表盘；改为直接显示安装界面（4 步骤 + 日志面板），用户可重新点击"一键安装"
+- **仪表盘重新安装按钮** — 移除仪表盘的"重新安装环境"入口，统一由设置页的"重新安装"按钮触发
+- **检查更新卡片简化** — 副标题移除更新命令文本（git pull/npm install），改为项目说明（"Hermes Agent 核心服务"/"WebUI 仪表盘界面"）；只显示当前版本号 + 有无更新状态
 - **停止服务崩溃** — stop() 用独立线程 + 10s 超时，避免卡死或崩溃
 - **deb bundle 日志移除** — 删除不再使用的 extractDebBundleIfPresent 方法
 - **架构图错位** — 简化为单嵌套框，去除 CJK 字符对齐问题
 - **默认分支改为 main** — 配合分支重命名
+- **通知中文化** — 前台服务通知（渠道名、描述、标题、内容）从英文改为中文显示
 
 ### 技术细节
 
 - versionCode: 1 → 2
 - 新增 TerminalActivity.kt（内置终端）
 - 新增 update_badge_bg.xml（更新 badge 背景）
-- 新增 ic_launcher_background/foreground 矢量图（自适应图标）
+- 新增 ic_launcher_background/foreground 矢量图（自适应图标，含翅膀/终端符/发光节点）
 - 新增 getHermesVersion/checkHermesUpdate/getWebUIVersion/checkWebUIUpdate 方法
+- 新增 JNI PTY 桥接：app/src/main/cpp/pty.c + CMakeLists.txt → libhermespty.so
+- 新增 PtyNative.kt（JNI 绑定：createSubprocess/read/write/setWindowSize/waitFor/close/killProcess）
+- 新增 TerminalView.kt（自定义终端视图：ANSI 剥离、\r 行覆盖、字符级输入、InputConnection 捕获软键盘）
+- TerminalActivity 改为 PTY 终端：posix_openpt + fork + exec proot + bash，替代 ProcessBuilder 管道
+- ChatActivity 新增 SwipeExitContainer 内部类（边缘滑动手势 + 跟随手指指示器）
+- HermesForegroundService 通知文本硬编码改为中文字面量
+- build.gradle.kts 新增 externalNativeBuild（CMake）+ ndkVersion 27.0.12077973
+- CI 新增 NDK + CMake SDK 包安装
+- 新增 ApkUpdateChecker.kt（GitHub/Gitee Releases API 检测 APK 更新，支持正式/测试版通道 + GitHub/Gitee 双更新源）
+- 新增 res/xml/file_paths.xml（FileProvider 路径配置，用于 APK 安装）
+- AndroidManifest 新增 REQUEST_INSTALL_PACKAGES 权限 + FileProvider 声明
+- MainActivity 新增 APK 更新检测/更新日志对话框/下载安装/后台通知方法
+- 更新偏好存储于 hermes_prefs（update_source / update_channel 键）
 
 ---
 

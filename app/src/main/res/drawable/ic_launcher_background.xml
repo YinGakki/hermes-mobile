@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Adaptive icon background: deep indigo to purple gradient -->
+<!-- Adaptive icon background: Deep space gradient - dark slate to deep teal.
+     Evokes terminal/AI/tech feel. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
@@ -15,8 +16,8 @@
                 android:startY="0"
                 android:endX="108"
                 android:endY="108"
-                android:startColor="#1e1b4b"
-                android:endColor="#4c1d95" />
+                android:startColor="#0f172a"
+                android:endColor="#164e63" />
         </aapt:attr>
     </path>
 </vector>
