@@ -395,6 +395,30 @@ jobs:
           echo "version=$tag" >> "$GITHUB_OUTPUT"
           echo "Tag: $tag"
 
+      - name: Extract changelog for this version
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          # tag 形如 v0.0.2，CHANGELOG.md 里对应 ## [v0.0.2]
+          # 提取从 "## [v$tag]" 到下一个 "## [" 之间的内容
+          changelog=$(awk -v tag="## [${tag}]" '
+            $0 ~ "^" tag { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed '/^---$/d' | sed '/./,$!d')
+          if [ -z "$changelog" ]; then
+            changelog="（CHANGELOG.md 中未找到 ${tag} 的更新日志）"
+          fi
+          # 转义为 GITHUB_OUTPUT 多行格式
+          {
+            echo "body<<EOF"
+            echo "$changelog"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Extracted changelog (${#changelog} chars)"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -402,6 +426,10 @@ jobs:
           name: Hermes Agent (Android) ${{ steps.version.outputs.version }}
           body: |
             ## ${{ steps.version.outputs.version }}
+
+            ${{ steps.changelog.outputs.body }}
+
+            ---
 
             ### 下载
 
@@ -428,5 +456,5 @@ jobs:
             应用内置 4 步安装向导（proot → 依赖 → Hermes Agent → WebUI），也可点击"一键安装全部"。
 
             ---
-            [完整更新日志](https://github.com/${{ github.repository }}/commits/${{ steps.version.outputs.version }})
+            [完整更新日志](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
           fail_on_unmatched_files: true
