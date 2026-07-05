@@ -90,7 +90,7 @@ class TerminalActivity : AppCompatActivity() {
             typeface = android.graphics.Typeface.MONOSPACE
             setTextColor(0xFF4ade80.toInt())
             textSize = 12f
-            textIsSelectable = true
+            setTextIsSelectable(true)
             setPadding(12, 8, 12, 8)
             text = "正在启动终端…\n"
         }
@@ -119,7 +119,7 @@ class TerminalActivity : AppCompatActivity() {
             hint = "输入命令…"
             setHintTextColor(0xFF64748b.toInt())
             setTextColor(0xFFe2e8f0.toInt())
-            backgroundColor = 0x00000000
+            setBackgroundColor(0x00000000)
             typeface = android.graphics.Typeface.MONOSPACE
             textSize = 13f
             imeOptions = EditorInfo.IME_ACTION_SEND
@@ -153,7 +153,8 @@ class TerminalActivity : AppCompatActivity() {
     private fun startShell() {
         Thread {
             try {
-                val pm = ProcessManager(this)
+                val paths = BootstrapManager.getPaths(this)
+                val pm = ProcessManager(this, paths.filesDir, paths.nativeLibDir)
                 // 构建 gateway 模式命令（login session，适合交互式）
                 // 激活 venv 并设置 PATH，让 hermes 命令可用
                 val shellCmd = "cd /root/home/hermes-agent 2>/dev/null; " +
