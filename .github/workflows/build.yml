@@ -1,21 +1,5 @@
 name: Build Release APK
 
-# Build a self-signed release APK that embeds the Termux bootstrap and
-# installs Hermes Agent on first launch.
-#
-# 发版流程（Gitee 为主仓库）：
-#   1. 在 Gitee 上打 tag（如 v0.0.3）发版
-#   2. Gitee Push 镜像自动同步代码 + tag 到 GitHub
-#   3. GitHub 检测到 tag push，触发本 workflow 的 release job
-#   4. release job 编译 APK → 创建 GitHub Release → 同步 Release + APK 到 Gitee
-#
-# Required GitHub Secrets:
-#   KEYSTORE_BASE64        Base64-encoded .jks keystore (from `keytool -genkeypair`)
-#   KEYSTORE_PASSWORD      Keystore password
-#   SIGNING_KEY_ALIAS      Alias of the signing key inside the keystore
-#   SIGNING_KEY_PASSWORD   Password for that alias
-#   GITEE_TOKEN            Gitee 私人令牌（用于同步 Release + APK 到 Gitee）
-
 on:
   push:
     branches: [main]
@@ -29,33 +13,28 @@ jobs:
     name: assembleRelease (arm64-v8a)
     runs-on: ubuntu-latest
     permissions:
-      # Needed by the "Upload APK to latest pre-release" step which uses
-      # softprops/action-gh-release to create/overwrite a git tag + release.
       contents: write
-
     env:
-      # Must match the abiFilters / bootstrap arch used in app/build.gradle.kts.
       TERMUX_ARCH: aarch64
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          # `packages` is a single space-separated string, NOT a YAML literal block.
-          # The action already installs `tools platform-tools` by default; this
-          # adds the platform + build-tools versions matching compileSdk in
-          # app/build.gradle.kts, plus NDK + CMake for the PTY native build.
           packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.0.12077973 cmake;3.22.1'
-
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          mkdir -p "${ANDROID_HOME}/licenses"
+          echo "8933bad161af4178b1185d1a37fbf41ea5269c55" > "${ANDROID_HOME}/licenses/android-sdk-license"
+          echo "84835b9432ad3f54316d2516422849880f08a478" > "${ANDROID_HOME}/licenses/android-sdk-preview-license"
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses || true
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -64,11 +43,9 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
-
       - name: Fetch PRoot binaries (proot + libtalloc) for arm64-v8a
         shell: bash
         run: ./scripts/fetch-proot-binaries.sh
-
       - name: Verify PRoot binaries are present
         shell: bash
         run: |
@@ -81,212 +58,17 @@ jobs:
             fi
             echo "$f: $(wc -c < "$path") bytes"
           done
-
-      # ─────────────────────────────────────────────────────────────────────
-      # FULL-FLAVOR-ONLY STEPS — temporarily disabled (only building lite).
-      # These download wheels + debs into app/src/full/assets/ for the
-      # offline "full" flavor. They are useless for the lite flavor and
-      # add ~5+ min to CI. Re-enable by removing the `if: false` lines
-      # (and re-add :app:assembleFullRelease to the build step).
-      # ─────────────────────────────────────────────────────────────────────
-      - name: Set up Python (for wheel cache fetch)
-        if: false  # lite-only build
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Clone hermes-agent (for pyproject.toml + constraints)
-        if: false  # lite-only build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          rm -rf hermes-agent
-          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git
-          echo "hermes_dir=$RUNNER_TEMP/hermes-agent" >> "$GITHUB_ENV"
-
-      - name: Pre-fetch Hermes wheel cache (no-arch + manylinux x86_64)
-        if: false  # lite-only build
-        shell: bash
-        run: |
-          set -euo pipefail
-          # NOTE on platform tags:
-          # - Pure-python wheels (py3-none-any) work everywhere, including
-          #   Termux/aarch64 Android.
-          # - manylinux wheels are Linux x86_64 — they will NOT install on
-          #   Android aarch64. We fetch them anyway so the cache has broad
-          #   coverage; at install time pip skips wheels whose platform tag
-          #   doesn't match the host (we use --find-links WITHOUT --no-index
-          #   in HermesServerManager, so PyPI remains a fallback for the
-          #   Android-aarch64-native packages like cryptography/cffi).
-          #
-          # In practice this step mainly pulls the pure-python deps
-          # (fastapi, uvicorn, starlette, jinja2, pyyaml, click, etc.),
-          # which is the bulk of the install by count.
-          #
-          # IMPORTANT: `pip download` does NOT accept `-e` (editable) — that
-          # is a `pip install`-only flag. Pass the requirement spec directly
-          # as `'.[termux]'`. Also do NOT pass --no-deps — we want the full
-          # transitive dependency tree cached.
-          wheelhouse="$RUNNER_TEMP/wheels"
-          mkdir -p "$wheelhouse"
-          cd "$hermes_dir"
-
-          # Single pass: wheels only, targeting manylinux x86_64 + py3-none-any.
-          # --only-binary=:all: is REQUIRED when --platform/--python-version are
-          # set (pip rejects mixing platform constraints with sdists otherwise).
-          # This fetches every wheel available for the target: pure-python
-          # (py3-none-any, which installs fine on Android aarch64) + manylinux
-          # x86_64 (which pip skips at install time on Android, falling back
-          # to PyPI for the Android-native build — see HermesServerManager).
-          pip download --dest "$wheelhouse" \
-            '.[termux]' \
-            -c constraints-termux.txt \
-            --platform manylinux2014_x86_64 \
-            --python-version 311 \
-            --only-binary=:all: 2>&1 | tail -20 || true
-
-          echo "Wheel cache contents:"
-          ls -1 "$wheelhouse" | head -30
-          echo "..."
-          echo "Total files: $(ls -1 "$wheelhouse" | wc -l)"
-
-      - name: Package wheel cache as tarball
-        if: false  # lite-only build
-        shell: bash
-        run: |
-          set -euo pipefail
-          wheelhouse="$RUNNER_TEMP/wheels"
-          if [ ! -d "$wheelhouse" ] || [ -z "$(ls -A "$wheelhouse" 2>/dev/null)" ]; then
-            echo "WARNING: wheel cache is empty — APK will fall back to PyPI at first launch"
-            exit 0
-          fi
-          mkdir -p app/src/full/assets
-          tar -czf app/src/full/assets/wheels.tar.gz -C "$RUNNER_TEMP" wheels
-          ls -la app/src/full/assets/wheels.tar.gz
-          echo "Wheel cache size: $(du -h app/src/full/assets/wheels.tar.gz | cut -f1)"
-
-      - name: Pre-fetch Python + native deps deb bundle (aarch64)
-        # Disabled: APK was 186MB. Now all packages (including Python, proot,
-        # git, build deps, etc.) are downloaded at runtime via apt-get with
-        # mirror fallback. APK shrinks to ~50MB (bootstrap only).
-        # Runtime download path uses the same mirror fallback as clang/rust:
-        #   1. packages.termux.dev (official CDN)
-        #   2. mirrors.tuna.tsinghua.edu.cn (Tsinghua mirror, China-friendly)
-        if: false
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Fetch the full closure of ALL Termux packages the APK needs at
-          # first launch, with their entire transitive dependency tree:
-          #
-          #   - python + python-pip + 15 native deps (libffi/openssl/...)
-          #   - proot + libtalloc (path remapping for dpkg)
-          #   - git (hermes-agent clone)
-          #   - make, pkg-config, binutils (build tools)
-          #   - libxml2, libarchive, libcurl, libuv, libnghttp2/3 (rust/cmake links)
-          #   - ripgrep, rhash, jsoncpp (Hermes search/misc)
-          #   - libedit, ndk-sysroot, ndk-multilib, libcompiler-rt (rust toolchain)
-          #   - nodejs-lts, npm, c-ares, libicu (Hermes optional JS runtime)
-          #   - cmake, libllvm, lld (native wheel compile)
-          #
-          # Excluded (too big, fetched at runtime via mirror fallback):
-          #   - rust toolchain (~300MB, every 6 weeks)
-          #   - clang/llvm full (~300MB, every 6 weeks)
-          #   - ffmpeg (~30MB, optional)
-          #
-          # The script parses Packages.gz and recursively walks Depends, so
-          # we get the full closure (~55 packages, ~165MB deb / ~61MB tar.gz)
-          # without ever running apt-get itself.
-          bundle_dir="$RUNNER_TEMP/deb-bundle"
-          rm -rf "$bundle_dir"
-          python3 scripts/fetch-python-bundle.py \
-            --arch "$TERMUX_ARCH" \
-            --out "$bundle_dir" \
-            --extra proot --extra libtalloc \
-            --extra git \
-            --extra make --extra pkg-config --extra binutils \
-            --extra libxml2 --extra libarchive --extra libcurl \
-            --extra libuv --extra libnghttp2 --extra libnghttp3 --extra libngtcp2 \
-            --extra ripgrep --extra rhash --extra jsoncpp \
-            --extra libedit --extra ndk-sysroot --extra ndk-multilib --extra libcompiler-rt \
-            --extra nodejs --extra npm --extra c-ares --extra libicu \
-            --extra cmake --extra libllvm --extra lld
-          echo "---"
-          echo "Bundle contents:"
-          ls -1 "$bundle_dir" | head -30
-          echo "..."
-          echo "Total deb files: $(ls -1 "$bundle_dir"/*.deb 2>/dev/null | wc -l)"
-
-      - name: Package deb bundle as tarball
-        # Bundle the fetched debs into the APK assets directory.
-        shell: bash
-        run: |
-          set -euo pipefail
-          bundle_dir="$RUNNER_TEMP/deb-bundle"
-          if [ ! -d "$bundle_dir" ] || [ -z "$(ls -A "$bundle_dir"/*.deb 2>/dev/null)" ]; then
-            echo "WARNING: deb bundle is empty — APK will fall back to apt-get download at first launch"
-            exit 0
-          fi
-          mkdir -p app/src/main/assets
-          tar -czf app/src/main/assets/deb-bundle.tar.gz -C "$RUNNER_TEMP" deb-bundle
-          ls -la app/src/main/assets/deb-bundle.tar.gz
-          echo "Deb bundle size: $(du -h app/src/main/assets/deb-bundle.tar.gz | cut -f1)"
-
-      - name: Pre-fetch aarch64 manylinux wheels (best-effort)
-        if: false  # lite-only build
-        shell: bash
-        run: |
-          set -euo pipefail
-          # BEST-EFFORT: try to fetch aarch64 manylinux wheels for Hermes's
-          # native deps (cryptography, cffi, pydantic-core, jiter, uvloop,
-          # httptools, watchfiles, etc.).
-          #
-          # CAVEAT: manylinux wheels are built against glibc, but Android
-          # uses bionic libc. Even if pip can install them (platform tag
-          # matches aarch64), they will likely FAIL AT RUNTIME with missing
-          # symbols. pip's --find-links without --no-index means pip will
-          # try the cached wheel first; if it segfaults on import, the user
-          # has to manually uninstall + reinstall from source.
-          #
-          # Despite this risk, we fetch them anyway because:
-          #   1. Some pure-C wheels (no glibc-specific symbols) may work.
-          #   2. pip skips incompatible wheels at install time, so the
-          #      cache doesn't BREAK anything — worst case it's dead weight.
-          #   3. If a wheel works, it saves ~5-10 min of on-device compile.
-          #
-          # If this proves problematic in practice, delete this step — the
-          # x86_64 manylinux wheels fetched earlier already cover pure-python
-          # deps, and on-device compile remains the fallback for native ones.
-          wheelhouse="$RUNNER_TEMP/wheels"
-          mkdir -p "$wheelhouse"
-          cd "$hermes_dir"
-          echo "Fetching aarch64 manylinux wheels (best-effort, may not work on Android)…"
-          pip download --dest "$wheelhouse" \
-            '.[termux]' \
-            -c constraints-termux.txt \
-            --platform manylinux2014_aarch64 \
-            --python-version 311 \
-            --only-binary=:all: 2>&1 | tail -20 || true
-          echo "Total wheels after aarch64 fetch: $(ls -1 "$wheelhouse" | wc -l)"
-
       - name: Detect signing keystore
         id: has_keystore
-        # `secrets` context IS available in `env:` value position (just not in
-        # step-level `if:`). Forward it to env, then run a bash step that
-        # sets a step output we CAN check in a later `if:`.
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         shell: bash
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "has_keystore=true" >> "$GITHUB_OUTPUT"
-            echo "Keystore secret present (length: ${#KEYSTORE_BASE64})"
           else
             echo "has_keystore=false" >> "$GITHUB_OUTPUT"
-            echo "WARNING: KEYSTORE_BASE64 secret not set — producing UNSIGNED APK"
           fi
-
       - name: Decode signing keystore
         if: steps.has_keystore.outputs.has_keystore == 'true'
         env:
@@ -296,271 +78,22 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/keystore"
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/release.jks"
-          echo "Keystore decoded ($(wc -c < "$RUNNER_TEMP/keystore/release.jks") bytes)"
-
       - name: Build release APK (lite flavor only)
         env:
           SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/keystore/release.jks
           SIGNING_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-          HAS_KEYSTORE: ${{ steps.has_keystore.outputs.has_keystore == 'true' }}
         shell: bash
         run: |
           ./gradlew :app:assembleLiteRelease \
             --no-daemon \
             --stacktrace \
             -Pandroid.builder.sdkDownload=false
-
-      - name: Locate built APK
-        id: apk
-        shell: bash
-        run: |
-          set -euo pipefail
-          lite_apk=$(find app/build/outputs/apk/lite/release -name '*.apk' | head -n1)
-          if [ -z "$lite_apk" ]; then
-            echo "ERROR: lite APK not found"
-            exit 1
-          fi
-          echo "Lite APK: $lite_apk ($(wc -c < "$lite_apk") bytes)"
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: hermes-agent-arm64-release
-          path: |
-            app/build/outputs/apk/lite/release/*.apk
+          path: app/build/outputs/apk/lite/release/*.apk
           if-no-files-found: error
           retention-days: 30
-
-      - name: Rename APK to include short SHA + flavor
-        shell: bash
-        run: |
-          set -euo pipefail
-          lite_src=$(find app/build/outputs/apk/lite/release -name '*.apk' | head -n1)
-          lite_dst="hermes-${GITHUB_SHA::7}-arm64-lite.apk"
-          cp "$lite_src" "$lite_dst"
-          echo "lite_dst=$lite_dst" >> "$GITHUB_ENV"
-          echo "Renamed: $lite_dst ($(du -h "$lite_dst" | cut -f1))"
-
-  release:
-    name: Publish GitHub Release (on tag)
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Verify tag matches versionName
-        # 确保 git tag (v0.0.1) 与 app/build.gradle.kts 的 versionName (0.0.1) 一致。
-        # 避免出现 "APK 内显示 0.0.2 但 Release 标题是 v0.0.1" 的版本号错位。
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/v}"
-          version_name=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*versionName = "//;s/".*//')
-          echo "Tag: $tag"
-          echo "versionName: $version_name"
-          if [ "$tag" != "$version_name" ]; then
-            echo "ERROR: git tag ($tag) does not match versionName ($version_name)"
-            echo "Fix: update versionName in app/build.gradle.kts to match the tag, or re-tag."
-            exit 1
-          fi
-          echo "✓ Version matches"
-
-      - name: Detect Gitee token
-        # secrets 不能直接在 step 级别的 if: 里使用，先转发到 env，
-        # 再用一个 bash step 设置 step output，后续 step 用 output 判断。
-        id: has_gitee
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        shell: bash
-        run: |
-          if [ -n "$GITEE_TOKEN" ]; then
-            echo "has_gitee=true" >> "$GITHUB_OUTPUT"
-            echo "GITEE_TOKEN secret present (length: ${#GITEE_TOKEN})"
-          else
-            echo "has_gitee=false" >> "$GITHUB_OUTPUT"
-            echo "WARNING: GITEE_TOKEN secret not set — skipping Gitee sync"
-          fi
-
-      - name: Download APK artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: hermes-agent-arm64-release
-          path: artifacts
-
-      - name: Rename APK with tag version
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd artifacts
-          apk=$(find . -name '*.apk' | head -n1)
-          tag="${GITHUB_REF#refs/tags/}"
-          new_name="hermes-${tag}-arm64-lite.apk"
-          cp "$apk" "$new_name"
-          rm -f "$apk"
-          echo "Renamed to: $new_name ($(du -h "$new_name" | cut -f1))"
-
-      - name: Extract version from tag
-        id: version
-        shell: bash
-        run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          echo "version=$tag" >> "$GITHUB_OUTPUT"
-          echo "Tag: $tag"
-
-      - name: Extract changelog for this version
-        id: changelog
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
-          # tag 形如 v0.0.2，CHANGELOG.md 里对应 ## [v0.0.2]
-          # 提取从 "## [v$tag]" 到下一个 "## [" 之间的内容
-          changelog=$(awk -v tag="## [${tag}]" '
-            $0 ~ "^" tag { found=1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md | sed '/^---$/d' | sed '/./,$!d')
-          if [ -z "$changelog" ]; then
-            changelog="（CHANGELOG.md 中未找到 ${tag} 的更新日志）"
-          fi
-          # 转义为 GITHUB_OUTPUT 多行格式
-          {
-            echo "body<<EOF"
-            echo "$changelog"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "Extracted changelog (${#changelog} chars)"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*.apk
-          name: Hermes Agent (Android) ${{ steps.version.outputs.version }}
-          body: |
-            ## ${{ steps.version.outputs.version }}
-
-            ${{ steps.changelog.outputs.body }}
-
-            ---
-
-            ### 下载
-
-            | 文件 | 说明 |
-            |------|------|
-            | `hermes-${{ steps.version.outputs.version }}-arm64-lite.apk` | Lite 版本，首次启动自动下载依赖（~1GB） |
-
-            ### 系统要求
-
-            - Android 10（API 29）或更高
-            - `arm64-v8a` 架构
-            - 约 2GB 可用存储空间
-            - 首次安装需网络连接
-
-            ### 安装
-
-            下载 APK 后直接安装，或通过 adb：
-            ```
-            adb install hermes-${{ steps.version.outputs.version }}-arm64-lite.apk
-            ```
-
-            ### 首次启动
-
-            应用内置 4 步安装向导（proot → 依赖 → Hermes Agent → WebUI），也可点击"一键安装全部"。
-
-            ---
-            [完整更新日志](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
-          fail_on_unmatched_files: true
-
-      # ─────────────────────────────────────────────────────────────────────
-      # 同步 Release + APK 到 Gitee（国内用户下载源）
-      # Gitee 仓库通过 Push 镜像自动同步 GitHub 代码 + tag，
-      # 但 Release 和附件（APK）需要通过 API 手动同步。
-      # ─────────────────────────────────────────────────────────────────────
-      - name: Sync Release to Gitee
-        if: steps.has_gitee.outputs.has_gitee == 'true'
-        env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
-          echo "=== 同步 Release $tag 到 Gitee ==="
-
-          # 1. 用 CHANGELOG 内容作为 Release body
-          changelog=$(awk -v tag="## [${tag}]" '
-            $0 ~ "^" tag { found=1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md | sed '/^---$/d' | sed '/./,$!d')
-          if [ -z "$changelog" ]; then
-            changelog="（CHANGELOG.md 中未找到 ${tag} 的更新日志）"
-          fi
-
-          # 2. 判断是否为测试版（tag 或 CHANGELOG 中包含"测试版"）
-          is_prerelease="false"
-          if echo "$changelog" | grep -q "测试版"; then
-            is_prerelease="true"
-          fi
-
-          # 3. 在 Gitee 创建 Release
-          echo "创建 Gitee Release..."
-          create_resp=$(curl -s -X POST "https://gitee.com/api/v5/repos/yingakki/hermes-mobile/releases" \
-            -H "Content-Type: application/json" \
-            -d "$(python3 -c "
-          import json
-          print(json.dumps({
-              'access_token': '$GITEE_TOKEN',
-              'tag_name': '$tag',
-              'name': 'Hermes Agent (Android) $tag',
-              'body': '''$changelog''',
-              'prerelease': $is_prerelease,
-              'target_commitish': 'main'
-          }))
-          ")")
-
-          release_id=$(echo "$create_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-          if [ -z "$release_id" ]; then
-            echo "⚠ Gitee Release 创建失败（可能已存在），尝试获取已有 Release ID"
-            release_id=$(curl -s "https://gitee.com/api/v5/repos/yingakki/hermes-mobile/releases?per_page=20" \
-              | python3 -c "
-          import sys,json
-          for r in json.load(sys.stdin):
-              if r.get('tag_name') == '$tag':
-                  print(r['id']); break
-          " 2>/dev/null || echo "")
-          fi
-
-          if [ -z "$release_id" ]; then
-            echo "✗ 无法获取 Gitee Release ID，跳过 APK 上传"
-            exit 0
-          fi
-          echo "✓ Gitee Release ID: $release_id"
-
-          # 4. 上传 APK 到 Gitee Release
-          apk_file="artifacts/hermes-${tag}-arm64-lite.apk"
-          if [ ! -f "$apk_file" ]; then
-            echo "⚠ APK 文件不存在: $apk_file"
-            exit 0
-          fi
-          echo "上传 APK 到 Gitee Release $release_id..."
-          upload_resp=$(curl -s -X POST \
-            "https://gitee.com/api/v5/repos/yingakki/hermes-mobile/releases/${release_id}/attach_files" \
-            -F "access_token=${GITEE_TOKEN}" \
-            -F "name=hermes-${tag}-arm64-lite.apk" \
-            -F "file=@${apk_file}")
-
-          download_url=$(echo "$upload_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('browser_download_url',''))" 2>/dev/null || echo "")
-          if [ -n "$download_url" ]; then
-            echo "✓ APK 上传成功: $download_url"
-          else
-            echo "⚠ APK 上传可能失败: $upload_resp"
-          fi
-
-          echo "=== Gitee 同步完成 ==="
