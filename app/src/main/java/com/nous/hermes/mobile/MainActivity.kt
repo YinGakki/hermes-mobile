@@ -1225,7 +1225,7 @@ class MainActivity : AppCompatActivity() {
     /** 格式化 markdown 更新日志为纯文本 */
     private fun formatChangelog(md: String): String {
         return md
-            .replace(Regex("^#{1,6}\\s*"), "", RegexOption.MULTILINE)  // 标题标记
+            .replace(Regex("^#{1,6}\\s*", RegexOption.MULTILINE), "")  // 标题标记
             .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")                  // 粗体
             .replace(Regex("`(.+?)`"), "$1")                            // 行内代码
             .replace("---", "────────────────")                         // 分隔线
