@@ -152,9 +152,9 @@ class MainActivity : AppCompatActivity() {
         chatCardTitle = findViewById(R.id.chatCardTitle)
         chatCardSubtitle = findViewById(R.id.chatCardSubtitle)
         versionFooter = findViewById(R.id.versionFooter)
-        versionFooter.text = getString(R.string.dashboard_version, getVersionName())
+        versionFooter.text = getString(R.string.dashboard_version, getVersionDisplayText())
         settingsVersionValue = findViewById(R.id.settingsVersionValue)
-        settingsVersionValue.text = getVersionName()
+        settingsVersionValue.text = getVersionDisplayText()
         installProgressContainer = findViewById(R.id.installProgressContainer)
         installProgressBar = findViewById(R.id.installProgressBar)
         progressPercentText = findViewById(R.id.progressPercent)
@@ -1008,6 +1008,24 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "getLocalApkPath failed", e); null
         }
+    }
+
+    /**
+     * 判断当前是否为测试版构建。
+     * 通过版本号是否包含 "beta" 来区分正式版和测试版
+     * （versionName 为 "0.0.2-beta-lite" 等包含 beta 的格式）。
+     */
+    private fun isBetaBuild(): Boolean {
+        return getVersionName().contains("beta", ignoreCase = true)
+    }
+
+    /**
+     * 获取带通道标识的版本显示文本。
+     * 测试版追加 "(测试版)" 后缀，正式版不追加。
+     */
+    private fun getVersionDisplayText(): String {
+        val ver = getVersionName()
+        return if (isBetaBuild()) "$ver (测试版)" else ver
     }
 
     /**

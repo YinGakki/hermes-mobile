@@ -509,16 +509,17 @@ class SubSettingsActivity : AppCompatActivity() {
             }
 
             val apkVer = getVersionName()
+            val apkVerDisplay = getVersionDisplayText()
             val channel = getUpdateChannel()
             val apkPath = getLocalApkPath()
             val apkUpdate = try { ApkUpdateChecker.checkUpdate(apkVer, channel, apkPath) } catch (e: Exception) { null }
             handler.post {
                 if (apkUpdate != null) {
-                    apkVersionText.text = "$apkVer → ${apkUpdate.version}"
+                    apkVersionText.text = "$apkVerDisplay → ${apkUpdate.version}"
                     apkVersionText.setTextColor(0xFF10b981.toInt())
                     apkUpdateBadge.visibility = View.VISIBLE
                 } else {
-                    apkVersionText.text = apkVer
+                    apkVersionText.text = apkVerDisplay
                 }
             }
         }.start()
@@ -531,6 +532,23 @@ class SubSettingsActivity : AppCompatActivity() {
         } catch (e: Exception) {
             "0.1.0"
         }
+    }
+
+    /**
+     * 判断当前是否为测试版构建。
+     * 通过版本号是否包含 "beta" 来区分正式版和测试版。
+     */
+    private fun isBetaBuild(): Boolean {
+        return getVersionName().contains("beta", ignoreCase = true)
+    }
+
+    /**
+     * 获取带通道标识的版本显示文本。
+     * 测试版追加 "(测试版)" 后缀，正式版不追加。
+     */
+    private fun getVersionDisplayText(): String {
+        val ver = getVersionName()
+        return if (isBetaBuild()) "$ver (测试版)" else ver
     }
 
     /** 本地已安装 APK 的文件路径，用于 SHA256 比较 */

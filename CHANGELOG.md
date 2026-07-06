@@ -7,6 +7,24 @@
 
 ---
 
+## [v0.0.2-beta] — 2026-07-06
+
+测试版。在 v0.0.2 基础上增加测试版标识机制。
+
+### 新增
+
+- **测试版标识机制** — versionName 改为 `0.0.2-beta`，APK 文件名包含 `beta`（如 `hermes-v0.0.2-beta-arm64-lite.apk`），应用内通过版本号是否包含 `beta` 自动区分正式版和测试版
+- **测试版 UI 标识** — 仪表盘底部版本号和设置页版本号在测试版构建中追加"(测试版)"标识
+- **CI 测试版自动识别** — Release job 的 prerelease 判断增加 tag 包含 `beta` 的检测条件，测试版自动标记为 prerelease
+
+### 技术细节
+
+- versionCode: 2 → 3
+- versionName: `0.0.2` → `0.0.2-beta`
+- 新增 `isBetaBuild()` / `getVersionDisplayText()` 方法
+
+---
+
 ## [v0.0.2] — 2026-07-05
 
 测试版。修复 v0.0.1 的多项问题，新增 Termux 风格 PTY 终端、应用图标和中文化通知。

@@ -178,9 +178,11 @@ jobs:
           if [ -z "$changelog" ]; then
             changelog="（CHANGELOG.md 中未找到 ${tag} 的更新日志）"
           fi
-          # 判断是否为测试版（CHANGELOG 中包含"测试版"）
+          # 判断是否为测试版：
+          # 1. CHANGELOG 中包含"测试版"，或
+          # 2. git tag 中包含 "beta"（如 v0.0.2-beta）
           is_prerelease="false"
-          if echo "$changelog" | grep -q "测试版"; then
+          if echo "$changelog" | grep -q "测试版" || echo "${GITHUB_REF#refs/tags/}" | grep -qi "beta"; then
             is_prerelease="true"
           fi
           echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
