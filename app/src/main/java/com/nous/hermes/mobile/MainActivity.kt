@@ -456,7 +456,15 @@ class MainActivity : AppCompatActivity() {
 
     // ── Step runner ─────────────────────────────────────────────────────────
 
-    private fun tryAcquireInstallLock(): Boolean {
+    /**
+     * 获取安装锁。
+     *
+     * @param switchToInstallPage 是否切换到安装页并显示底部进度条。
+     *   - true：用于"一键安装"等需要在安装页显示进度的操作
+     *   - false：用于 WebUI/Hermes 在线更新，这些用 styled progress dialog
+     *            显示进度，不需要切换页面，避免用户从设置页被弹回安装页
+     */
+    private fun tryAcquireInstallLock(switchToInstallPage: Boolean = true): Boolean {
         if (isInstallInProgress) {
             MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.install_in_progress_title)
@@ -469,21 +477,23 @@ class MainActivity : AppCompatActivity() {
         isInstallInProgress = true
         lastProgressTime = System.currentTimeMillis()
         startHeartbeat()
-        // Switch to install page so the progress bar is visible.
-        switchPage(installPage)
-        bottomNav.selectedItemId = R.id.nav_install
-        // Dim the install button (step indicators stay visible as progress animation)
-        btnInstallAll.alpha = 0.35f
-        btnInstallAll.isEnabled = false
-        // Show the overall progress bar, seeded with however many of the 4
-        // steps are already complete before this run begins.
-        installProgressContainer.visibility = View.VISIBLE
-        installProgressBar.isIndeterminate = false
-        installProgressBar.max = 100
-        val initialPct = computeOverallProgress() * 100 / 4
-        installProgressBar.progress = initialPct
-        progressPercentText.text = "$initialPct%"
-        progressStepLabel.text = getString(R.string.progress_starting)
+        if (switchToInstallPage) {
+            // Switch to install page so the progress bar is visible.
+            switchPage(installPage)
+            bottomNav.selectedItemId = R.id.nav_install
+            // Dim the install button (step indicators stay visible as progress animation)
+            btnInstallAll.alpha = 0.35f
+            btnInstallAll.isEnabled = false
+            // Show the overall progress bar, seeded with however many of the 4
+            // steps are already complete before this run begins.
+            installProgressContainer.visibility = View.VISIBLE
+            installProgressBar.isIndeterminate = false
+            installProgressBar.max = 100
+            val initialPct = computeOverallProgress() * 100 / 4
+            installProgressBar.progress = initialPct
+            progressPercentText.text = "$initialPct%"
+            progressStepLabel.text = getString(R.string.progress_starting)
+        }
         return true
     }
 
@@ -690,7 +700,7 @@ class MainActivity : AppCompatActivity() {
      * 更新 Hermes Agent：git pull + pip install。后台执行 + 进度弹窗。
      */
     private fun onUpdateHermesClicked() {
-        if (!tryAcquireInstallLock()) return
+        if (!tryAcquireInstallLock(switchToInstallPage = false)) return
         val styled = showStyledProgressDialog(
             title = getString(R.string.settings_update_hermes),
             message = "正在更新 Hermes Agent…",
@@ -732,7 +742,7 @@ class MainActivity : AppCompatActivity() {
      * 如果服务在运行，更新后自动重启。
      */
     private fun onUpdateWebUIClicked() {
-        if (!tryAcquireInstallLock()) return
+        if (!tryAcquireInstallLock(switchToInstallPage = false)) return
         val wasRunning = studioInstaller.isRunning
         val styled = showStyledProgressDialog(
             title = getString(R.string.settings_update_webui),
@@ -1006,11 +1016,16 @@ class MainActivity : AppCompatActivity() {
      * UI 更新通过 runOnUiThread 回到主线程。
      */
     private fun checkVersionsAndUpdates() {
-        // 先显示 "检测中…"
+        // 先显示 "检测中…"，并重置颜色为默认灰色（避免上一次有更新时遗留的绿色）
+        val defaultVersionColor = 0xFF64748b.toInt()
         hermesVersionText.text = "检测中…"
         webuiVersionText.text = "检测中…"
+        hermesVersionText.setTextColor(defaultVersionColor)
+        webuiVersionText.setTextColor(defaultVersionColor)
+        apkVersionText.setTextColor(defaultVersionColor)
         hermesUpdateBadge.visibility = View.GONE
         webuiUpdateBadge.visibility = View.GONE
+        apkUpdateBadge.visibility = View.GONE
 
         Thread {
             // ── 获取当前版本 ──

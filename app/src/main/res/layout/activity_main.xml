@@ -1051,16 +1051,25 @@
                         android:contentDescription="@null" />
                 </LinearLayout>
 
-                <!-- 更新设置：通道选择 -->
+                <!-- APK 更新通道选择（仅适用于 Android 应用本体） -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="4dp"
                     android:layout_marginTop="8dp"
-                    android:layout_marginBottom="6dp"
-                    android:text="更新通道"
+                    android:layout_marginBottom="2dp"
+                    android:text="APK 更新通道"
                     android:textColor="#64748b"
                     android:textSize="11sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_marginBottom="6dp"
+                    android:text="仅适用于上方&quot;更新应用 (APK)&quot;的更新检测"
+                    android:textColor="#475569"
+                    android:textSize="10sp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
