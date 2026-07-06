@@ -22,7 +22,7 @@ android {
         // 不过为保守起见，沿用 28（与 Termux F-Droid 同策略）。
         targetSdk = 28
         versionCode = 2
-        versionName = "0.0.2-test"
+        versionName = "0.0.2"
 
         // Restrict to arm64-v8a — proot 二进制和 Ubuntu rootfs 只支持 aarch64。
         ndk {
