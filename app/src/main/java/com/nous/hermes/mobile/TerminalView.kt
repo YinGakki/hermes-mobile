@@ -289,6 +289,15 @@ class TerminalView @JvmOverloads constructor(
                         terminalView.sendByteToPty(0x1B)
                         return true
                     }
+                    else -> {
+                        // 处理常规字符键 —— TYPE_NULL 模式下 IME 通过
+                        // sendKeyEvent 逐键发送，不调用 commitText。
+                        val ch = event.unicodeChar
+                        if (ch != 0) {
+                            terminalView.sendCharWithCtrl(ch.toChar())
+                            return true
+                        }
+                    }
                 }
             }
             return super.sendKeyEvent(event)

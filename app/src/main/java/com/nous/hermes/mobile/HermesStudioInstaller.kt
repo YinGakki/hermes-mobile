@@ -643,12 +643,18 @@ class HermesStudioInstaller(private val context: Context) {
 
     /**
      * 兜底：在 proot 里按端口找 PID 并 kill -9。
+     *
+     * 注意：只匹配 LISTEN 状态的 socket（-sTCP:LISTEN），绝不能用
+     * `fuser -k PORT/tcp`——它会杀掉所有连接该端口的进程（包括宿主
+     * app 的 WebView 到 localhost:8648 的连接），导致 APK 直接退出。
      */
     private fun forceKillByPort() {
         try {
             serverMgr.runInPrefix(
                 "kill -9 \$(lsof -tiTCP:$STUDIO_PORT -sTCP:LISTEN 2>/dev/null) 2>/dev/null || " +
-                    "fuser -k $STUDIO_PORT/tcp 2>/dev/null || true",
+                    "ss -lptnH 'sport = :$STUDIO_PORT' 2>/dev/null | " +
+                    "grep -oP 'pid=\\K[0-9]+' | head -1 | " +
+                    "xargs -r kill -9 2>/dev/null || true",
                 onOutput = { Log.d(TAG, "[forcekill] $it") },
             )
         } catch (e: Exception) {

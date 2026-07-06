@@ -13,6 +13,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -104,6 +105,25 @@ class TerminalActivity : AppCompatActivity() {
             onUserInput = { bytes ->
                 if (masterFd >= 0) {
                     PtyNative.write(masterFd, bytes)
+                }
+            }
+            // 点击终端区域 → 请求焦点 + 弹出软键盘
+            setOnClickListener {
+                requestFocus()
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+            }
+            // 布局变化时（如软键盘弹出/收起）更新 PTY 窗口大小，
+            // 让 bash 知道正确的行/列数，实现正确的自动换行。
+            addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                if (masterFd >= 0 && width > 0 && height > 0) {
+                    val newW = right - left
+                    val newH = bottom - top
+                    val oldW = oldRight - oldLeft
+                    val oldH = oldBottom - oldTop
+                    if (newW != oldW || newH != oldH) {
+                        sendWindowSizeToPty()
+                    }
                 }
             }
         }
@@ -214,6 +234,14 @@ class TerminalActivity : AppCompatActivity() {
         startPtyShell()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 自动聚焦终端，方便用户直接输入
+        terminalView.post {
+            terminalView.requestFocus()
+        }
+    }
+
     /**
      * 启动 PTY shell：通过 JNI 创建伪终端，fork + exec proot + bash。
      */
@@ -302,18 +330,41 @@ class TerminalActivity : AppCompatActivity() {
 
     /**
      * 根据终端视图大小计算并设置 PTY 窗口大小（行×列）。
+     * 等待布局完成后才能获得正确的 width/height，所以用 OnGlobalLayoutListener。
      */
     private fun updateWindowSize() {
         if (masterFd < 0) return
         terminalView.post {
-            val paint = terminalView.paint
-            val charWidth = if (paint.measureText("M") > 0) paint.measureText("M") else 7f
-            val charHeight = maxOf(terminalView.lineHeight, 1)
-            val cols = maxOf((terminalView.width / charWidth).toInt(), 20)
-            val rows = maxOf((terminalView.height / charHeight).toInt(), 5)
-            Log.i(TAG, "Window size: ${rows}r x ${cols}c")
-            PtyNative.setWindowSize(masterFd, rows, cols)
+            if (terminalView.width > 0 && terminalView.height > 0) {
+                sendWindowSizeToPty()
+            } else {
+                // 布局尚未完成，等下一次 layout 回调
+                terminalView.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                    override fun onGlobalLayout() {
+                        if (terminalView.width > 0 && terminalView.height > 0) {
+                            terminalView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                            sendWindowSizeToPty()
+                        }
+                    }
+                })
+            }
         }
+    }
+
+    /**
+     * 计算当前终端视图的行列数并发送给 PTY。
+     * 在 layout 变化（如软键盘弹出/收起）时也会被调用。
+     */
+    private fun sendWindowSizeToPty() {
+        if (masterFd < 0) return
+        if (terminalView.width <= 0 || terminalView.height <= 0) return
+        val paint = terminalView.paint
+        val charWidth = if (paint.measureText("M") > 0) paint.measureText("M") else 7f
+        val charHeight = maxOf(terminalView.lineHeight, 1)
+        val cols = maxOf((terminalView.width / charWidth).toInt(), 20)
+        val rows = maxOf((terminalView.height / charHeight).toInt(), 5)
+        Log.i(TAG, "Window size: ${rows}r x ${cols}c")
+        PtyNative.setWindowSize(masterFd, rows, cols)
     }
 
     /**
@@ -354,7 +405,7 @@ class TerminalActivity : AppCompatActivity() {
     inner class SwipeExitContainer(context: Context) : FrameLayout(context) {
 
         private val density = resources.displayMetrics.density
-        private val edgeWidth = 20 * density
+        private val edgeWidth = 24 * density
         private val triggerThreshold = 100 * density
 
         private var startX = 0f
@@ -386,6 +437,19 @@ class TerminalActivity : AppCompatActivity() {
             ).apply {
                 gravity = Gravity.CENTER_VERTICAL or Gravity.START
             })
+        }
+
+        /**
+         * 在左边缘区域排除系统手势（Android 10+ 的返回手势），
+         * 否则系统会优先消费左边缘触摸，导致我们的左滑退出手势无效。
+         */
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+            super.onLayout(changed, left, top, right, bottom)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && height > 0) {
+                val exclusionHeight = minOf(height, (200 * density).toInt())
+                val rect = android.graphics.Rect(0, 0, edgeWidth.toInt(), exclusionHeight)
+                systemGestureExclusionRects = listOf(rect)
+            }
         }
 
         override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {

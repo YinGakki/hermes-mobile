@@ -816,8 +816,9 @@
                     android:textStyle="bold"
                     android:letterSpacing="0.1" />
 
+                <!-- 更新管理入口 — 点击进入二级页面（Hermes/WebUI/APK 更新 + 通道选择） -->
                 <LinearLayout
-                    android:id="@+id/btnUpdateHermes"
+                    android:id="@+id/btnSettingsUpdates"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
@@ -851,7 +852,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="@string/settings_update_hermes"
+                            android:text="更新管理"
                             android:textColor="#e2e8f0"
                             android:textSize="15sp"
                             android:textStyle="bold" />
@@ -860,32 +861,10 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="@string/settings_update_hermes_subtitle"
+                            android:text="Hermes Agent / WebUI / APK 更新"
                             android:textColor="#94a3b8"
                             android:textSize="12sp" />
-
-                        <TextView
-                            android:id="@+id/hermesVersionText"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="—"
-                            android:textColor="#64748b"
-                            android:textSize="12sp" />
                     </LinearLayout>
-
-                    <TextView
-                        android:id="@+id/hermesUpdateBadge"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="8dp"
-                        android:background="@drawable/update_badge_bg"
-                        android:padding="4dp"
-                        android:text="有更新"
-                        android:textColor="#10b981"
-                        android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:visibility="gone" />
 
                     <ImageView
                         android:layout_width="20dp"
@@ -894,217 +873,7 @@
                         android:contentDescription="@null" />
                 </LinearLayout>
 
-                <LinearLayout
-                    android:id="@+id/btnUpdateWebUI"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:background="@drawable/card_bg_clickable"
-                    android:padding="16dp"
-                    android:layout_marginBottom="10dp"
-                    android:clickable="true"
-                    android:focusable="true">
-
-                    <LinearLayout
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:gravity="center"
-                        android:background="@drawable/icon_tile_bg">
-
-                        <ImageView
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:src="@drawable/ic_refresh"
-                            android:contentDescription="@null" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="16dp"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/settings_update_webui"
-                            android:textColor="#e2e8f0"
-                            android:textSize="15sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/settings_update_webui_subtitle"
-                            android:textColor="#94a3b8"
-                            android:textSize="12sp" />
-
-                        <TextView
-                            android:id="@+id/webuiVersionText"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="—"
-                            android:textColor="#64748b"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <TextView
-                        android:id="@+id/webuiUpdateBadge"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="8dp"
-                        android:background="@drawable/update_badge_bg"
-                        android:padding="4dp"
-                        android:text="有更新"
-                        android:textColor="#10b981"
-                        android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:visibility="gone" />
-
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:src="@drawable/ic_chevron"
-                        android:contentDescription="@null" />
-                </LinearLayout>
-
-                <!-- ③ APK 更新卡片 -->
-                <LinearLayout
-                    android:id="@+id/btnUpdateApk"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:background="@drawable/card_bg_clickable"
-                    android:padding="16dp"
-                    android:layout_marginBottom="10dp"
-                    android:clickable="true"
-                    android:focusable="true">
-
-                    <LinearLayout
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:gravity="center"
-                        android:background="@drawable/icon_tile_bg">
-
-                        <ImageView
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:src="@drawable/ic_refresh"
-                            android:contentDescription="@null" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="16dp"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/settings_update_apk"
-                            android:textColor="#e2e8f0"
-                            android:textSize="15sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/settings_update_apk_subtitle"
-                            android:textColor="#94a3b8"
-                            android:textSize="12sp" />
-
-                        <TextView
-                            android:id="@+id/apkVersionText"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="—"
-                            android:textColor="#64748b"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <TextView
-                        android:id="@+id/apkUpdateBadge"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="8dp"
-                        android:background="@drawable/update_badge_bg"
-                        android:padding="4dp"
-                        android:text="有更新"
-                        android:textColor="#10b981"
-                        android:textSize="10sp"
-                        android:textStyle="bold"
-                        android:visibility="gone" />
-
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:src="@drawable/ic_chevron"
-                        android:contentDescription="@null" />
-                </LinearLayout>
-
-                <!-- APK 更新通道选择（仅适用于 Android 应用本体） -->
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:layout_marginTop="8dp"
-                    android:layout_marginBottom="2dp"
-                    android:text="APK 更新通道"
-                    android:textColor="#64748b"
-                    android:textSize="11sp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:layout_marginBottom="6dp"
-                    android:text="仅适用于上方&quot;更新应用 (APK)&quot;的更新检测"
-                    android:textColor="#475569"
-                    android:textSize="10sp" />
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="10dp">
-
-                    <TextView
-                        android:id="@+id/btnChannelStable"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="36dp"
-                        android:gravity="center"
-                        android:text="正式版"
-                        android:textColor="#e2e8f0"
-                        android:textSize="13sp"
-                        android:background="@drawable/card_bg_clickable"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:layout_marginEnd="4dp" />
-
-                    <TextView
-                        android:id="@+id/btnChannelBeta"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="36dp"
-                        android:gravity="center"
-                        android:text="测试版"
-                        android:textColor="#94a3b8"
-                        android:textSize="13sp"
-                        android:background="@drawable/card_bg_clickable"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:layout_marginStart="4dp" />
-                </LinearLayout>
+                <!-- 维护工具入口 — 点击进入二级页面（重新安装 + 电池优化） -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -1118,7 +887,7 @@
                     android:letterSpacing="0.1" />
 
                 <LinearLayout
-                    android:id="@+id/settingsRerun"
+                    android:id="@+id/btnSettingsMaintenance"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
@@ -1128,60 +897,6 @@
                     android:layout_marginBottom="10dp"
                     android:clickable="true"
                     android:focusable="true">
-
-                    <LinearLayout
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:gravity="center"
-                        android:background="@drawable/icon_tile_bg">
-
-                        <ImageView
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:src="@drawable/ic_refresh"
-                            android:contentDescription="@null" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="16dp"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/settings_rerun_setup"
-                            android:textColor="#e2e8f0"
-                            android:textSize="15sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/settings_rerun_subtitle"
-                            android:textColor="#94a3b8"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:src="@drawable/ic_chevron"
-                        android:contentDescription="@null" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:id="@+id/settingsBattery"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical"
-                    android:background="@drawable/card_bg"
-                    android:padding="16dp"
-                    android:layout_marginBottom="10dp">
 
                     <LinearLayout
                         android:layout_width="44dp"
@@ -1206,7 +921,7 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="@string/settings_battery_optimization"
+                            android:text="维护工具"
                             android:textColor="#e2e8f0"
                             android:textSize="15sp"
                             android:textStyle="bold" />
@@ -1215,10 +930,16 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="2dp"
-                            android:text="@string/settings_battery_subtitle"
+                            android:text="重新安装环境 / 电池优化白名单"
                             android:textColor="#94a3b8"
                             android:textSize="12sp" />
                     </LinearLayout>
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_chevron"
+                        android:contentDescription="@null" />
                 </LinearLayout>
 
                 <!-- Environment backup section (save env only; restore is on install page) -->

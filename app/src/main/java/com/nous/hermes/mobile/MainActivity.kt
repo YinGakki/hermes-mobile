@@ -55,17 +55,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnInstallAll: Button
     private lateinit var btnSaveEnv: View
     private lateinit var btnRestoreEnv: View
-    private lateinit var btnUpdateHermes: View
-    private lateinit var btnUpdateWebUI: View
-    private lateinit var hermesVersionText: TextView
-    private lateinit var webuiVersionText: TextView
-    private lateinit var hermesUpdateBadge: TextView
-    private lateinit var webuiUpdateBadge: TextView
-    private lateinit var btnUpdateApk: View
-    private lateinit var apkVersionText: TextView
-    private lateinit var apkUpdateBadge: TextView
-    private lateinit var btnChannelStable: TextView
-    private lateinit var btnChannelBeta: TextView
+    // 更新/维护类按钮已合并到 SubSettingsActivity，主页只保留入口卡片
+    private lateinit var btnSettingsUpdates: View
+    private lateinit var btnSettingsMaintenance: View
     private lateinit var spinnerProot: ProgressBar
     private lateinit var spinnerDeps: ProgressBar
     private lateinit var spinnerHermes: ProgressBar
@@ -89,8 +81,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chatCardSubtitle: TextView
     private lateinit var versionFooter: TextView
     private lateinit var settingsVersionValue: TextView
-    private lateinit var settingsRerun: View
-    private lateinit var settingsBattery: View
     private lateinit var installProgressContainer: View
     private lateinit var installProgressBar: ProgressBar
     private lateinit var progressPercentText: TextView
@@ -105,6 +95,9 @@ class MainActivity : AppCompatActivity() {
     // receive callbacks even if the activity is recreated by config change.
     private lateinit var saveEnvLauncher: ActivityResultLauncher<String>
     private lateinit var restoreEnvLauncher: ActivityResultLauncher<Array<String>>
+
+    // 二级设置页（更新管理 / 维护工具）launcher — 接收用户选择的操作结果
+    private lateinit var subSettingsLauncher: ActivityResultLauncher<Intent>
 
     @Volatile private var isInstallInProgress = false
     @Volatile private var activeThread: Thread? = null
@@ -135,17 +128,8 @@ class MainActivity : AppCompatActivity() {
         btnInstallAll = findViewById(R.id.btnInstallAll)
         btnSaveEnv = findViewById(R.id.btnSaveEnv)
         btnRestoreEnv = findViewById(R.id.btnRestoreEnv)
-        btnUpdateHermes = findViewById(R.id.btnUpdateHermes)
-        btnUpdateWebUI = findViewById(R.id.btnUpdateWebUI)
-        hermesVersionText = findViewById(R.id.hermesVersionText)
-        webuiVersionText = findViewById(R.id.webuiVersionText)
-        hermesUpdateBadge = findViewById(R.id.hermesUpdateBadge)
-        webuiUpdateBadge = findViewById(R.id.webuiUpdateBadge)
-        btnUpdateApk = findViewById(R.id.btnUpdateApk)
-        apkVersionText = findViewById(R.id.apkVersionText)
-        apkUpdateBadge = findViewById(R.id.apkUpdateBadge)
-        btnChannelStable = findViewById(R.id.btnChannelStable)
-        btnChannelBeta = findViewById(R.id.btnChannelBeta)
+        btnSettingsUpdates = findViewById(R.id.btnSettingsUpdates)
+        btnSettingsMaintenance = findViewById(R.id.btnSettingsMaintenance)
         spinnerProot = findViewById(R.id.spinnerProot)
         spinnerDeps = findViewById(R.id.spinnerDeps)
         spinnerHermes = findViewById(R.id.spinnerHermes)
@@ -171,8 +155,6 @@ class MainActivity : AppCompatActivity() {
         versionFooter.text = getString(R.string.dashboard_version, getVersionName())
         settingsVersionValue = findViewById(R.id.settingsVersionValue)
         settingsVersionValue.text = getVersionName()
-        settingsRerun = findViewById(R.id.settingsRerun)
-        settingsBattery = findViewById(R.id.settingsBattery)
         installProgressContainer = findViewById(R.id.installProgressContainer)
         installProgressBar = findViewById(R.id.installProgressBar)
         progressPercentText = findViewById(R.id.progressPercent)
@@ -209,26 +191,47 @@ class MainActivity : AppCompatActivity() {
             if (uri != null) runEnvRestore(uri)
         }
 
+        // 二级设置页 launcher — SubSettingsActivity 用 setResult 返回用户选择的操作，
+        // 这里根据 result code 分发到对应处理函数。
+        subSettingsLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) { result ->
+            when (result.resultCode) {
+                SubSettingsActivity.RESULT_UPDATE_HERMES -> onUpdateHermesClicked()
+                SubSettingsActivity.RESULT_UPDATE_WEBUI -> onUpdateWebUIClicked()
+                SubSettingsActivity.RESULT_UPDATE_APK -> onApkUpdateClicked()
+                SubSettingsActivity.RESULT_RERUN_SETUP -> restartFromBootstrap()
+            }
+        }
+
         requestBatteryOptimizationExemption()
         startForegroundService()
 
         // Grey out tabs that require Hermes to be installed (Dashboard / Settings).
         refreshNavTabs()
 
-        // 启动时自动检测版本 + 检查更新
-        checkVersionsAndUpdates()
+        // 启动时后台检查 APK 更新（仅通知；Hermes/WebUI 版本由二级设置页检测）
+        checkApkUpdateInBackground()
 
         // Step indicators are non-clickable TextViews (progress animation only).
         // Only "一键安装" and "还原环境" are action buttons.
         btnInstallAll.setOnClickListener { runInstallAll() }
         btnSaveEnv.setOnClickListener { onSaveEnvClicked() }
         btnRestoreEnv.setOnClickListener { onRestoreEnvClicked() }
-        btnUpdateHermes.setOnClickListener { onUpdateHermesClicked() }
-        btnUpdateWebUI.setOnClickListener { onUpdateWebUIClicked() }
-        btnUpdateApk.setOnClickListener { onApkUpdateClicked() }
 
-        // 更新源 / 通道选择
-        initUpdatePreferences()
+        // 设置页"更新管理"/"维护工具"入口卡片 → 启动二级页面
+        btnSettingsUpdates.setOnClickListener {
+            val intent = Intent(this, SubSettingsActivity::class.java).apply {
+                putExtra(SubSettingsActivity.EXTRA_CATEGORY, SubSettingsActivity.CATEGORY_UPDATES)
+            }
+            subSettingsLauncher.launch(intent)
+        }
+        btnSettingsMaintenance.setOnClickListener {
+            val intent = Intent(this, SubSettingsActivity::class.java).apply {
+                putExtra(SubSettingsActivity.EXTRA_CATEGORY, SubSettingsActivity.CATEGORY_MAINTENANCE)
+            }
+            subSettingsLauncher.launch(intent)
+        }
 
         openShellButton.setOnClickListener {
             // 打开内置终端，在 proot rootfs 里运行交互式 bash shell
@@ -279,10 +282,6 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, R.string.settings_copied, Toast.LENGTH_SHORT).show()
             }
         }
-
-        // Settings page actions
-        settingsRerun.setOnClickListener { restartFromBootstrap() }
-        settingsBattery.setOnClickListener { requestBatteryOptimizationExemption() }
 
         extractBootstrap()
     }
@@ -718,9 +717,6 @@ class MainActivity : AppCompatActivity() {
                     releaseInstallLock()
                     if (ok) {
                         Toast.makeText(this, "✓ Hermes 已更新", Toast.LENGTH_LONG).show()
-                        // 重置更新 badge + 刷新版本
-                        hermesUpdateBadge.visibility = View.GONE
-                        checkVersionsAndUpdates()
                     } else {
                         Toast.makeText(this, "更新失败，详见日志", Toast.LENGTH_LONG).show()
                     }
@@ -767,9 +763,6 @@ class MainActivity : AppCompatActivity() {
                             startChatServer()
                         }
                         Toast.makeText(this, "✓ WebUI 已更新", Toast.LENGTH_LONG).show()
-                        // 重置更新 badge + 刷新版本
-                        webuiUpdateBadge.visibility = View.GONE
-                        checkVersionsAndUpdates()
                     } else {
                         Toast.makeText(this, "更新失败，详见日志", Toast.LENGTH_LONG).show()
                     }
@@ -1008,93 +1001,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 本地已安装 APK 的文件路径，用于 SHA256 比较 */
+    private fun getLocalApkPath(): String? {
+        return try {
+            packageManager.getPackageInfo(packageName, 0).applicationInfo?.sourceDir
+        } catch (e: Exception) {
+            Log.w(TAG, "getLocalApkPath failed", e); null
+        }
+    }
+
     /**
-     * 启动时自动检测 Hermes Agent 和 WebUI 的当前版本，
-     * 并在后台检查是否有新版本可用。有更新时亮显 badge。
+     * 启动时后台检查 APK 更新，有更新时发通知。
      *
-     * 版本获取和更新检查都在后台线程执行（proot 命令），
-     * UI 更新通过 runOnUiThread 回到主线程。
+     * Hermes/WebUI 的版本显示和更新检查已移到 SubSettingsActivity，
+     * 这里只保留启动时的 APK 更新通知（不依赖任何 UI 元素）。
      */
-    private fun checkVersionsAndUpdates() {
-        // 先显示 "检测中…"，并重置颜色为默认灰色（避免上一次有更新时遗留的绿色）
-        val defaultVersionColor = 0xFF64748b.toInt()
-        hermesVersionText.text = "检测中…"
-        webuiVersionText.text = "检测中…"
-        hermesVersionText.setTextColor(defaultVersionColor)
-        webuiVersionText.setTextColor(defaultVersionColor)
-        apkVersionText.setTextColor(defaultVersionColor)
-        hermesUpdateBadge.visibility = View.GONE
-        webuiUpdateBadge.visibility = View.GONE
-        apkUpdateBadge.visibility = View.GONE
-
+    private fun checkApkUpdateInBackground() {
         Thread {
-            // ── 获取当前版本 ──
-            val hermesVer = try { serverManager.getHermesVersion() } catch (e: Exception) {
-                Log.e(TAG, "getHermesVersion failed", e); null
-            }
-            val webuiVer = try { studioInstaller.getWebUIVersion() } catch (e: Exception) {
-                Log.e(TAG, "getWebUIVersion failed", e); null
-            }
-
-            Log.i(TAG, "checkVersionsAndUpdates: hermes=$hermesVer webui=$webuiVer")
-
-            runOnUiThread {
-                hermesVersionText.text = hermesVer ?: "未安装"
-                webuiVersionText.text = webuiVer ?: "未安装"
-                // 如果已安装但版本获取失败，显示提示
-                if (hermesVer == null && serverManager.isHermesInstalled()) {
-                    hermesVersionText.text = "已安装（版本获取失败）"
-                }
-                if (webuiVer == null && studioInstaller.isInstalled()) {
-                    webuiVersionText.text = "已安装（版本获取失败）"
-                }
-            }
-
-            // ── 检查更新（仅在已安装时）──
-            if (hermesVer != null) {
-                val latestHermes = try { serverManager.checkHermesUpdate() } catch (e: Exception) {
-                    Log.e(TAG, "checkHermesUpdate failed", e); null
-                }
-                runOnUiThread {
-                    if (latestHermes != null) {
-                        hermesVersionText.text = "$hermesVer → $latestHermes"
-                        hermesVersionText.setTextColor(0xFF10b981.toInt())
-                        hermesUpdateBadge.visibility = View.VISIBLE
-                    }
-                }
-            }
-
-            if (webuiVer != null) {
-                val latestWebUI = try { studioInstaller.checkWebUIUpdate() } catch (e: Exception) {
-                    Log.e(TAG, "checkWebUIUpdate failed", e); null
-                }
-                runOnUiThread {
-                    if (latestWebUI != null) {
-                        webuiVersionText.text = "$webuiVer → $latestWebUI"
-                        webuiVersionText.setTextColor(0xFF10b981.toInt())
-                        webuiUpdateBadge.visibility = View.VISIBLE
-                    }
-                }
-            }
-
-            // ── 检查 APK 更新 ──
             val apkVer = getVersionName()
             val updateChannel = getUpdateChannel()
+            val apkPath = getLocalApkPath()
             val apkUpdate = try {
-                ApkUpdateChecker.checkUpdate(apkVer, updateChannel)
+                ApkUpdateChecker.checkUpdate(apkVer, updateChannel, apkPath)
             } catch (e: Exception) {
                 Log.e(TAG, "checkApkUpdate failed", e); null
             }
-            runOnUiThread {
-                if (apkUpdate != null) {
-                    apkVersionText.text = "$apkVer → ${apkUpdate.version}"
-                    apkVersionText.setTextColor(0xFF10b981.toInt())
-                    apkUpdateBadge.visibility = View.VISIBLE
-                    // 后台检测到更新时发通知
-                    notifyApkUpdateAvailable(apkUpdate)
-                } else {
-                    apkVersionText.text = apkVer
-                }
+            if (apkUpdate != null) {
+                lastApkUpdateInfo = apkUpdate
+                runOnUiThread { notifyApkUpdateAvailable(apkUpdate) }
             }
         }.start()
     }
@@ -1111,57 +1045,21 @@ class MainActivity : AppCompatActivity() {
             ?: ApkUpdateChecker.CHANNEL_BETA
     }
 
-    /** 初始化通道选择按钮，根据偏好设置高亮状态 */
-    private fun initUpdatePreferences() {
-        updateChannelToggleUI()
-
-        btnChannelStable.setOnClickListener {
-            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-                .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_STABLE).apply()
-            updateChannelToggleUI()
-            checkVersionsAndUpdates()
-        }
-        btnChannelBeta.setOnClickListener {
-            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-                .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_BETA).apply()
-            updateChannelToggleUI()
-            checkVersionsAndUpdates()
-        }
-    }
-
-    /** 通道按钮高亮切换 */
-    private fun updateChannelToggleUI() {
-        val channel = getUpdateChannel()
-        if (channel == ApkUpdateChecker.CHANNEL_STABLE) {
-            btnChannelStable.setTextColor(0xFF10b981.toInt())
-            btnChannelBeta.setTextColor(0xFF94a3b8.toInt())
-        } else {
-            btnChannelStable.setTextColor(0xFF94a3b8.toInt())
-            btnChannelBeta.setTextColor(0xFF10b981.toInt())
-        }
-    }
-
-    /** APK 更新卡片点击事件 */
+    /** APK 更新点击事件 — 由 SubSettingsActivity 结果码触发。
+     *  检查更新并显示更新日志对话框；版本号/badge 由 SubSettingsActivity 自行管理。 */
     private fun onApkUpdateClicked() {
         val currentVer = getVersionName()
         val channel = getUpdateChannel()
-
-        apkVersionText.text = "检测中…"
-        apkUpdateBadge.visibility = View.GONE
+        val apkPath = getLocalApkPath()
 
         Thread {
-            val update = ApkUpdateChecker.checkUpdate(currentVer, channel)
+            val update = ApkUpdateChecker.checkUpdate(currentVer, channel, apkPath)
             lastApkUpdateInfo = update
 
             runOnUiThread {
                 if (update != null) {
-                    apkVersionText.text = "$currentVer → ${update.version}"
-                    apkVersionText.setTextColor(0xFF10b981.toInt())
-                    apkUpdateBadge.visibility = View.VISIBLE
                     showApkUpdateDialog(update)
                 } else {
-                    apkVersionText.text = currentVer
-                    apkVersionText.setTextColor(0xFF64748b.toInt())
                     Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
                 }
             }

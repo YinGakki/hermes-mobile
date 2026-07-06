@@ -303,7 +303,7 @@ class ChatActivity : AppCompatActivity() {
     inner class SwipeExitContainer(context: Context) : android.widget.FrameLayout(context) {
 
         private val density = resources.displayMetrics.density
-        private val edgeWidth = 20 * density       // 左边缘触发宽度
+        private val edgeWidth = 24 * density       // 左边缘触发宽度
         private val triggerThreshold = 100 * density // 滑动退出阈值
 
         private var startX = 0f
@@ -337,6 +337,20 @@ class ChatActivity : AppCompatActivity() {
             ).apply {
                 gravity = android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
             })
+        }
+
+        /**
+         * 在左边缘区域排除系统手势（Android 10+ 的返回手势），
+         * 否则系统会优先消费左边缘触摸，导致我们的左滑退出手势无效。
+         * 系统限制每边最多 200dp 高度，超出部分自动截断。
+         */
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+            super.onLayout(changed, left, top, right, bottom)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && height > 0) {
+                val exclusionHeight = minOf(height, (200 * density).toInt())
+                val rect = android.graphics.Rect(0, 0, edgeWidth.toInt(), exclusionHeight)
+                systemGestureExclusionRects = listOf(rect)
+            }
         }
 
         override fun onInterceptTouchEvent(ev: android.view.MotionEvent): Boolean {
@@ -403,11 +417,11 @@ class ChatActivity : AppCompatActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (webView.canGoBack()) {
-                webView.goBack()
-            } else {
-                finish()
-            }
+            // 直接退出 WebUI Activity。
+            // 之前用 webView.canGoBack() → goBack() 会导致 SPA 每次路由变化
+            // 都压入历史栈，canGoBack() 永远为 true，用户无法退出。
+            // WebUI 内部有自己的页面导航（按钮/链接），不需要系统返回键来导航。
+            finish()
             return true
         }
         return super.onKeyDown(keyCode, event)
