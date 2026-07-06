@@ -155,9 +155,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF#refs/tags/}"
-          # tag 形如 v0.0.2，CHANGELOG.md 里对应 ## [v0.0.2]
+          # tag 形如 v0.0.2，CHANGELOG.md 里对应 "## [v0.0.2]"
+          # 注意：awk 中 [v0.0.2] 会被当作字符类，必须用 index() 做字符串匹配
           changelog=$(awk -v tag="## [${tag}]" '
-            $0 ~ "^" tag { found=1; next }
+            index($0, tag) == 1 { found=1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md | sed '/^---$/d' | sed '/./,$!d')
