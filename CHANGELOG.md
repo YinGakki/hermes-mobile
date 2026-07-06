@@ -7,17 +7,6 @@
 
 ---
 
-## [v0.0.2-test] — 2026-07-05
-
-测试版。CI 流程验证版本，用于测试「Gitee 发版 → GitHub 自动编译 → 同步回 Gitee」的完整链路。
-
-### 变更
-
-- **CI 修复** — 修复 `Sync Release to Gitee` 步骤的 `if` 条件：原 `if: env.GITEE_TOKEN != ''` 在 step 级别 `if:` 评估时 `env:` 尚未生效，会导致条件永远为假、永远跳过同步。改为新增 `Detect Gitee token` 步骤输出 `has_gitee`，再用 `if: steps.has_gitee.outputs.has_gitee == 'true'` 判断
-- **发版流程** — 调整为以 Gitee 为主仓库：Gitee 打 tag 发版 → Push 镜像同步代码 + tag 到 GitHub → GitHub CI 自动编译 → 同步 Release + APK 回 Gitee
-
----
-
 ## [v0.0.2] — 2026-07-05
 
 测试版。修复 v0.0.1 的多项问题，新增 Termux 风格 PTY 终端、应用图标和中文化通知。
@@ -32,9 +21,6 @@
 - **CI 自动提取更新日志** — release job 从 CHANGELOG.md 自动提取对应版本内容作为 Release body
 - **APK 自更新检测** — 每次启动后台检查 GitHub Releases 是否有新版本，有更新时发通知提醒；设置页新增 APK 更新卡片，显示当前版本→最新版本
 - **更新通道选择** — 支持选择"正式版"或"测试版"通道：正式版只检查非 prerelease，测试版包含 prerelease（基于 GitHub Release 的 prerelease 标志）
-- **更新源选择** — 支持选择"GitHub"或"Gitee"更新源：GitHub 走 api.github.com（海外用户直连，下载时使用 ghproxy 代理兜底）；Gitee 走 gitee.com/api/v5（国内用户直连，无需翻墙）
-- **Gitee 镜像仓库** — 新增 Gitee 镜像仓库（gitee.com/yingakki/hermes-mobile），与 GitHub 双向同步代码；CI 发版后自动同步 Release + APK 附件到 Gitee，国内用户可直接从 Gitee 下载
-- **发版流程调整** — 改为以 Gitee 为主仓库：在 Gitee 打 tag 发版 → Gitee Push 镜像自动同步代码 + tag 到 GitHub → GitHub CI 自动编译 APK 并创建 Release → 同步 APK 回 Gitee Release
 - **更新日志对话框** — 点击 APK 更新卡片显示发布页面的更新日志（Release body），去除 markdown 标记后以纯文本展示，包含版本号、通道、文件大小信息
 - **APK 下载安装** — 对话框点击"下载更新"后后台下载 APK（带进度百分比），下载完成自动触发系统安装界面；使用 FileProvider 共享文件，需 REQUEST_INSTALL_PACKAGES 权限
 
@@ -70,11 +56,11 @@
 - HermesForegroundService 通知文本硬编码改为中文字面量
 - build.gradle.kts 新增 externalNativeBuild（CMake）+ ndkVersion 27.0.12077973
 - CI 新增 NDK + CMake SDK 包安装
-- 新增 ApkUpdateChecker.kt（GitHub/Gitee Releases API 检测 APK 更新，支持正式/测试版通道 + GitHub/Gitee 双更新源）
+- 新增 ApkUpdateChecker.kt（GitHub Releases API 检测 APK 更新，支持正式/测试版通道 + ghproxy 代理加速）
 - 新增 res/xml/file_paths.xml（FileProvider 路径配置，用于 APK 安装）
 - AndroidManifest 新增 REQUEST_INSTALL_PACKAGES 权限 + FileProvider 声明
 - MainActivity 新增 APK 更新检测/更新日志对话框/下载安装/后台通知方法
-- 更新偏好存储于 hermes_prefs（update_source / update_channel 键）
+- 更新偏好存储于 hermes_prefs（update_channel 键）
 
 ---
 

@@ -35,7 +35,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "HermesMainActivity"
         private const val COMPILE_DIALOG_TIMEOUT_SEC = 120L
-        const val PREF_UPDATE_SOURCE = "update_source"
         const val PREF_UPDATE_CHANNEL = "update_channel"
         const val NOTIF_CHANNEL_UPDATES = "hermes_update_notifications"
     }
@@ -65,8 +64,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnUpdateApk: View
     private lateinit var apkVersionText: TextView
     private lateinit var apkUpdateBadge: TextView
-    private lateinit var btnSourceGithub: TextView
-    private lateinit var btnSourceChina: TextView
     private lateinit var btnChannelStable: TextView
     private lateinit var btnChannelBeta: TextView
     private lateinit var spinnerProot: ProgressBar
@@ -147,8 +144,6 @@ class MainActivity : AppCompatActivity() {
         btnUpdateApk = findViewById(R.id.btnUpdateApk)
         apkVersionText = findViewById(R.id.apkVersionText)
         apkUpdateBadge = findViewById(R.id.apkUpdateBadge)
-        btnSourceGithub = findViewById(R.id.btnSourceGithub)
-        btnSourceChina = findViewById(R.id.btnSourceChina)
         btnChannelStable = findViewById(R.id.btnChannelStable)
         btnChannelBeta = findViewById(R.id.btnChannelBeta)
         spinnerProot = findViewById(R.id.spinnerProot)
@@ -1070,9 +1065,8 @@ class MainActivity : AppCompatActivity() {
             // ── 检查 APK 更新 ──
             val apkVer = getVersionName()
             val updateChannel = getUpdateChannel()
-            val updateSource = getUpdateSource()
             val apkUpdate = try {
-                ApkUpdateChecker.checkUpdate(apkVer, updateChannel, updateSource)
+                ApkUpdateChecker.checkUpdate(apkVer, updateChannel)
             } catch (e: Exception) {
                 Log.e(TAG, "checkApkUpdate failed", e); null
             }
@@ -1095,13 +1089,6 @@ class MainActivity : AppCompatActivity() {
     /** 当前 APK 更新信息（检查后缓存，供点击时使用） */
     private var lastApkUpdateInfo: ApkUpdateInfo? = null
 
-    /** 获取更新源设置 */
-    private fun getUpdateSource(): String {
-        val prefs = getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-        return prefs.getString(PREF_UPDATE_SOURCE, ApkUpdateChecker.SOURCE_GITHUB)
-            ?: ApkUpdateChecker.SOURCE_GITHUB
-    }
-
     /** 获取更新通道设置 */
     private fun getUpdateChannel(): String {
         val prefs = getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
@@ -1109,24 +1096,10 @@ class MainActivity : AppCompatActivity() {
             ?: ApkUpdateChecker.CHANNEL_BETA
     }
 
-    /** 初始化更新源/通道选择按钮，根据偏好设置高亮状态 */
+    /** 初始化通道选择按钮，根据偏好设置高亮状态 */
     private fun initUpdatePreferences() {
-        updateSourceToggleUI()
         updateChannelToggleUI()
 
-        btnSourceGithub.setOnClickListener {
-            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-                .edit().putString(PREF_UPDATE_SOURCE, ApkUpdateChecker.SOURCE_GITHUB).apply()
-            updateSourceToggleUI()
-            // 切换后重新检测
-            checkVersionsAndUpdates()
-        }
-        btnSourceChina.setOnClickListener {
-            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-                .edit().putString(PREF_UPDATE_SOURCE, ApkUpdateChecker.SOURCE_GITEE).apply()
-            updateSourceToggleUI()
-            checkVersionsAndUpdates()
-        }
         btnChannelStable.setOnClickListener {
             getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
                 .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_STABLE).apply()
@@ -1138,18 +1111,6 @@ class MainActivity : AppCompatActivity() {
                 .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_BETA).apply()
             updateChannelToggleUI()
             checkVersionsAndUpdates()
-        }
-    }
-
-    /** 更新源按钮高亮切换 */
-    private fun updateSourceToggleUI() {
-        val source = getUpdateSource()
-        if (source == ApkUpdateChecker.SOURCE_GITHUB) {
-            btnSourceGithub.setTextColor(0xFF10b981.toInt())
-            btnSourceChina.setTextColor(0xFF94a3b8.toInt())
-        } else {
-            btnSourceGithub.setTextColor(0xFF94a3b8.toInt())
-            btnSourceChina.setTextColor(0xFF10b981.toInt())
         }
     }
 
@@ -1169,13 +1130,12 @@ class MainActivity : AppCompatActivity() {
     private fun onApkUpdateClicked() {
         val currentVer = getVersionName()
         val channel = getUpdateChannel()
-        val source = getUpdateSource()
 
         apkVersionText.text = "检测中…"
         apkUpdateBadge.visibility = View.GONE
 
         Thread {
-            val update = ApkUpdateChecker.checkUpdate(currentVer, channel, source)
+            val update = ApkUpdateChecker.checkUpdate(currentVer, channel)
             lastApkUpdateInfo = update
 
             runOnUiThread {
@@ -1196,14 +1156,12 @@ class MainActivity : AppCompatActivity() {
     /** 显示更新日志对话框，用户可选择下载更新 */
     private fun showApkUpdateDialog(update: ApkUpdateInfo) {
         val channelLabel = if (update.isBeta) "测试版" else "正式版"
-        val sourceLabel = if (getUpdateSource() == ApkUpdateChecker.SOURCE_GITEE) "Gitee" else "GitHub"
 
         // 格式化更新日志：去除 markdown 标记符号
         val changelog = formatChangelog(update.changelog)
 
         val message = buildString {
             append("版本：${update.version}（$channelLabel）\n")
-            append("来源：$sourceLabel\n")
             if (update.fileSize > 0) {
                 append("大小：${update.fileSize / 1024 / 1024}MB\n")
             }
@@ -1235,12 +1193,8 @@ class MainActivity : AppCompatActivity() {
 
     /** 下载 APK 并触发安装 */
     private fun downloadAndInstallApk(update: ApkUpdateInfo) {
-        val source = getUpdateSource()
-
-        // 根据更新源构建下载 URL 列表：
-        // - GitHub 源：ghproxy 代理加速 + GitHub 直连兜底（逐个尝试）
-        // - Gitee 源：Gitee 直链（国内可直连，无需代理）
-        val urls = ApkUpdateChecker.getDownloadUrls(update.downloadUrl, source)
+        // 构建下载 URL 列表：ghproxy 代理加速（多个镜像逐个尝试）+ GitHub 直连兜底
+        val urls = ApkUpdateChecker.getDownloadUrls(update.downloadUrl)
 
         // 创建更新目录
         val updateDir = File(externalCacheDir ?: cacheDir, "updates").apply { mkdirs() }

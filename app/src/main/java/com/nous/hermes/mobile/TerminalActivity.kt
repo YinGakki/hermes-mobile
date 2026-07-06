@@ -245,10 +245,8 @@ class TerminalActivity : AppCompatActivity() {
                 val result = PtyNative.createSubprocess(cmd, env)
                 if (result == null) {
                     handler.post {
-                        terminalView.appendOutput(
-                            "[错误: 无法创建 PTY]\n".toByteArray(), 
-                            "[错误: 无法创建 PTY]\n".length
-                        )
+                        val msg = "[错误: 无法创建 PTY]\n"
+                        terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
                         Toast.makeText(this, "终端启动失败", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
@@ -285,7 +283,7 @@ class TerminalActivity : AppCompatActivity() {
                     val exitCode = PtyNative.waitFor(pid)
                     handler.post {
                         val msg = "\n[进程退出，code=$exitCode]\n"
-                        terminalView.appendOutput(msg.toByteArray(), msg.length)
+                        terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
                         Toast.makeText(this, "Shell 已退出", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -295,7 +293,7 @@ class TerminalActivity : AppCompatActivity() {
                 Log.e(TAG, "PTY shell failed", e)
                 handler.post {
                     val msg = "\n[错误: ${e.message}]\n"
-                    terminalView.appendOutput(msg.toByteArray(), msg.length)
+                    terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
                     Toast.makeText(this, "终端启动失败: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }

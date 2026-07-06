@@ -1051,57 +1051,12 @@
                         android:contentDescription="@null" />
                 </LinearLayout>
 
-                <!-- 更新设置：更新源选择 -->
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="4dp"
-                    android:layout_marginTop="8dp"
-                    android:layout_marginBottom="6dp"
-                    android:text="更新源"
-                    android:textColor="#64748b"
-                    android:textSize="11sp" />
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:id="@+id/btnSourceGithub"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="36dp"
-                        android:gravity="center"
-                        android:text="GitHub"
-                        android:textColor="#e2e8f0"
-                        android:textSize="13sp"
-                        android:background="@drawable/card_bg_clickable"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:layout_marginEnd="4dp" />
-
-                    <TextView
-                        android:id="@+id/btnSourceChina"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:layout_height="36dp"
-                        android:gravity="center"
-                        android:text="Gitee"
-                        android:textColor="#94a3b8"
-                        android:textSize="13sp"
-                        android:background="@drawable/card_bg_clickable"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:layout_marginStart="4dp" />
-                </LinearLayout>
-
                 <!-- 更新设置：通道选择 -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="4dp"
+                    android:layout_marginTop="8dp"
                     android:layout_marginBottom="6dp"
                     android:text="更新通道"
                     android:textColor="#64748b"

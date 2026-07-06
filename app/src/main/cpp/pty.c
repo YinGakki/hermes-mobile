@@ -37,7 +37,7 @@
  * @return int[2] = {masterFd, pid}, or NULL on failure
  */
 JNIEXPORT jintArray JNICALL
-Java_com_nous_hermes_mobile_PtyNative_createSubprocess(
+Java_com_nous_hermes_mobile_PtyNative_nativeCreateSubprocess(
     JNIEnv *env, jclass cls,
     jobjectArray cmdArray, jobjectArray envArray)
 {
@@ -175,7 +175,7 @@ fail:
  * @return number of bytes written, or -1 on error
  */
 JNIEXPORT jint JNICALL
-Java_com_nous_hermes_mobile_PtyNative_write(
+Java_com_nous_hermes_mobile_PtyNative_nativeWrite(
     JNIEnv *env, jclass cls, jint fd, jbyteArray data)
 {
     jsize len = (*env)->GetArrayLength(env, data);
@@ -201,7 +201,7 @@ Java_com_nous_hermes_mobile_PtyNative_write(
  * @return number of bytes read, 0 on EOF, or -1 on error
  */
 JNIEXPORT jint JNICALL
-Java_com_nous_hermes_mobile_PtyNative_read(
+Java_com_nous_hermes_mobile_PtyNative_nativeRead(
     JNIEnv *env, jclass cls, jint fd, jbyteArray buffer)
 {
     jsize len = (*env)->GetArrayLength(env, buffer);
@@ -223,7 +223,7 @@ Java_com_nous_hermes_mobile_PtyNative_read(
  * SIGWINCH in the child process.
  */
 JNIEXPORT void JNICALL
-Java_com_nous_hermes_mobile_PtyNative_setWindowSize(
+Java_com_nous_hermes_mobile_PtyNative_nativeSetWindowSize(
     JNIEnv *env, jclass cls, jint fd, jint rows, jint cols)
 {
     struct winsize ws;
@@ -237,7 +237,7 @@ Java_com_nous_hermes_mobile_PtyNative_setWindowSize(
  * Wait for the child process to exit and return its exit code.
  */
 JNIEXPORT jint JNICALL
-Java_com_nous_hermes_mobile_PtyNative_waitFor(
+Java_com_nous_hermes_mobile_PtyNative_nativeWaitFor(
     JNIEnv *env, jclass cls, jint pid)
 {
     int status;
@@ -256,7 +256,7 @@ Java_com_nous_hermes_mobile_PtyNative_waitFor(
  * Close the PTY master fd.
  */
 JNIEXPORT void JNICALL
-Java_com_nous_hermes_mobile_PtyNative_close(
+Java_com_nous_hermes_mobile_PtyNative_nativeClose(
     JNIEnv *env, jclass cls, jint fd)
 {
     if (fd >= 0) close(fd);
@@ -266,7 +266,7 @@ Java_com_nous_hermes_mobile_PtyNative_close(
  * Send a signal to the child process.
  */
 JNIEXPORT void JNICALL
-Java_com_nous_hermes_mobile_PtyNative_killProcess(
+Java_com_nous_hermes_mobile_PtyNative_nativeKillProcess(
     JNIEnv *env, jclass cls, jint pid, jint signal)
 {
     if (pid > 0) kill(pid, signal);
