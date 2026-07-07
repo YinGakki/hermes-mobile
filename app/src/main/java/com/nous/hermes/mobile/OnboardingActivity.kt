@@ -206,7 +206,7 @@ class OnboardingActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, (10 * density).toInt(), 0, (10 * density).toInt()
             )
-            val icon = TextView(this).apply {
+            val icon = TextView(this@OnboardingActivity).apply {
                 text = emoji
                 textSize = 24f
                 gravity = Gravity.CENTER
@@ -215,7 +215,7 @@ class OnboardingActivity : AppCompatActivity() {
                 )
             }
             addView(icon)
-            val col = LinearLayout(this).apply {
+            val col = LinearLayout(this@OnboardingActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f

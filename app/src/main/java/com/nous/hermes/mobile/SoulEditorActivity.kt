@@ -154,7 +154,7 @@ class SoulEditorActivity : AppCompatActivity() {
         }
 
         // 提示文字
-        val hint = TextView(this).apply {
+        val hintLabel = TextView(this).apply {
             text = "Agent 人格定义文件。修改后会立即影响 Agent 的行为。"
             setTextColor(0xFF94a3b8.toInt())
             textSize = 12f
@@ -163,7 +163,7 @@ class SoulEditorActivity : AppCompatActivity() {
                 (20 * density).toInt(), (8 * density).toInt()
             )
         }
-        editorColumn.addView(hint)
+        editorColumn.addView(hintLabel)
 
         // 多行 monospace 编辑框
         editor = EditText(this).apply {
