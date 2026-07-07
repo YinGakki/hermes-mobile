@@ -182,18 +182,21 @@ class TerminalScreen(
         val sb = SpannableStringBuilder()
         synchronized(bufferLock) {
             val buf = buffer
+            val curRows = rows
+            val curCols = cols
             var lastFg = -1
             var lastBg = -1
             var lastBold = false
             var lastUnderline = false
             var spanStart = 0
 
-            for (r in 0 until rows) {
+            for (r in 0 until curRows) {
                 // 找到行末（去掉尾部空格）
-                var lineEnd = cols
-                while (lineEnd > 0 && buf[r][lineEnd - 1].ch == ' ') lineEnd--
+                var lineEnd = curCols
+                while (lineEnd > 0 && r < buf.size && lineEnd - 1 < buf[r].size && buf[r][lineEnd - 1].ch == ' ') lineEnd--
 
                 for (c in 0 until lineEnd) {
+                    if (r >= buf.size || c >= buf[r].size) break
                     val cell = buf[r][c]
                     // 属性变化时设置 span
                     if (cell.fg != lastFg || cell.bg != lastBg ||
@@ -215,13 +218,18 @@ class TerminalScreen(
                     applySpans(sb, spanStart, sb.length, lastFg, lastBg, lastBold, lastUnderline)
                     spanStart = sb.length
                 }
-                if (r < rows - 1) sb.append('\n')
+                if (r < curRows - 1) sb.append('\n')
             }
         }
 
         // 光标（如果可见，加一个方块标记）
-        if (cursorVisible && cursorRow in 0 until rows && cursorCol in 0 until cols) {
-            val cursorPos = cursorRow * (cols + 1) + cursorCol // +1 for \n
+        // 使用 synchronized 块外捕获的值可能不一致，但越界检查确保安全
+        val curRow = cursorRow
+        val curCol = cursorCol
+        val curRows2 = rows
+        val curCols2 = cols
+        if (cursorVisible && curRow in 0 until curRows2 && curCol in 0 until curCols2) {
+            val cursorPos = curRow * (curCols2 + 1) + curCol // +1 for \n
             // 简单的光标：在光标位置加背景色
             if (cursorPos <= sb.length) {
                 sb.setSpan(BackgroundColorSpan(0xFF64748b.toInt()),
