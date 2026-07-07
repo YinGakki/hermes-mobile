@@ -256,13 +256,31 @@ class SubSettingsActivity : AppCompatActivity() {
         container.addView(rerunCard)
 
         // ── 电池优化 ──
-        val batteryCard = makeActionCard(
-            title = "电池优化白名单",
-            subtitle = "将应用加入电池优化白名单，避免被系统杀后台",
-        ) {
-            requestBatteryOptimizationExemption()
+        val pm = getSystemService(PowerManager::class.java)
+        val isWhitelisted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pm?.isIgnoringBatteryOptimizations(packageName) ?: false
+        } else {
+            true
         }
-        container.addView(batteryCard)
+        if (isWhitelisted) {
+            // 已在白名单中 — 不可点击，描述改为已加入
+            val batteryCard = makeCardBase(
+                title = "电池优化白名单",
+                subtitle = "已在白名单中，无需重复设置",
+                versionView = null,
+                badgeView = null,
+                clickable = false,
+            )
+            container.addView(batteryCard)
+        } else {
+            val batteryCard = makeActionCard(
+                title = "电池优化白名单",
+                subtitle = "将应用加入电池优化白名单，避免被系统杀后台",
+            ) {
+                requestBatteryOptimizationExemption()
+            }
+            container.addView(batteryCard)
+        }
     }
 
     // ── UI 工具方法 ──────────────────────────────────────────────────────────
