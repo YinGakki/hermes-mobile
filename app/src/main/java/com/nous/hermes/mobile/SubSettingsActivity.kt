@@ -511,8 +511,7 @@ class SubSettingsActivity : AppCompatActivity() {
             val apkVer = getVersionName()
             val apkVerDisplay = getVersionDisplayText()
             val channel = getUpdateChannel()
-            val apkPath = getLocalApkPath()
-            val apkUpdate = try { ApkUpdateChecker.checkUpdate(apkVer, channel, apkPath) } catch (e: Exception) { null }
+            val apkUpdate = try { ApkUpdateChecker.checkUpdate(apkVer, channel) } catch (e: Exception) { null }
             handler.post {
                 if (apkUpdate != null) {
                     apkVersionText.text = "$apkVerDisplay → ${apkUpdate.version}"
@@ -549,15 +548,6 @@ class SubSettingsActivity : AppCompatActivity() {
     private fun getVersionDisplayText(): String {
         val ver = getVersionName()
         return if (isBetaBuild()) "$ver (测试版)" else ver
-    }
-
-    /** 本地已安装 APK 的文件路径，用于 SHA256 比较 */
-    private fun getLocalApkPath(): String? {
-        return try {
-            packageManager.getPackageInfo(packageName, 0).applicationInfo?.sourceDir
-        } catch (e: Exception) {
-            Log.w(TAG, "getLocalApkPath failed", e); null
-        }
     }
 
     private fun getUpdateChannel(): String {

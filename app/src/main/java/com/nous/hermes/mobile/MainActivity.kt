@@ -1001,15 +1001,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 本地已安装 APK 的文件路径，用于 SHA256 比较 */
-    private fun getLocalApkPath(): String? {
-        return try {
-            packageManager.getPackageInfo(packageName, 0).applicationInfo?.sourceDir
-        } catch (e: Exception) {
-            Log.w(TAG, "getLocalApkPath failed", e); null
-        }
-    }
-
     /**
      * 判断当前是否为测试版构建。
      * 通过版本号是否包含 "beta" 来区分正式版和测试版
@@ -1038,9 +1029,8 @@ class MainActivity : AppCompatActivity() {
         Thread {
             val apkVer = getVersionName()
             val updateChannel = getUpdateChannel()
-            val apkPath = getLocalApkPath()
             val apkUpdate = try {
-                ApkUpdateChecker.checkUpdate(apkVer, updateChannel, apkPath)
+                ApkUpdateChecker.checkUpdate(apkVer, updateChannel)
             } catch (e: Exception) {
                 Log.e(TAG, "checkApkUpdate failed", e); null
             }
@@ -1068,10 +1058,9 @@ class MainActivity : AppCompatActivity() {
     private fun onApkUpdateClicked() {
         val currentVer = getVersionName()
         val channel = getUpdateChannel()
-        val apkPath = getLocalApkPath()
 
         Thread {
-            val update = ApkUpdateChecker.checkUpdate(currentVer, channel, apkPath)
+            val update = ApkUpdateChecker.checkUpdate(currentVer, channel)
             lastApkUpdateInfo = update
 
             runOnUiThread {

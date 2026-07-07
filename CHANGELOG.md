@@ -9,19 +9,30 @@
 
 ## [v0.0.2-beta] — 2026-07-06
 
-测试版。在 v0.0.2 基础上增加测试版标识机制。
+测试版。在 v0.0.2 基础上增加测试版标识机制，移除 SHA256 更新检测。
 
 ### 新增
 
 - **测试版标识机制** — versionName 改为 `0.0.2-beta`，APK 文件名包含 `beta`（如 `hermes-v0.0.2-beta-arm64-lite.apk`），应用内通过版本号是否包含 `beta` 自动区分正式版和测试版
 - **测试版 UI 标识** — 仪表盘底部版本号和设置页版本号在测试版构建中追加"(测试版)"标识
 - **CI 测试版自动识别** — Release job 的 prerelease 判断增加 tag 包含 `beta` 的检测条件，测试版自动标记为 prerelease
+- **测试版通道过滤** — 测试版更新检测从 Release 列表中过滤 tag 含 `beta` 的 Release，不再取最新的一条（可能是正式版）
+
+### 移除
+
+- **SHA256 更新检测** — 移除独立的 `.apk.sha256` 校验文件生成，移除 SHA256 比较逻辑，更新检测回归纯版本号比较
+- **SHA256 Release body** — Release 页面不再包含 SHA256 校验值区块
+
+### 修复
+
+- **版本号清理** — `cleanCurrent` 从 `substringBefore("-")` 改为 `removeSuffix("-lite"/"-full")`，正确剥离 flavor 后缀但保留 `beta` 标识
 
 ### 技术细节
 
 - versionCode: 2 → 3
 - versionName: `0.0.2` → `0.0.2-beta`
 - 新增 `isBetaBuild()` / `getVersionDisplayText()` 方法
+- `fetchLatestRelease()` → `fetchLatestBeta()`：过滤含 `beta` 的 Release
 
 ---
 
