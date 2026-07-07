@@ -22,6 +22,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import java.io.File
 
 /**
  * 设置二级页面 — 将设置页的"更新"和"维护"类按钮合并到此处展示。
