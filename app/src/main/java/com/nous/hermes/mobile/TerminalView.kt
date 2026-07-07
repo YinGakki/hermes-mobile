@@ -2,6 +2,7 @@ package com.nous.hermes.mobile
 
 import android.content.Context
 import android.text.InputType
+import android.text.SpannableStringBuilder
 import android.util.AttributeSet
 import android.view.KeyEvent
 import android.view.inputmethod.BaseInputConnection
@@ -10,16 +11,15 @@ import android.view.inputmethod.InputConnection
 import android.widget.EditText
 
 /**
- * A Termux-style terminal view that displays PTY output and captures keyboard input.
+ * 真正的终端视图 — 使用 TerminalScreen 虚拟屏幕缓冲区，
+ * 支持 ANSI 颜色、光标控制、屏幕清除/滚动。
  *
- * Design:
- * - Extends EditText for IME (soft keyboard) support and text rendering.
- * - Display-only: input is captured via a custom InputConnection and sent to PTY,
- *   NOT inserted into the EditText. The PTY (real TTY) handles echo.
- * - ANSI escape sequences are stripped for display.
- * - Carriage return (\r) overwrites the current line (progress bar support).
- * - Text buffer is capped at MAX_LINES to prevent memory issues.
- * - Auto-scrolls to bottom on new output.
+ * 架构：
+ * - TerminalScreen: rows×cols 字符网格 + ANSI 解析器
+ * - TerminalView: EditText + SpannableStringBuilder 渲染
+ *   · PTY 输出 → TerminalScreen.write() → render() → setText()
+ *   · 用户输入 → onUserInput 回调 → PTY
+ *   · 布局变化 → 计算行列数 → TerminalScreen.resize()
  */
 class TerminalView @JvmOverloads constructor(
     context: Context,
@@ -28,129 +28,67 @@ class TerminalView @JvmOverloads constructor(
 ) : EditText(context, attrs, defStyleAttr) {
 
     companion object {
-        private const val MAX_LINES = 2000
-        // CSI: \033[...letter, OSC: \033]...\007 or \033]...\033\\, others
-        private val ANSI_PATTERN = Regex(
-            "\u001B\\[[0-9;?]*[a-zA-Z]" +           // CSI sequences (colors, cursor)
-            "|\u001B\\][^\u0007]*\u0007" +            // OSC sequences (title, BEL)
-            "|\u001B\\][^\u001B]*\u001B\\\\" +         // OSC sequences (ST terminated)
-            "|\u001B[()][AB012]" +                    // Charset designations
-            "|\u001B[=>]" +                           // Keypad mode
-            "|\u001B[78]" +                           // Save/restore cursor
-            "|\u001B[ c]"                             // Misc single-char escapes
-        )
+        private const val TAG = "TerminalView"
     }
 
-    /** Callback invoked when the user types input that should be sent to the PTY. */
+    /** 回调：用户输入发送到 PTY */
     var onUserInput: ((ByteArray) -> Unit)? = null
 
-    /** Whether Ctrl modifier is active (toggled by the function key bar). */
+    /** Ctrl 修饰键是否激活 */
     var ctrlActive = false
 
-    private val textBuffer = StringBuilder()
-    private var cursorLine = 0    // Current line index (for \r handling)
-    private var cursorCol = 0     // Current column on the line (for \r overwrite)
+    /** 虚拟终端屏幕 */
+    val screen = TerminalScreen()
 
     init {
-        // Display-only but focusable for IME
         isFocusable = true
         isFocusableInTouchMode = true
-        inputType = InputType.TYPE_NULL  // Prevents EditText from editing, but still shows IME
+        inputType = InputType.TYPE_NULL
         isVerticalScrollBarEnabled = true
-        // 显式设置多行显示 — TYPE_NULL + setHorizontallyScrolling(true) 会导致
-        // EditText 将所有内容渲染为单行水平滚动。setSingleLine(false) 确保换行符正常显示。
         setSingleLine(false)
     }
 
     /**
-     * Append raw bytes from the PTY to the terminal display.
-     * Handles ANSI stripping and \r (carriage return) line overwrite.
+     * 写入 PTY 输出到终端屏幕，并触发渲染。
+     * 在 PTY 读取线程调用（非 UI 线程）。
      */
     fun appendOutput(rawBytes: ByteArray, len: Int) {
-        val raw = String(rawBytes, 0, len, Charsets.UTF_8)
-        val cleaned = raw.replace(ANSI_PATTERN, "")
+        screen.write(rawBytes, len)
+        renderToView()
+    }
 
-        for (ch in cleaned) {
-            when (ch) {
-                '\r' -> {
-                    // Carriage return: move cursor to start of current line
-                    cursorCol = 0
-                }
-                '\n' -> {
-                    // Newline: append to buffer
-                    textBuffer.append('\n')
-                    cursorLine++
-                    cursorCol = 0
-                }
-                '\u0007' -> {
-                    // BEL — ignore (no audible bell)
-                }
-                '\b' -> {
-                    // Backspace from PTY — move cursor back
-                    if (cursorCol > 0) cursorCol--
-                }
-                else -> {
-                    // Overwrite or append at cursor position
-                    val lineStart = findLineStart()
-                    val writePos = lineStart + cursorCol
-                    if (writePos < textBuffer.length) {
-                        textBuffer.setCharAt(writePos, ch)
-                    } else {
-                        // Pad to position if needed
-                        while (textBuffer.length < writePos) {
-                            textBuffer.append(' ')
-                        }
-                        textBuffer.append(ch)
-                    }
-                    cursorCol++
-                }
-            }
-        }
-
-        // Trim buffer if too large
-        trimBuffer()
-
-        // Create snapshot on the calling thread (not the UI thread)
-        // to avoid race condition with textBuffer modifications.
-        val display = textBuffer.toString()
-
-        // Update display on UI thread
+    /**
+     * 将 TerminalScreen 渲染到 EditText。
+     * 在 UI 线程执行 setText。
+     */
+    private fun renderToView() {
+        val rendered = screen.render()
         post {
-            setText(display)
-            // Scroll to bottom (guard against empty text)
-            if (display.isNotEmpty()) {
-                setSelection(display.length)
+            val preserved = selectionStart
+            setText(rendered)
+            // 滚动到底部
+            if (rendered.isNotEmpty()) {
+                val pos = minOf(preserved.coerceAtLeast(rendered.length - 1), rendered.length)
+                setSelection(pos)
             }
         }
     }
 
-    /** Find the start index of the current line (after last \n). */
-    private fun findLineStart(): Int {
-        var idx = textBuffer.length - 1
-        while (idx >= 0 && textBuffer[idx] != '\n') {
-            idx--
-        }
-        return idx + 1
-    }
-
-    /** Trim the buffer to keep only the last MAX_LINES lines. */
-    private fun trimBuffer() {
-        val nlCount = textBuffer.count { it == '\n' }
-        if (nlCount > MAX_LINES) {
-            val linesToTrim = nlCount - MAX_LINES
-            var trimIdx = 0
-            var count = 0
-            while (count < linesToTrim && trimIdx < textBuffer.length) {
-                if (textBuffer[trimIdx] == '\n') count++
-                trimIdx++
-            }
-            textBuffer.delete(0, trimIdx)
-            cursorLine -= linesToTrim
-            if (cursorLine < 0) cursorLine = 0
+    /** 计算当前视图能显示的行列数 */
+    fun updateScreenSize() {
+        if (width <= 0 || height <= 0) return
+        val paint = this.paint
+        val charWidth = if (paint.measureText("M") > 0) paint.measureText("M") else 7f
+        val charHeight = maxOf(lineHeight, 1)
+        val newCols = maxOf((width / charWidth).toInt(), 20)
+        val newRows = maxOf((height / charHeight).toInt(), 5)
+        if (newCols != screen.cols || newRows != screen.rows) {
+            screen.resize(newRows, newCols)
+            renderToView()
         }
     }
 
-    // --- Input handling ---
+    // ── 输入处理 ──
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         outAttrs.inputType = InputType.TYPE_NULL
@@ -159,29 +97,18 @@ class TerminalView @JvmOverloads constructor(
         return TerminalInputConnection(this, true)
     }
 
-    /**
-     * Send a string to the PTY.
-     */
     fun sendToPty(text: String) {
-        val bytes = text.toByteArray(Charsets.UTF_8)
-        onUserInput?.invoke(bytes)
+        onUserInput?.invoke(text.toByteArray(Charsets.UTF_8))
     }
 
-    /**
-     * Send a single byte to the PTY (for control characters).
-     */
     fun sendByteToPty(byte: Int) {
         onUserInput?.invoke(byteArrayOf(byte.toByte()))
     }
 
-    /**
-     * Send a character, applying Ctrl modifier if active.
-     * Ctrl+A = 0x01, Ctrl+B = 0x02, ..., Ctrl+Z = 0x1A
-     */
     fun sendCharWithCtrl(ch: Char) {
         if (ctrlActive && ch in 'a'..'z') {
             sendByteToPty(ch.code - 'a'.code + 1)
-            ctrlActive = false  // Ctrl is one-shot
+            ctrlActive = false
         } else if (ctrlActive && ch in 'A'..'Z') {
             sendByteToPty(ch.code - 'A'.code + 1)
             ctrlActive = false
@@ -192,62 +119,35 @@ class TerminalView @JvmOverloads constructor(
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (event.isCtrlPressed) {
-            // Ctrl+key combinations via hardware keyboard
             val c = event.unicodeChar.toChar()
             if (c in 'a'..'z' || c in 'A'..'Z') {
                 sendByteToPty(c.lowercaseChar().code - 'a'.code + 1)
                 return true
             }
         }
-
         when (keyCode) {
             KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                sendByteToPty(0x0D)  // CR
-                return true
+                sendByteToPty(0x0D); return true
             }
-            KeyEvent.KEYCODE_DEL -> {
-                sendByteToPty(0x08)  // Backspace (BS)
-                return true
-            }
-            KeyEvent.KEYCODE_TAB -> {
-                sendByteToPty(0x09)  // Tab
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_UP -> {
-                sendToPty("\u001B[A")  // ESC [ A
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
-                sendToPty("\u001B[B")  // ESC [ B
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
-                sendToPty("\u001B[D")  // ESC [ D
-                return true
-            }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                sendToPty("\u001B[C")  // ESC [ C
-                return true
-            }
-            KeyEvent.KEYCODE_ESCAPE -> {
-                sendByteToPty(0x1B)  // ESC
-                return true
-            }
+            KeyEvent.KEYCODE_DEL -> { sendByteToPty(0x08); return true }
+            KeyEvent.KEYCODE_TAB -> { sendByteToPty(0x09); return true }
+            KeyEvent.KEYCODE_DPAD_UP -> { sendToPty("\u001B[A"); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { sendToPty("\u001B[B"); return true }
+            KeyEvent.KEYCODE_DPAD_LEFT -> { sendToPty("\u001B[D"); return true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { sendToPty("\u001B[C"); return true }
+            KeyEvent.KEYCODE_ESCAPE -> { sendByteToPty(0x1B); return true }
         }
-
-        // Regular character
         val ch = event.unicodeChar
         if (ch != 0) {
             sendCharWithCtrl(ch.toChar())
             return true
         }
-
         return super.onKeyDown(keyCode, event)
     }
 
     /**
-     * Custom InputConnection that captures soft keyboard input
-     * and sends it to the PTY instead of modifying the EditText.
+     * 自定义 InputConnection — 捕获软键盘输入发送到 PTY，
+     * 不修改 EditText 内容（内容由 TerminalScreen 控制）。
      */
     private class TerminalInputConnection(
         val terminalView: TerminalView,
@@ -255,58 +155,31 @@ class TerminalView @JvmOverloads constructor(
     ) : BaseInputConnection(terminalView, fullEditor) {
 
         override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-            // Send composed text to PTY
-            for (ch in text.toString()) {
-                terminalView.sendCharWithCtrl(ch)
-            }
+            for (ch in text.toString()) terminalView.sendCharWithCtrl(ch)
             return true
         }
 
-        override fun deleteSurroundingText(
-            beforeLength: Int, afterLength: Int
-        ): Boolean {
-            // Handle backspace from soft keyboard
-            if (beforeLength > 0) {
-                terminalView.sendByteToPty(0x08)
-            }
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+            if (beforeLength > 0) terminalView.sendByteToPty(0x08)
             return true
         }
 
         override fun sendKeyEvent(event: KeyEvent): Boolean {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 when (event.keyCode) {
-                    KeyEvent.KEYCODE_ENTER -> {
-                        terminalView.sendByteToPty(0x0D)
-                        return true
-                    }
-                    KeyEvent.KEYCODE_DEL -> {
-                        terminalView.sendByteToPty(0x08)
-                        return true
-                    }
-                    KeyEvent.KEYCODE_TAB -> {
-                        terminalView.sendByteToPty(0x09)
-                        return true
-                    }
-                    KeyEvent.KEYCODE_ESCAPE -> {
-                        terminalView.sendByteToPty(0x1B)
-                        return true
-                    }
+                    KeyEvent.KEYCODE_ENTER -> { terminalView.sendByteToPty(0x0D); return true }
+                    KeyEvent.KEYCODE_DEL -> { terminalView.sendByteToPty(0x08); return true }
+                    KeyEvent.KEYCODE_TAB -> { terminalView.sendByteToPty(0x09); return true }
+                    KeyEvent.KEYCODE_ESCAPE -> { terminalView.sendByteToPty(0x1B); return true }
                     else -> {
-                        // 处理常规字符键 —— TYPE_NULL 模式下 IME 通过
-                        // sendKeyEvent 逐键发送，不调用 commitText。
                         val ch = event.unicodeChar
-                        if (ch != 0) {
-                            terminalView.sendCharWithCtrl(ch.toChar())
-                            return true
-                        }
+                        if (ch != 0) { terminalView.sendCharWithCtrl(ch.toChar()); return true }
                     }
                 }
             }
             return super.sendKeyEvent(event)
         }
 
-        override fun finishComposingText(): Boolean {
-            return true
-        }
+        override fun finishComposingText(): Boolean = true
     }
 }

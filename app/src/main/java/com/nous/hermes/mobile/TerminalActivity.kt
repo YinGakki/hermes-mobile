@@ -116,12 +116,13 @@ class TerminalActivity : AppCompatActivity() {
             // 布局变化时（如软键盘弹出/收起）更新 PTY 窗口大小，
             // 让 bash 知道正确的行/列数，实现正确的自动换行。
             addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
-                if (masterFd >= 0 && width > 0 && height > 0) {
+                if (width > 0 && height > 0) {
                     val newW = right - left
                     val newH = bottom - top
                     val oldW = oldRight - oldLeft
                     val oldH = oldBottom - oldTop
                     if (newW != oldW || newH != oldH) {
+                        terminalView.updateScreenSize()
                         sendWindowSizeToPty()
                     }
                 }
@@ -336,6 +337,7 @@ class TerminalActivity : AppCompatActivity() {
         if (masterFd < 0) return
         terminalView.post {
             if (terminalView.width > 0 && terminalView.height > 0) {
+                terminalView.updateScreenSize()
                 sendWindowSizeToPty()
             } else {
                 // 布局尚未完成，等下一次 layout 回调
@@ -357,12 +359,9 @@ class TerminalActivity : AppCompatActivity() {
      */
     private fun sendWindowSizeToPty() {
         if (masterFd < 0) return
-        if (terminalView.width <= 0 || terminalView.height <= 0) return
-        val paint = terminalView.paint
-        val charWidth = if (paint.measureText("M") > 0) paint.measureText("M") else 7f
-        val charHeight = maxOf(terminalView.lineHeight, 1)
-        val cols = maxOf((terminalView.width / charWidth).toInt(), 20)
-        val rows = maxOf((terminalView.height / charHeight).toInt(), 5)
+        // 使用 TerminalScreen 的行列数（由 updateScreenSize 同步）
+        val rows = terminalView.screen.rows
+        val cols = terminalView.screen.cols
         Log.i(TAG, "Window size: ${rows}r x ${cols}c")
         PtyNative.setWindowSize(masterFd, rows, cols)
     }
