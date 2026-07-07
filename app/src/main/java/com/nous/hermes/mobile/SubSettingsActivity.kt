@@ -159,7 +159,7 @@ class SubSettingsActivity : AppCompatActivity() {
         // ── Hermes Agent 更新卡片 ──
         val (hermesCard, hermesVer, hermesBadge) = makeUpdateCard(
             title = "更新 Hermes Agent",
-            subtitle = "Hermes Agent 核心服务",
+            subtitle = "",
         )
         hermesVersionText = hermesVer
         hermesUpdateBadge = hermesBadge
@@ -172,7 +172,7 @@ class SubSettingsActivity : AppCompatActivity() {
         // ── WebUI 更新卡片 ──
         val (webuiCard, webuiVer, webuiBadge) = makeUpdateCard(
             title = "更新 WebUI",
-            subtitle = "WebUI 仪表盘界面",
+            subtitle = "",
         )
         webuiVersionText = webuiVer
         webuiUpdateBadge = webuiBadge
@@ -185,7 +185,7 @@ class SubSettingsActivity : AppCompatActivity() {
         // ── APK 更新卡片 ──
         val (apkCard, apkVer, apkBadge) = makeUpdateCard(
             title = "更新应用 (APK)",
-            subtitle = "Android 应用本体",
+            subtitle = "",
         )
         apkVersionText = apkVer
         apkUpdateBadge = apkBadge
@@ -339,14 +339,16 @@ class SubSettingsActivity : AppCompatActivity() {
                 textSize = 15f
                 typeface = Typeface.DEFAULT_BOLD
             })
-            textCol.addView(TextView(this@SubSettingsActivity).apply {
-                text = subtitle
-                setTextColor(0xFF94a3b8.toInt())
-                textSize = 12f
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = (2 * density).toInt() }
-            })
+            if (subtitle.isNotEmpty()) {
+                textCol.addView(TextView(this@SubSettingsActivity).apply {
+                    text = subtitle
+                    setTextColor(0xFF94a3b8.toInt())
+                    textSize = 12f
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (2 * density).toInt() }
+                })
+            }
             versionView?.let { textCol.addView(it) }
             addView(textCol)
 
