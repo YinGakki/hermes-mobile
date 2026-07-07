@@ -478,7 +478,14 @@ class HermesServerManager(private val context: Context) {
                 "cd /root/home/hermes-agent && . .venv/bin/activate && hermes --version 2>&1",
                 30
             ) { line -> output.appendLine(line) }
-            if (code == 0) output.toString().trim().takeIf { it.isNotEmpty() } else null
+            if (code == 0) {
+                val raw = output.toString().trim().takeIf { it.isNotEmpty() } ?: return null
+                // hermes --version 输出多行（版本/Project/Python/OpenAI SDK/Up to date）
+                // 只提取第一行的版本号，如 "Hermes Agent v0.18.0"
+                val firstLine = raw.lineSequence().firstOrNull()?.trim() ?: return raw
+                // 去掉 "Hermes Agent " 前缀，只保留 "v0.18.0"
+                firstLine.removePrefix("Hermes Agent ").ifEmpty { firstLine }
+            } else null
         } catch (e: Exception) {
             Log.e(TAG, "getHermesVersion failed", e)
             null

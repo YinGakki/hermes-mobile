@@ -223,15 +223,26 @@ class SubSettingsActivity : AppCompatActivity() {
         btnChannelToggle = channelToggle
         channelToggle.setOnClickListener {
             val current = getUpdateChannel()
-            val newChannel = if (current == ApkUpdateChecker.CHANNEL_STABLE) {
-                ApkUpdateChecker.CHANNEL_BETA
+            if (current == ApkUpdateChecker.CHANNEL_STABLE) {
+                // 切换到测试版 — 显示确认弹窗
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("切换到测试版")
+                    .setMessage("测试版是开发者自用测试功能，可能有新增功能，但还有可能不能正常使用。切换前请自行备份")
+                    .setPositiveButton("确认切换") { _, _ ->
+                        getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+                            .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_BETA).apply()
+                        updateChannelToggleUI()
+                        checkVersionsAndUpdates()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
             } else {
-                ApkUpdateChecker.CHANNEL_STABLE
+                // 测试版切回正式版 — 直接切换
+                getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+                    .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_STABLE).apply()
+                updateChannelToggleUI()
+                checkVersionsAndUpdates()
             }
-            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-                .edit().putString(PREF_UPDATE_CHANNEL, newChannel).apply()
-            updateChannelToggleUI()
-            checkVersionsAndUpdates()
         }
 
         val apkCard = makeCardBaseWithExtraRight(
