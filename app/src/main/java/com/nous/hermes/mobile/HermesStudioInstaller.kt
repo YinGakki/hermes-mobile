@@ -440,6 +440,20 @@ class HermesStudioInstaller(private val context: Context) {
                     startWatchdog(onProgress)
                     return true
                 }
+                // 兜底：如果启动失败但输出含 "already running"，说明旧服务器还在跑。
+                // 此时健康检查可能因超时太短而失败，用长超时重试一次。
+                val recentOutputStr = synchronized(recentOutput) { recentOutput.joinToString("\n") }
+                if (recentOutputStr.contains("already running")) {
+                    onProgress("检测到 \"already running\" — 旧服务器可能仍在运行，用长超时重试健康检查…")
+                    if (checkServerHealthLongTimeout()) {
+                        onProgress("✓ 旧服务器仍在运行，直接接管")
+                        serverStartTime = System.currentTimeMillis()
+                        restartCount = 0
+                        serviceRunning = true
+                        startWatchdog(onProgress)
+                        return true
+                    }
+                }
                 onProgress("hermes-web-ui did not become healthy within ${HEALTH_STARTUP_TIMEOUT_MS / 1000}s")
                 if (exitCode != null) {
                     onProgress("hermes-web-ui 进程已退出，exit=$exitCode")
@@ -463,10 +477,32 @@ class HermesStudioInstaller(private val context: Context) {
         // 清理可能残留的 daemonized 服务器进程。
         // stopStudioProcess 只杀 proot（sleep infinity），不杀 hermes-web-ui
         // daemonize 出来的服务进程。如果不清理，新启动会报 "already running"。
+        //
+        // 三步清理（从优雅到暴力）：
+        //   1. hermes-web-ui stop — 用 PID 文件优雅停止守护进程（最可靠）
+        //   2. forceKillByPort() — 按端口强杀残留进程（lsof/ss/fuser）
+        //   3. 删除 PID 文件 — 清理过期 PID 文件，避免 hermes-web-ui 误判
+        try {
+            onProgress?.invoke("[cleanup] hermes-web-ui stop…")
+            processManager.runInProotExitCode(
+                "hermes-web-ui stop 2>&1 || true", 10
+            ) { onProgress?.invoke("[cleanup] $it") }
+            Thread.sleep(500)
+        } catch (_: Exception) {}
         try {
             forceKillByPort()
             Thread.sleep(500)
         } catch (_: Exception) {}
+        // 清理残留 PID 文件（hermes-web-ui 的 PID 文件在 ~/.hermes-web-ui/ 下）
+        try {
+            val pidFile = File(paths.rootfsDir, "root/.hermes-web-ui/hermes-web-ui.pid")
+            if (pidFile.exists()) {
+                Log.i(TAG, "Removing stale PID file: $pidFile")
+                pidFile.delete()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to remove PID file: ${e.message}")
+        }
         // hermes-web-ui 监听 PORT 环境变量；在 proot 里运行。
         //
         // 关键 1：hermes-web-ui 内部会 spawn('hermes', ['gateway','run','--replace'])
@@ -650,11 +686,13 @@ class HermesStudioInstaller(private val context: Context) {
      */
     private fun forceKillByPort() {
         try {
+            // 三级 fallback：lsof → ss → fuser，覆盖 rootfs 里可能缺工具的情况
             serverMgr.runInPrefix(
                 "kill -9 \$(lsof -tiTCP:$STUDIO_PORT -sTCP:LISTEN 2>/dev/null) 2>/dev/null || " +
                     "ss -lptnH 'sport = :$STUDIO_PORT' 2>/dev/null | " +
                     "grep -oP 'pid=\\K[0-9]+' | head -1 | " +
-                    "xargs -r kill -9 2>/dev/null || true",
+                    "xargs -r kill -9 2>/dev/null || " +
+                    "fuser -k $STUDIO_PORT/tcp 2>/dev/null || true",
                 onOutput = { Log.d(TAG, "[forcekill] $it") },
             )
         } catch (e: Exception) {
@@ -716,5 +754,33 @@ class HermesStudioInstaller(private val context: Context) {
         // 回退：检查端口是否能建立 TCP 连接（hermes-web-ui 可能没有 /health
         // 端点，但只要端口在监听就说明服务起来了）
         return isPortInUse(STUDIO_PORT)
+    }
+
+    /**
+     * 长超时健康检查 — 用于 "already running" 场景下确认旧服务器是否存活。
+     * 超时设为 5s（普通 checkServerHealth 是 1s），覆盖服务器繁忙时的延迟。
+     */
+    private fun checkServerHealthLongTimeout(): Boolean {
+        // 尝试 /health 端点（5s 超时）
+        try {
+            val url = URL("$STUDIO_BASE_URL/health")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            conn.requestMethod = "GET"
+            conn.useCaches = false
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code == 200) return true
+        } catch (_: Exception) {}
+        // 回退：TCP 连接检查（3s 超时）
+        return try {
+            val socket = java.net.Socket()
+            socket.connect(java.net.InetSocketAddress("127.0.0.1", STUDIO_PORT), 3000)
+            socket.close()
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 }
