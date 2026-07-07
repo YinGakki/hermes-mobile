@@ -133,8 +133,28 @@ object ApkUpdateChecker {
             }
 
             // ── 兜底：版本号比较 ──
-            if (compareVersions(latestVersion, cleanCurrent) <= 0) {
+            val cmp = compareVersions(latestVersion, cleanCurrent)
+            if (cmp < 0) {
                 Log.i(TAG, "Already up to date (version comparison)")
+                return null
+            }
+            // 版本号相同（cmp == 0）：版本号不变但内容可能更新了（测试版常见）
+            // 用 Release published_at 时间与本地 APK 安装时间比较
+            if (cmp == 0) {
+                Log.i(TAG, "Version same — checking release time vs install time")
+                val publishedAt = release.optString("published_at", "")
+                val installTime = getApkInstallTime(localApkPath)
+                if (publishedAt.isNotEmpty() && installTime > 0) {
+                    val releaseTime = parseIsoTime(publishedAt)
+                    if (releaseTime > 0 && releaseTime > installTime) {
+                        Log.i(TAG, "Release is newer than install — update available")
+                        return buildUpdateInfo(release, apkAsset, latestVersion, tagName, releaseSha256)
+                    }
+                    Log.i(TAG, "Install is same or newer than release — up to date")
+                    return null
+                }
+                // 无法比较时间，版本号相同 → 不提示更新
+                Log.i(TAG, "Version same, cannot compare time — up to date")
                 return null
             }
 
@@ -203,6 +223,32 @@ object ApkUpdateChecker {
             }
         }
         return null
+    }
+
+    /** 获取本地 APK 的安装时间，用文件修改时间近似，返回毫秒时间戳 */
+    private fun getApkInstallTime(apkPath: String?): Long {
+        return try {
+            if (apkPath != null) {
+                val file = File(apkPath)
+                if (file.exists()) file.lastModified() else 0L
+            } else 0L
+        } catch (e: Exception) {
+            Log.w(TAG, "getApkInstallTime failed", e)
+            0L
+        }
+    }
+
+    /** 解析 ISO 8601 时间字符串（如 "2026-07-07T12:00:00Z"）为毫秒时间戳 */
+    private fun parseIsoTime(iso: String): Long {
+        return try {
+            val cleaned = iso.replace(Regex("\\.\\d+"), "").trimEnd('Z')
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            sdf.parse(cleaned)?.time ?: 0L
+        } catch (e: Exception) {
+            Log.w(TAG, "parseIsoTime failed: $iso", e)
+            0L
+        }
     }
 
     /**
