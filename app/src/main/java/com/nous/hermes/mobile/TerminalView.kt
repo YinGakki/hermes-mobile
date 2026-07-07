@@ -57,7 +57,9 @@ class TerminalView @JvmOverloads constructor(
         isFocusableInTouchMode = true
         inputType = InputType.TYPE_NULL  // Prevents EditText from editing, but still shows IME
         isVerticalScrollBarEnabled = true
-        setHorizontallyScrolling(true)
+        // 显式设置多行显示 — TYPE_NULL + setHorizontallyScrolling(true) 会导致
+        // EditText 将所有内容渲染为单行水平滚动。setSingleLine(false) 确保换行符正常显示。
+        setSingleLine(false)
     }
 
     /**

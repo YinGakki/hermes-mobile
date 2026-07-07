@@ -4,22 +4,26 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileInputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /**
  * APK 更新检测器 — 通过 GitHub Releases API 检查应用自身是否有新版本。
  *
- * 更新判定策略：语义化版本号比较。
+ * 更新判定策略（按优先级）：
+ * 1. SHA256 比较（首选）：从 Release body 的"校验值 (SHA256)"区块提取哈希值，
+ *    与本地已安装 APK 的 SHA256 比较。不同 → 有更新；相同 → 无更新。
+ *    用于解决测试版版本号不变但内容更新的情况。
+ * 2. 版本号比较（兜底）：当 Release body 没有 SHA256，或本地 APK
+ *    哈希计算失败时，退回语义化版本号比较。
  *
  * 通道过滤逻辑：
  * - 正式版通道：调用 /releases/latest，GitHub 返回最新的非 prerelease Release。
  * - 测试版通道：调用 /releases 列表，过滤 tag_name 含 "beta" 的 Release，取最新一条。
- *
- * GitHub API 端点：
- * - 正式版：GET https://api.github.com/repos/{owner}/{repo}/releases/latest
- * - 测试版：GET https://api.github.com/repos/{owner}/{repo}/releases
  */
 
 data class ApkUpdateInfo(
@@ -31,6 +35,7 @@ data class ApkUpdateInfo(
     val releaseName: String,   // Release 标题
     val releaseUrl: String,    // Release 页面 URL
     val fileSize: Long,        // APK 文件大小（字节）
+    val releaseSha256: String? = null,  // Release APK 的 SHA256（从 Release body 提取），可能为空
 )
 
 object ApkUpdateChecker {
@@ -53,16 +58,24 @@ object ApkUpdateChecker {
     const val CHANNEL_STABLE = "stable"
     const val CHANNEL_BETA = "beta"
 
+    // ── 本地 SHA256 缓存（避免每次检查都重算 ~15MB APK 的哈希） ──
+    @Volatile private var cachedSha256: String? = null
+    @Volatile private var cachedApkPath: String? = null
+    @Volatile private var cachedApkMtime: Long = 0L
+
     /**
      * 检查 APK 是否有更新。
      *
      * @param currentVersion 当前版本号（如 "0.0.2-beta-lite"）
      * @param channel 更新通道（CHANNEL_STABLE 或 CHANNEL_BETA）
+     * @param localApkPath 本地已安装 APK 的文件路径（用于 SHA256 比较），
+     *   传 null 则跳过 SHA256 比较、仅用版本号兜底。
      * @return 更新信息（如果有新版本），否则返回 null
      */
     fun checkUpdate(
         currentVersion: String,
         channel: String,
+        localApkPath: String? = null,
     ): ApkUpdateInfo? {
         return try {
             val release = when (channel) {
@@ -86,12 +99,6 @@ object ApkUpdateChecker {
 
             Log.i(TAG, "[GitHub] Current: $currentVersion (clean=$cleanCurrent), Latest: $latestVersion (tag=$tagName, prerelease=${release.optBoolean("prerelease")})")
 
-            // 比较版本号
-            if (compareVersions(latestVersion, cleanCurrent) <= 0) {
-                Log.i(TAG, "Already up to date")
-                return null
-            }
-
             // 解析 APK 资产
             val apkAsset = findApkAsset(release)
             if (apkAsset == null) {
@@ -99,20 +106,63 @@ object ApkUpdateChecker {
                 return null
             }
 
-            ApkUpdateInfo(
-                version = latestVersion,
-                tagName = tagName,
-                downloadUrl = apkAsset.optString("browser_download_url", ""),
-                changelog = release.optString("body", "").trim(),
-                isBeta = release.optBoolean("prerelease", false),
-                releaseName = release.optString("name", tagName),
-                releaseUrl = release.optString("html_url", ""),
-                fileSize = apkAsset.optLong("size", 0L),
-            )
+            // 从 Release body 提取 SHA256
+            val releaseBody = release.optString("body", "").trim()
+            val releaseSha256 = extractSha256FromBody(releaseBody)
+            if (releaseSha256 != null) {
+                Log.i(TAG, "Release SHA256 (from body): $releaseSha256")
+            } else {
+                Log.i(TAG, "No SHA256 found in Release body — will fall back to version comparison")
+            }
+
+            // ── 首选：SHA256 比较（解决版本号不变但内容更新的情况） ──
+            if (releaseSha256 != null && localApkPath != null) {
+                val localSha256 = computeLocalApkSha256(localApkPath)
+                if (localSha256 != null) {
+                    Log.i(TAG, "Local SHA256:  $localSha256")
+                    Log.i(TAG, "Release SHA256: $releaseSha256")
+                    if (localSha256.equals(releaseSha256, ignoreCase = true)) {
+                        Log.i(TAG, "SHA256 matches — already up to date")
+                        return null
+                    }
+                    Log.i(TAG, "SHA256 differs — update available")
+                    return buildUpdateInfo(release, apkAsset, latestVersion, tagName, releaseSha256)
+                }
+                // 本地 SHA256 计算失败，继续走版本号兜底
+                Log.w(TAG, "Local SHA256 computation failed — falling back to version comparison")
+            }
+
+            // ── 兜底：版本号比较 ──
+            if (compareVersions(latestVersion, cleanCurrent) <= 0) {
+                Log.i(TAG, "Already up to date (version comparison)")
+                return null
+            }
+
+            buildUpdateInfo(release, apkAsset, latestVersion, tagName, releaseSha256)
         } catch (e: Exception) {
             Log.e(TAG, "checkUpdate failed", e)
             null
         }
+    }
+
+    private fun buildUpdateInfo(
+        release: JSONObject,
+        apkAsset: JSONObject,
+        version: String,
+        tagName: String,
+        releaseSha256: String?,
+    ): ApkUpdateInfo {
+        return ApkUpdateInfo(
+            version = version,
+            tagName = tagName,
+            downloadUrl = apkAsset.optString("browser_download_url", ""),
+            changelog = release.optString("body", "").trim(),
+            isBeta = release.optBoolean("prerelease", false),
+            releaseName = release.optString("name", tagName),
+            releaseUrl = release.optString("html_url", ""),
+            fileSize = apkAsset.optLong("size", 0L),
+            releaseSha256 = releaseSha256,
+        )
     }
 
     /** 获取最新的正式版 Release（非 prerelease） */
@@ -155,7 +205,66 @@ object ApkUpdateChecker {
         return null
     }
 
-    /** HTTP GET 请求，返回响应体字符串 */
+    /**
+     * 从 Release body 中提取 SHA256 哈希值。
+     *
+     * Release body 格式：
+     * ```
+     * ### 校验值 (SHA256)
+     *
+     * a1b2c3d4e5f6...  hermes-v0.0.2-beta-arm64-lite.apk
+     * ```
+     *
+     * 提取 64 位十六进制字符串。
+     */
+    private fun extractSha256FromBody(body: String): String? {
+        if (body.isEmpty()) return null
+        // 匹配 64 位十六进制字符串（SHA256 哈希值）
+        val match = Regex("[0-9a-fA-F]{64}").find(body)
+        return match?.value?.lowercase()
+    }
+
+    /**
+     * 计算本地已安装 APK 的 SHA256。
+     * 使用 mtime 缓存：如果 APK 文件未修改，复用上次结果，避免重复哈希文件。
+     */
+    private fun computeLocalApkSha256(apkPath: String): String? {
+        return try {
+            val file = File(apkPath)
+            if (!file.exists() || !file.isFile) return null
+            val mtime = file.lastModified()
+
+            // 缓存命中：同一路径 + 同一修改时间
+            if (apkPath == cachedApkPath && mtime == cachedApkMtime && cachedSha256 != null) {
+                Log.i(TAG, "Using cached local SHA256 (path=$apkPath, mtime=$mtime)")
+                return cachedSha256
+            }
+
+            Log.i(TAG, "Computing SHA256 for $apkPath (${file.length()} bytes)…")
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { fis ->
+                val buffer = ByteArray(65536)
+                var bytes = fis.read(buffer)
+                while (bytes > 0) {
+                    digest.update(buffer, 0, bytes)
+                    bytes = fis.read(buffer)
+                }
+            }
+            val hash = digest.digest().joinToString("") { "%02x".format(it) }
+
+            // 更新缓存
+            cachedApkPath = apkPath
+            cachedApkMtime = mtime
+            cachedSha256 = hash
+
+            hash
+        } catch (e: Exception) {
+            Log.e(TAG, "computeLocalApkSha256 failed for $apkPath", e)
+            null
+        }
+    }
+
+    /** HTTP GET 请求（GitHub API），返回响应体字符串 */
     private fun httpGet(urlStr: String): String? {
         var conn: HttpURLConnection? = null
         return try {
