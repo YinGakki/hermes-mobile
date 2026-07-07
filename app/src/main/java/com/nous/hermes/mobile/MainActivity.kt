@@ -55,7 +55,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnInstallAll: Button
     private lateinit var btnSaveEnv: View
     private lateinit var btnRestoreEnv: View
-    // 更新/维护类按钮已合并到 SubSettingsActivity，主页只保留入口卡片
+    // 版本行可点击，进入更新管理（SubSettingsActivity）
     private lateinit var btnSettingsUpdates: View
     private lateinit var btnSettingsMaintenance: View
     private lateinit var spinnerProot: ProgressBar
@@ -219,7 +219,7 @@ class MainActivity : AppCompatActivity() {
         btnSaveEnv.setOnClickListener { onSaveEnvClicked() }
         btnRestoreEnv.setOnClickListener { onRestoreEnvClicked() }
 
-        // 设置页"更新管理"/"维护工具"入口卡片 → 启动二级页面
+        // 设置页"版本行"点击 → 进入更新管理二级页面
         btnSettingsUpdates.setOnClickListener {
             val intent = Intent(this, SubSettingsActivity::class.java).apply {
                 putExtra(SubSettingsActivity.EXTRA_CATEGORY, SubSettingsActivity.CATEGORY_UPDATES)
