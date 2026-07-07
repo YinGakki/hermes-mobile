@@ -2,7 +2,9 @@ package com.nous.hermes.mobile
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -62,6 +64,9 @@ class SubSettingsActivity : AppCompatActivity() {
     private lateinit var hermesUpdateBadge: TextView
     private lateinit var webuiUpdateBadge: TextView
     private lateinit var apkUpdateBadge: TextView
+    private lateinit var hermesRefreshBtn: TextView
+    private lateinit var webuiRefreshBtn: TextView
+    private lateinit var apkRefreshBtn: TextView
 
     private var btnChannelToggle: TextView? = null
 
@@ -86,8 +91,9 @@ class SubSettingsActivity : AppCompatActivity() {
 
         buildUI(title, category)
 
+        // 不再自动检测更新，只显示当前版本号
         if (category == CATEGORY_UPDATES) {
-            checkVersionsAndUpdates()
+            showCurrentVersionsOnly()
         }
     }
 
@@ -162,32 +168,49 @@ class SubSettingsActivity : AppCompatActivity() {
     /** 构建更新管理页面：Hermes / WebUI / APK 更新卡片 + 通道选择 */
     private fun buildUpdatesSection(container: LinearLayout) {
         // ── Hermes Agent 更新卡片 ──
-        val (hermesCard, hermesVer, hermesBadge) = makeUpdateCard(
+        val hermesUpdateBtn = makeUpdateButton {
+            setResult(RESULT_UPDATE_HERMES)
+            finish()
+        }
+        val hermesRefresh = makeRefreshButton().apply {
+            setOnClickListener { checkSingleUpdate("hermes") }
+        }
+        hermesRefreshBtn = hermesRefresh
+        val (hermesCard, hermesVer, hermesBadge) = makeUpdateCardWithExtra(
             title = "更新 Hermes Agent",
             subtitle = "",
+            extraRight = hermesRefresh
         )
         hermesVersionText = hermesVer
         hermesUpdateBadge = hermesBadge
         hermesCard.setOnClickListener {
-            setResult(RESULT_UPDATE_HERMES)
-            finish()
+            // 点击卡片也检测更新
+            checkSingleUpdate("hermes")
         }
         container.addView(hermesCard)
 
         // ── WebUI 更新卡片 ──
-        val (webuiCard, webuiVer, webuiBadge) = makeUpdateCard(
+        val webuiUpdateBtn = makeUpdateButton {
+            setResult(RESULT_UPDATE_WEBUI)
+            finish()
+        }
+        val webuiRefresh = makeRefreshButton().apply {
+            setOnClickListener { checkSingleUpdate("webui") }
+        }
+        webuiRefreshBtn = webuiRefresh
+        val (webuiCard, webuiVer, webuiBadge) = makeUpdateCardWithExtra(
             title = "更新 WebUI",
             subtitle = "",
+            extraRight = webuiRefresh
         )
         webuiVersionText = webuiVer
         webuiUpdateBadge = webuiBadge
         webuiCard.setOnClickListener {
-            setResult(RESULT_UPDATE_WEBUI)
-            finish()
+            checkSingleUpdate("webui")
         }
         container.addView(webuiCard)
 
-        // ── APK 更新卡片（右侧带通道切换按钮） ──
+        // ── APK 更新卡片（右侧带通道切换按钮 + 刷新按钮） ──
         val apkBadge = TextView(this).apply {
             text = "有更新"
             setTextColor(0xFF10b981.toInt())
@@ -208,7 +231,7 @@ class SubSettingsActivity : AppCompatActivity() {
         apkVersionText = apkVer
         apkUpdateBadge = apkBadge
 
-        // 通道切换按钮 — 点击在正式版/测试版之间切换
+        // 通道切换按钮
         val channelToggle = TextView(this).apply {
             textSize = 12f
             gravity = Gravity.CENTER
@@ -218,13 +241,12 @@ class SubSettingsActivity : AppCompatActivity() {
             setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, (32 * density).toInt()
-            ).apply { marginEnd = (8 * density).toInt() }
+            ).apply { marginEnd = (4 * density).toInt() }
         }
         btnChannelToggle = channelToggle
         channelToggle.setOnClickListener {
             val current = getUpdateChannel()
             if (current == ApkUpdateChecker.CHANNEL_STABLE) {
-                // 切换到测试版 — 显示确认弹窗
                 MaterialAlertDialogBuilder(this)
                     .setTitle("切换到测试版")
                     .setMessage("测试版是开发者自用测试功能，可能有新增功能，但还有可能不能正常使用。切换前请自行备份")
@@ -232,25 +254,30 @@ class SubSettingsActivity : AppCompatActivity() {
                         getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
                             .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_BETA).apply()
                         updateChannelToggleUI()
-                        checkVersionsAndUpdates()
+                        checkSingleUpdate("apk")
                     }
                     .setNegativeButton("取消", null)
                     .show()
             } else {
-                // 测试版切回正式版 — 直接切换
                 getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
                     .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_STABLE).apply()
                 updateChannelToggleUI()
-                checkVersionsAndUpdates()
+                checkSingleUpdate("apk")
             }
         }
 
-        val apkCard = makeCardBaseWithExtraRight(
+        // APK 刷新按钮
+        val apkRefresh = makeRefreshButton().apply {
+            setOnClickListener { checkSingleUpdate("apk") }
+        }
+        apkRefreshBtn = apkRefresh
+
+        val apkCard = makeCardBaseWithMultipleExtra(
             title = "更新应用 (APK)",
             subtitle = "",
             versionView = apkVer,
             badgeView = apkBadge,
-            extraRight = channelToggle,
+            extras = listOf(channelToggle, apkRefresh)
         )
         apkCard.setOnClickListener {
             onApkUpdateClicked()
@@ -299,7 +326,253 @@ class SubSettingsActivity : AppCompatActivity() {
         }
     }
 
+    /** 创建刷新图标按钮（圆形可点击，放在卡片右侧） */
+    private fun makeRefreshButton(): TextView {
+        return TextView(this).apply {
+            text = "⟳"
+            setTextColor(0xFF818cf8.toInt())
+            textSize = 18f
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            background = UiUtils.getClickableBackground(this@SubSettingsActivity)
+            layoutParams = LinearLayout.LayoutParams(
+                (32 * density).toInt(), (32 * density).toInt()
+            ).apply { marginEnd = (8 * density).toInt() }
+        }
+    }
+
+    /** 创建"更新"按钮（检测到更新后显示） */
+    private fun makeUpdateButton(onClick: () -> Unit): TextView {
+        return TextView(this).apply {
+            text = "更新"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            background = GradientDrawable().apply {
+                setColor(0xFF818cf8.toInt())
+                cornerRadius = 6 * density
+            }
+            setPadding(
+                (12 * density).toInt(), (6 * density).toInt(),
+                (12 * density).toInt(), (6 * density).toInt()
+            )
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, (32 * density).toInt()
+            ).apply { marginEnd = (8 * density).toInt() }
+            visibility = View.GONE
+            setOnClickListener { onClick() }
+        }
+    }
+
+    /** 只显示当前版本号，不检测更新 */
+    private fun showCurrentVersionsOnly() {
+        val defaultColor = 0xFF64748b.toInt()
+
+        // Hermes 版本 — 后台获取本地版本
+        hermesVersionText.text = "获取中…"
+        hermesVersionText.setTextColor(defaultColor)
+        Thread {
+            val hermesVer = try { serverManager.getHermesVersion() } catch (e: Exception) { null }
+            handler.post {
+                hermesVersionText.text = hermesVer ?: if (serverManager.isHermesInstalled()) "已安装" else "未安装"
+            }
+        }.start()
+
+        // WebUI 版本 — 后台获取本地版本
+        webuiVersionText.text = "获取中…"
+        webuiVersionText.setTextColor(defaultColor)
+        Thread {
+            val webuiVer = try { studioInstaller.getWebUIVersion() } catch (e: Exception) { null }
+            handler.post {
+                webuiVersionText.text = webuiVer ?: if (studioInstaller.isInstalled()) "已安装" else "未安装"
+            }
+        }.start()
+
+        // APK 版本 — 直接从 PackageInfo 获取
+        apkVersionText.text = getVersionDisplayText()
+        apkVersionText.setTextColor(defaultColor)
+    }
+
+    /** 检测单个组件的更新 */
+    private fun checkSingleUpdate(component: String) {
+        when (component) {
+            "hermes" -> {
+                hermesVersionText.text = "检测中…"
+                hermesUpdateBadge.visibility = View.GONE
+                Thread {
+                    val hermesVer = try { serverManager.getHermesVersion() } catch (e: Exception) { null }
+                    val latest = if (hermesVer != null) try { serverManager.checkHermesUpdate() } catch (e: Exception) { null } else null
+                    handler.post {
+                        if (hermesVer == null) {
+                            hermesVersionText.text = if (serverManager.isHermesInstalled()) "已安装" else "未安装"
+                        } else if (latest != null) {
+                            hermesVersionText.text = "$hermesVer → $latest"
+                            hermesVersionText.setTextColor(0xFF10b981.toInt())
+                            hermesUpdateBadge.visibility = View.VISIBLE
+                        } else {
+                            hermesVersionText.text = "$hermesVer (最新)"
+                        }
+                    }
+                }.start()
+            }
+            "webui" -> {
+                webuiVersionText.text = "检测中…"
+                webuiUpdateBadge.visibility = View.GONE
+                Thread {
+                    val webuiVer = try { studioInstaller.getWebUIVersion() } catch (e: Exception) { null }
+                    val latest = if (webuiVer != null) try { studioInstaller.checkWebUIUpdate() } catch (e: Exception) { null } else null
+                    handler.post {
+                        if (webuiVer == null) {
+                            webuiVersionText.text = if (studioInstaller.isInstalled()) "已安装" else "未安装"
+                        } else if (latest != null) {
+                            webuiVersionText.text = "$webuiVer → $latest"
+                            webuiVersionText.setTextColor(0xFF10b981.toInt())
+                            webuiUpdateBadge.visibility = View.VISIBLE
+                        } else {
+                            webuiVersionText.text = "$webuiVer (最新)"
+                        }
+                    }
+                }.start()
+            }
+            "apk" -> {
+                apkVersionText.text = "检测中…"
+                apkUpdateBadge.visibility = View.GONE
+                Thread {
+                    val apkVer = getVersionName()
+                    val channel = getUpdateChannel()
+                    val apkPath = getLocalApkPath()
+                    val apkUpdate = try { ApkUpdateChecker.checkUpdate(apkVer, channel, apkPath) } catch (e: Exception) { null }
+                    lastApkUpdate = apkUpdate
+                    handler.post {
+                        if (apkUpdate != null) {
+                            apkVersionText.text = "${getVersionDisplayText()} → ${apkUpdate.version}"
+                            apkVersionText.setTextColor(0xFF10b981.toInt())
+                            apkUpdateBadge.visibility = View.VISIBLE
+                        } else {
+                            apkVersionText.text = "${getVersionDisplayText()} (最新)"
+                        }
+                    }
+                }.start()
+            }
+        }
+    }
+
     // ── UI 工具方法 ──────────────────────────────────────────────────────────
+
+    /** 创建一个更新卡片（带额外右侧视图），返回 (card, versionText, badgeText) */
+    private fun makeUpdateCardWithExtra(
+        title: String,
+        subtitle: String,
+        extraRight: View,
+    ): Triple<LinearLayout, TextView, TextView> {
+        val badge = TextView(this).apply {
+            text = "有更新"
+            setTextColor(0xFF10b981.toInt())
+            textSize = 10f
+            typeface = Typeface.DEFAULT_BOLD
+            background = UiUtils.getBadgeBackground(this@SubSettingsActivity)
+            setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
+            visibility = View.GONE
+        }
+        val version = TextView(this).apply {
+            text = "—"
+            setTextColor(0xFF64748b.toInt())
+            textSize = 12f
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (4 * density).toInt() }
+        }
+        val card = makeCardBaseWithMultipleExtra(title, subtitle, version, badge, listOf(extraRight))
+        return Triple(card, version, badge)
+    }
+
+    /** 卡片基础布局 — 带多个额外右侧视图 */
+    private fun makeCardBaseWithMultipleExtra(
+        title: String,
+        subtitle: String,
+        versionView: TextView?,
+        badgeView: TextView?,
+        extras: List<View>,
+    ): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = UiUtils.getClickableBackground(this@SubSettingsActivity)
+            setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (10 * density).toInt() }
+            isClickable = true
+            isFocusable = true
+
+            // 图标方块
+            val iconTile = LinearLayout(this@SubSettingsActivity).apply {
+                gravity = Gravity.CENTER
+                background = UiUtils.getIconTileBackground(this@SubSettingsActivity)
+                layoutParams = LinearLayout.LayoutParams(
+                    (44 * density).toInt(), (44 * density).toInt()
+                )
+            }
+            val icon = TextView(this@SubSettingsActivity).apply {
+                text = "↻"
+                setTextColor(0xFF818cf8.toInt())
+                textSize = 20f
+                gravity = Gravity.CENTER
+            }
+            iconTile.addView(icon)
+            addView(iconTile)
+
+            // 文本区
+            val textCol = LinearLayout(this@SubSettingsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = (16 * density).toInt()
+                }
+            }
+            textCol.addView(TextView(this@SubSettingsActivity).apply {
+                text = title
+                setTextColor(0xFFe2e8f0.toInt())
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            if (subtitle.isNotEmpty()) {
+                textCol.addView(TextView(this@SubSettingsActivity).apply {
+                    text = subtitle
+                    setTextColor(0xFF94a3b8.toInt())
+                    textSize = 12f
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (2 * density).toInt() }
+                })
+            }
+            versionView?.let { textCol.addView(it) }
+            addView(textCol)
+
+            // badge + extras + chevron
+            badgeView?.let { addView(it) }
+            if (badgeView != null) {
+                (badgeView.layoutParams as? LinearLayout.LayoutParams)?.apply {
+                    marginEnd = (8 * density).toInt()
+                }
+            }
+            for (extra in extras) {
+                addView(extra)
+            }
+            addView(TextView(this@SubSettingsActivity).apply {
+                text = "›"
+                setTextColor(0xFF64748b.toInt())
+                textSize = 20f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    (20 * density).toInt(), (20 * density).toInt()
+                )
+            })
+        }
+    }
 
     /** 创建一个更新卡片，返回 (card, versionText, badgeText) */
     private fun makeUpdateCard(

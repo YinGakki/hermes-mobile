@@ -48,6 +48,7 @@ class ChatActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "ChatActivity"
         const val EXTRA_BASE_URL = "base_url"
+        const val EXTRA_TARGET_URL = "target_url"
         private const val FILE_CHOOSER_REQUEST = 10042
         private const val NOTIF_CHANNEL_ID = "hermes_webui_notifications"
         private const val NOTIF_PERMISSION_REQUEST = 10043
@@ -64,6 +65,8 @@ class ChatActivity : AppCompatActivity() {
 
         baseUrl = intent.getStringExtra(EXTRA_BASE_URL)
             ?: HermesStudioInstaller.STUDIO_BASE_URL
+        // 如果通知带入了 target URL，优先加载该 URL
+        val targetUrl = intent.getStringExtra(EXTRA_TARGET_URL)
 
         createNotificationChannel()
 
@@ -155,7 +158,17 @@ class ChatActivity : AppCompatActivity() {
         container.setSwipeHint(PREF_SWIPE_HINT_SHOWN, "从屏幕左边缘向右滑动可退出 WebUI")
 
         Log.i(TAG, "Loading $baseUrl in WebView")
-        webView.loadUrl(baseUrl)
+        webView.loadUrl(targetUrl ?: baseUrl)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val newTarget = intent.getStringExtra(EXTRA_TARGET_URL)
+        if (!newTarget.isNullOrEmpty()) {
+            Log.i(TAG, "Notification click → loading $newTarget")
+            webView.loadUrl(newTarget)
+        }
     }
 
     /**
@@ -348,6 +361,26 @@ class ChatActivity : AppCompatActivity() {
                 val opts = JSONObject(optionsJson)
                 val body = opts.optString("body", "")
                 val tag = opts.optString("tag", "")
+                val url = opts.optString("url", opts.optString("data", ""))
+
+                // 点击通知后跳转到对应的对话/URL
+                val targetUrl = if (url.isNotEmpty()) {
+                    url
+                } else if (tag.isNotEmpty()) {
+                    // tag 通常是会话 ID，构建跳转 URL
+                    "http://127.0.0.1:${com.nous.hermes.mobile.HermesStudioInstaller.STUDIO_PORT}/chat/$tag"
+                } else {
+                    "http://127.0.0.1:${com.nous.hermes.mobile.HermesStudioInstaller.STUDIO_PORT}/"
+                }
+
+                val clickIntent = Intent(context, ChatActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra(EXTRA_TARGET_URL, targetUrl)
+                }
+                val pendingIntent = PendingIntent.getActivity(
+                    context, tag.hashCode(), clickIntent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
 
                 val builder = NotificationCompat.Builder(context, NOTIF_CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
@@ -356,12 +389,13 @@ class ChatActivity : AppCompatActivity() {
                     .setStyle(NotificationCompat.BigTextStyle().bigText(body))
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                     .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
 
                 val notifId = if (tag.isNotEmpty()) tag.hashCode() else System.currentTimeMillis().toInt()
 
                 val manager = context.getSystemService(NotificationManager::class.java)
                 manager.notify(notifId, builder.build())
-                Log.d(TAG, "Notification shown: $title")
+                Log.d(TAG, "Notification shown: $title (tag=$tag, url=$targetUrl)")
             } catch (e: Exception) {
                 Log.e(TAG, "showNotification failed: ${e.message}")
             }
