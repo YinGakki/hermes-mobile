@@ -2,14 +2,12 @@ package com.nous.hermes.mobile
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -60,7 +58,7 @@ class TerminalActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
 
         // === 根容器：支持左边缘滑动退出 ===
-        val container = SwipeExitContainer(this)
+        val container = SwipeExitFrameLayout(this)
 
         // === 垂直布局：标题栏 + 终端区 + 功能键栏 ===
         val rootLayout = LinearLayout(this).apply {
@@ -229,7 +227,7 @@ class TerminalActivity : AppCompatActivity() {
         setContentView(container)
 
         // 首次提示
-        showSwipeHint()
+        container.setSwipeHint(PREF_SWIPE_HINT_SHOWN, "从屏幕左边缘向右滑动可退出终端")
 
         // 启动终端
         startPtyShell()
@@ -366,21 +364,6 @@ class TerminalActivity : AppCompatActivity() {
         PtyNative.setWindowSize(masterFd, rows, cols)
     }
 
-    /**
-     * 首次进入提示滑动退出手势（仅显示一次）。
-     */
-    private fun showSwipeHint() {
-        val prefs = getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-        if (!prefs.getBoolean(PREF_SWIPE_HINT_SHOWN, false)) {
-            Toast.makeText(
-                this,
-                "从屏幕左边缘向右滑动可退出终端",
-                Toast.LENGTH_LONG
-            ).show()
-            prefs.edit().putBoolean(PREF_SWIPE_HINT_SHOWN, true).apply()
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
@@ -398,105 +381,5 @@ class TerminalActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 自定义 FrameLayout：左边缘滑动退出（与 ChatActivity 相同的实现）。
-     */
-    inner class SwipeExitContainer(context: Context) : FrameLayout(context) {
-
-        private val density = resources.displayMetrics.density
-        private val edgeWidth = 24 * density
-        private val triggerThreshold = 100 * density
-
-        private var startX = 0f
-        private var startY = 0f
-        private var fromEdge = false
-        private var swiping = false
-
-        private val hintView = TextView(context).apply {
-            text = "←  退出"
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            gravity = Gravity.CENTER
-            val padH = (16 * density).toInt()
-            val padV = (10 * density).toInt()
-            setPadding(padH, padV, padH, padV)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadius = 24 * density
-                setColor(0xCC1e293b.toInt())
-                setStroke(1, 0x66ffffff)
-            }
-            alpha = 0f
-            visibility = View.GONE
-        }
-
-        init {
-            addView(hintView, LayoutParams(
-                LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            })
-        }
-
-        /**
-         * 在左边缘区域排除系统手势（Android 10+ 的返回手势），
-         * 否则系统会优先消费左边缘触摸，导致我们的左滑退出手势无效。
-         */
-        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-            super.onLayout(changed, left, top, right, bottom)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && height > 0) {
-                val exclusionHeight = minOf(height, (200 * density).toInt())
-                val rect = android.graphics.Rect(0, 0, edgeWidth.toInt(), exclusionHeight)
-                systemGestureExclusionRects = listOf(rect)
-            }
-        }
-
-        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startX = ev.rawX
-                    startY = ev.rawY
-                    fromEdge = ev.x < edgeWidth
-                    swiping = false
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (fromEdge && !swiping) {
-                        val dx = ev.rawX - startX
-                        val ady = Math.abs(ev.rawY - startY)
-                        if (dx > 16 * density && dx > ady * 1.5f) {
-                            swiping = true
-                            hintView.visibility = View.VISIBLE
-                            return true
-                        }
-                    }
-                }
-            }
-            return false
-        }
-
-        override fun onTouchEvent(ev: MotionEvent): Boolean {
-            if (!swiping) return super.onTouchEvent(ev)
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (ev.rawX - startX).coerceAtLeast(0f)
-                    hintView.translationX = dx
-                    hintView.alpha = (dx / triggerThreshold).coerceIn(0.3f, 1f)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    val dx = ev.rawX - startX
-                    if (dx > triggerThreshold) {
-                        hintView.animate().alpha(0f).setDuration(100)
-                            .withEndAction { hintView.visibility = View.GONE }.start()
-                        finish()
-                    } else {
-                        hintView.animate().translationX(0f).alpha(0f).setDuration(150)
-                            .withEndAction { hintView.visibility = View.GONE }.start()
-                    }
-                    swiping = false
-                    fromEdge = false
-                }
-            }
-            return true
-        }
-    }
+    // 边缘滑动退出容器与首次提示 Toast 已提取至 [SwipeExitFrameLayout]。
 }

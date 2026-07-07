@@ -90,7 +90,8 @@ class TerminalScreen(
         var underline: Boolean = false,
     )
 
-    private val buffer = Array(rows) { Array(cols) { Cell() } }
+    @Volatile private var buffer = Array(rows) { Array(cols) { Cell() } }
+    private val bufferLock = Any()
 
     // ── 光标 ──
     var cursorRow = 0
@@ -137,7 +138,9 @@ class TerminalScreen(
 
     /** 写入字符串 */
     fun write(text: String) {
-        for (ch in text) processChar(ch)
+        synchronized(bufferLock) {
+            for (ch in text) processChar(ch)
+        }
         dirty = true
     }
 
@@ -147,21 +150,22 @@ class TerminalScreen(
         if (newRows == rows && newCols == cols) return
 
         val newBuffer = Array(newRows) { Array(newCols) { Cell() } }
-        // 复制旧内容
-        val copyRows = minOf(rows, newRows)
-        val copyCols = minOf(cols, newCols)
-        for (r in 0 until copyRows)
-            for (c in 0 until copyCols)
-                newBuffer[r][c] = buffer[r][c]
-
-        // 用同步块保证线程安全
-        synchronized(this) {
-            // 直接替换引用（buffer 是 val，用反射或改为 var）
-            // 改用 var 方式更安全，但这里用手动复制
-            for (r in 0 until newRows)
-                for (c in 0 until newCols)
-                    if (r < buffer.size && c < buffer[r].size)
-                        buffer[r][c].let { newBuffer[r][c].ch = it.ch; newBuffer[r][c].fg = it.fg; newBuffer[r][c].bg = it.bg; newBuffer[r][c].bold = it.bold; newBuffer[r][c].underline = it.underline }
+        synchronized(bufferLock) {
+            // 复制旧内容到新缓冲区
+            val copyRows = minOf(buffer.size, newRows)
+            for (r in 0 until copyRows) {
+                val copyCols = minOf(buffer[r].size, newCols)
+                for (c in 0 until copyCols) {
+                    val src = buffer[r][c]
+                    newBuffer[r][c].ch = src.ch
+                    newBuffer[r][c].fg = src.fg
+                    newBuffer[r][c].bg = src.bg
+                    newBuffer[r][c].bold = src.bold
+                    newBuffer[r][c].underline = src.underline
+                }
+            }
+            // 替换缓冲区引用
+            buffer = newBuffer
         }
 
         rows = newRows
@@ -176,40 +180,43 @@ class TerminalScreen(
     fun render(): SpannableStringBuilder {
         if (!dirty) return lastRender
         val sb = SpannableStringBuilder()
-        var lastFg = -1
-        var lastBg = -1
-        var lastBold = false
-        var lastUnderline = false
-        var spanStart = 0
+        synchronized(bufferLock) {
+            val buf = buffer
+            var lastFg = -1
+            var lastBg = -1
+            var lastBold = false
+            var lastUnderline = false
+            var spanStart = 0
 
-        for (r in 0 until rows) {
-            // 找到行末（去掉尾部空格）
-            var lineEnd = cols
-            while (lineEnd > 0 && buffer[r][lineEnd - 1].ch == ' ') lineEnd--
+            for (r in 0 until rows) {
+                // 找到行末（去掉尾部空格）
+                var lineEnd = cols
+                while (lineEnd > 0 && buf[r][lineEnd - 1].ch == ' ') lineEnd--
 
-            for (c in 0 until lineEnd) {
-                val cell = buffer[r][c]
-                // 属性变化时设置 span
-                if (cell.fg != lastFg || cell.bg != lastBg ||
-                    cell.bold != lastBold || cell.underline != lastUnderline) {
-                    // 先结束上一个 span
-                    if (sb.length > spanStart) {
-                        applySpans(sb, spanStart, sb.length, lastFg, lastBg, lastBold, lastUnderline)
+                for (c in 0 until lineEnd) {
+                    val cell = buf[r][c]
+                    // 属性变化时设置 span
+                    if (cell.fg != lastFg || cell.bg != lastBg ||
+                        cell.bold != lastBold || cell.underline != lastUnderline) {
+                        // 先结束上一个 span
+                        if (sb.length > spanStart) {
+                            applySpans(sb, spanStart, sb.length, lastFg, lastBg, lastBold, lastUnderline)
+                        }
+                        spanStart = sb.length
+                        lastFg = cell.fg
+                        lastBg = cell.bg
+                        lastBold = cell.bold
+                        lastUnderline = cell.underline
                     }
-                    spanStart = sb.length
-                    lastFg = cell.fg
-                    lastBg = cell.bg
-                    lastBold = cell.bold
-                    lastUnderline = cell.underline
+                    sb.append(cell.ch)
                 }
-                sb.append(cell.ch)
+                // 行末 span
+                if (sb.length > spanStart) {
+                    applySpans(sb, spanStart, sb.length, lastFg, lastBg, lastBold, lastUnderline)
+                    spanStart = sb.length
+                }
+                if (r < rows - 1) sb.append('\n')
             }
-            // 行末 span
-            if (sb.length > spanStart) {
-                applySpans(sb, spanStart, sb.length, lastFg, lastBg, lastBold, lastUnderline)
-                spanStart = sb.length
-            }
-            if (r < rows - 1) sb.append('\n')
         }
 
         // 光标（如果可见，加一个方块标记）

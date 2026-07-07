@@ -2,9 +2,7 @@ package com.nous.hermes.mobile
 
 import android.content.Context
 import android.util.Log
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 
 /**
  * Hermes Agent 运行时生命周期管理。
@@ -19,7 +17,7 @@ import java.io.InputStreamReader
  * 安装流程（每步都经 proot install 模式）：
  *   1. installProot  — 验证 proot 能跑（二进制已通过 jniLibs 打包）
  *   2. installPython — apt-get install python3 python3-pip python3-venv
- *   3. installHermesBuildDeps — apt-get install git make pkg-config ...
+ *   3. installDependencies — 合并安装 Python + 编译依赖（git/make/pkg-config...）
  *   4. installHermes — git clone + python -m venv + pip install -e '.[termux]'
  *
  * 目录（rootfs 内视角，对应 host 路径见 [BootstrapManager.Paths]）：
@@ -32,17 +30,6 @@ class HermesServerManager(private val context: Context) {
         private const val TAG = "HermesServerManager"
         const val HERMES_PORT = 18789
         private const val HERMES_REPO = "https://github.com/NousResearch/hermes-agent.git"
-
-        /**
-         * 旧 API 兼容：返回 proot 主机侧环境变量。
-         * 新模型下命令统一经 ProcessManager 走 proot，这个 map 主要给
-         * HermesEnvBackup 等需要直接 spawn 进程的调用方用。
-         */
-        @Suppress("unused")
-        fun buildEnvMap(context: Context, paths: BootstrapManager.Paths): Map<String, String> {
-            val pm = ProcessManager(context, paths.filesDir, paths.nativeLibDir)
-            return pm.prootEnvPublic()
-        }
     }
 
     private val paths: BootstrapManager.Paths by lazy { BootstrapManager.getPaths(context) }
@@ -207,7 +194,7 @@ class HermesServerManager(private val context: Context) {
 
     /**
      * 合并安装 Python + 编译依赖（一次 apt-get update，省去重复网络请求）。
-     * 原 installPython + installHermesBuildDeps 的合并版。
+     * 原 installPython + build deps 两步的合并版。
      */
     fun installDependencies(onProgress: (String) -> Unit): Boolean {
         val pyOk = isPythonInstalled()
@@ -242,44 +229,6 @@ class HermesServerManager(private val context: Context) {
             }
         } catch (e: Exception) {
             onProgress("错误：依赖安装失败 — ${e.message}")
-            false
-        }
-    }
-
-    /**
-     * apt-get install Hermes 编译依赖（git/make/pkg-config/libffi-dev 等）。
-     * rootfs 里这些是标准 Ubuntu 包，apt 自动解析依赖。
-     */
-    fun installHermesBuildDeps(onProgress: (String) -> Unit): Boolean {
-        // marker 文件，避免重复安装（apt install 本身幂等，但省一次 update）
-        val marker = File(paths.configDir, ".build-deps-v1")
-        if (marker.exists()) {
-            onProgress("build deps: 已安装（缓存）")
-            return true
-        }
-        return try {
-            runWithRetry(onProgress = onProgress, what = "install build deps") {
-                onProgress("build deps: apt-get update…")
-                processManager.runInProotSync(
-                    "apt-get update 2>&1 | tail -5", 600
-                ) { onProgress(it) }
-                onProgress("build deps: apt-get install build-essential git make pkg-config…")
-                // build-essential 含 gcc/g++/make；libffi-dev/libssl-dev 给
-                // cffi/cryptography 编译用；git 克隆代码；pkg-config 找库；
-                // ripgrep 给 Hermes 搜索；nodejs/npm 可选运行时。
-                processManager.runInProotSync(
-                    "DEBIAN_FRONTEND=noninteractive apt-get install -y " +
-                        "build-essential git make pkg-config " +
-                        "libffi-dev libssl-dev libsqlite3-dev zlib1g-dev " +
-                        "ripgrep 2>&1 | tail -20",
-                    1800
-                ) { onProgress(it) }
-                marker.parentFile?.mkdirs()
-                marker.writeText("ok")
-                true
-            }
-        } catch (e: Exception) {
-            onProgress("错误：build deps 安装失败 — ${e.message}")
             false
         }
     }
@@ -516,15 +465,6 @@ class HermesServerManager(private val context: Context) {
         }
     }
 
-    fun healthCheck(onProgress: (String) -> Unit): Boolean {
-        onProgress("验证 Hermes 安装…")
-        val code = runInPrefix(
-            "cd /root/home/hermes-agent && . .venv/bin/activate && hermes --version 2>&1",
-            onOutput = { onProgress(it) },
-        )
-        return code == 0
-    }
-
     /**
      * 获取已安装的 Hermes Agent 版本号。
      * 在后台线程调用（proot 执行）。
@@ -582,33 +522,6 @@ class HermesServerManager(private val context: Context) {
     }
 
     // ── Hermes 生命周期 ─────────────────────────────────────────────────────
-
-    /**
-     * 启动长驻 Hermes gateway（gateway 模式）。
-     * 进程由前台服务保活，stdout 转发到 logcat。
-     */
-    @Suppress("unused")
-    fun startHermesGateway(): Boolean {
-        if (isRunning) {
-            Log.i(TAG, "Hermes gateway already running")
-            return true
-        }
-        val cmd = "cd /root/home/hermes-agent && . .venv/bin/activate && " +
-            "exec hermes gateway run --port $HERMES_PORT 2>&1"
-        val proc = processManager.startProotProcess(cmd)
-        hermesProcess = proc
-        Thread {
-            val reader = BufferedReader(InputStreamReader(proc.inputStream))
-            var line = reader.readLine()
-            while (line != null) {
-                Log.d(TAG, "[hermes] $line")
-                line = reader.readLine()
-            }
-            Log.i(TAG, "Hermes gateway exited with code: ${proc.waitFor()}")
-        }.start()
-        Thread.sleep(3000)
-        return isRunning
-    }
 
     fun stopHermes() {
         hermesProcess?.destroy()

@@ -127,4 +127,12 @@
     <string name="settings_open_chat">安装/打开聊天界面</string>
     <string name="settings_open_shell">打开终端</string>
     <string name="settings_copied">已复制到剪贴板</string>
+
+    <!-- Shortcuts -->
+    <string name="shortcut_terminal">终端</string>
+    <string name="shortcut_terminal_long">打开终端</string>
+    <string name="shortcut_chat">聊天</string>
+    <string name="shortcut_chat_long">打开聊天</string>
+    <string name="shortcut_models">模型管理</string>
+    <string name="shortcut_models_long">打开模型管理</string>
 </resources>

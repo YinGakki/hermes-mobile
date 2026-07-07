@@ -2,9 +2,6 @@ package com.nous.hermes.mobile
 
 import android.content.res.ColorStateList
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -58,21 +55,19 @@ class ModelManagementActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private val density by lazy { resources.displayMetrics.density }
 
-    // ── 颜色常量（与 SubSettingsActivity / 主题一致） ─────────────────────
-    private val colorBg = 0xFF020617.toInt()
-    private val colorCard = 0xFF0f172a.toInt()
-    private val colorClickable = 0xFF1e293b.toInt()
-    private val colorStroke = 0xFF334155.toInt()
-    private val colorTitle = 0xFFe2e8f0.toInt()
-    private val colorSubtitle = 0xFF94a3b8.toInt()
+    // ── 颜色常量（主题色引用 [UiUtils]，保持与 SubSettingsActivity 一致） ─
+    private val colorBg = UiUtils.BG
+    private val colorClickable = UiUtils.CARD_CLICKABLE
+    private val colorTitle = UiUtils.TEXT_PRIMARY
+    private val colorSubtitle = UiUtils.TEXT_SECONDARY
     private val colorDim = 0xFF64748b.toInt()
-    private val colorAccent = 0xFF818cf8.toInt()
+    private val colorAccent = UiUtils.ACCENT
     private val colorCyan = 0xFF22d3ee.toInt()
 
     // badge 配色（文字色 + 暗底）
-    private val badgeDefault = 0xFF10b981.toInt() to 0xFF064e3b.toInt()   // 绿 默认
-    private val badgeBuiltin = 0xFF6366f1.toInt() to 0xFF1e1b4b.toInt()   // 紫 内置
-    private val badgeCustom = 0xFFf59e0b.toInt() to 0xFF451a03.toInt()    // 橙 自定义
+    private val badgeDefault = UiUtils.SUCCESS to UiUtils.BADGE_DEFAULT_BG   // 绿 默认
+    private val badgeBuiltin = UiUtils.INFO to 0xFF1e1b4b.toInt()           // 紫 内置
+    private val badgeCustom = UiUtils.WARNING to 0xFF451a03.toInt()         // 橙 自定义
 
     // ── 数据模型 ─────────────────────────────────────────────────────────
     /** 一个 provider 分组（对应 available-models.groups[] 的一项）。 */
@@ -136,7 +131,7 @@ class ModelManagementActivity : AppCompatActivity() {
             )
             isClickable = true
             isFocusable = true
-            background = getClickableBackground()
+            background = UiUtils.getClickableBackground(this@ModelManagementActivity)
             setOnClickListener { finish() }
         }
         val titleText = TextView(this).apply {
@@ -244,7 +239,7 @@ class ModelManagementActivity : AppCompatActivity() {
                 setTextColor(colorAccent)
                 textSize = 14f
                 typeface = Typeface.DEFAULT_BOLD
-                background = getClickableBackground()
+                background = UiUtils.getClickableBackground(this@ModelManagementActivity)
                 isClickable = true
                 isFocusable = true
                 setPadding(
@@ -294,7 +289,7 @@ class ModelManagementActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = getClickableBackground()
+            background = UiUtils.getClickableBackground(this@ModelManagementActivity)
             setPadding(
                 (16 * density).toInt(), (16 * density).toInt(),
                 (16 * density).toInt(), (16 * density).toInt()
@@ -310,7 +305,7 @@ class ModelManagementActivity : AppCompatActivity() {
             // 图标方块
             val iconTile = LinearLayout(this@ModelManagementActivity).apply {
                 gravity = Gravity.CENTER
-                background = getIconTileBackground()
+                background = UiUtils.getIconTileBackground(this@ModelManagementActivity)
                 layoutParams = LinearLayout.LayoutParams(
                     (44 * density).toInt(), (44 * density).toInt()
                 )
@@ -359,7 +354,7 @@ class ModelManagementActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = getClickableBackground()
+            background = UiUtils.getClickableBackground(this@ModelManagementActivity)
             setPadding(
                 (16 * density).toInt(), (14 * density).toInt(),
                 (16 * density).toInt(), (14 * density).toInt()
@@ -374,7 +369,7 @@ class ModelManagementActivity : AppCompatActivity() {
             // 左侧：@ 图标方块
             val iconTile = LinearLayout(this@ModelManagementActivity).apply {
                 gravity = Gravity.CENTER
-                background = getIconTileBackground()
+                background = UiUtils.getIconTileBackground(this@ModelManagementActivity)
                 layoutParams = LinearLayout.LayoutParams(
                     (44 * density).toInt(), (44 * density).toInt()
                 )
@@ -413,12 +408,12 @@ class ModelManagementActivity : AppCompatActivity() {
                 )
             })
             if (isDefaultProvider) {
-                row1.addView(makeBadge("默认", badgeDefault.first, badgeDefault.second))
+                row1.addView(UiUtils.makeBadge(this@ModelManagementActivity, "默认", badgeDefault.second, badgeDefault.first))
             }
             if (group.builtin) {
-                row1.addView(makeBadge("内置", badgeBuiltin.first, badgeBuiltin.second))
+                row1.addView(UiUtils.makeBadge(this@ModelManagementActivity, "内置", badgeBuiltin.second, badgeBuiltin.first))
             } else {
-                row1.addView(makeBadge("自定义", badgeCustom.first, badgeCustom.second))
+                row1.addView(UiUtils.makeBadge(this@ModelManagementActivity, "自定义", badgeCustom.second, badgeCustom.first))
             }
             textCol.addView(row1)
 
@@ -498,28 +493,7 @@ class ModelManagementActivity : AppCompatActivity() {
         }
     }
 
-    /** 创建一个 badge 标签。 */
-    private fun makeBadge(text: String, textColor: Int, darkBg: Int): TextView {
-        // 绿色默认 badge 复用与 SubSettingsActivity 完全一致的 getBadgeBackground()
-        val isGreenDefault =
-            textColor == badgeDefault.first && darkBg == badgeDefault.second
-        return TextView(this).apply {
-            this.text = text
-            setTextColor(textColor)
-            textSize = 10f
-            typeface = Typeface.DEFAULT_BOLD
-            background = if (isGreenDefault) getBadgeBackground()
-            else getBadgeBackground(darkBg, textColor)
-            setPadding(
-                (8 * density).toInt(), (3 * density).toInt(),
-                (8 * density).toInt(), (3 * density).toInt()
-            )
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = (6 * density).toInt() }
-        }
-    }
+    /** badge 标签已提取至 [UiUtils.makeBadge]。 */
 
     private fun makeSectionLabel(text: String): TextView {
         return TextView(this).apply {
@@ -650,7 +624,7 @@ class ModelManagementActivity : AppCompatActivity() {
             } else {
                 InputType.TYPE_CLASS_TEXT
             }
-            background = getPlainBackground()
+            background = UiUtils.getPlainBackground(this@ModelManagementActivity)
             setPadding(
                 (12 * density).toInt(), (10 * density).toInt(),
                 (12 * density).toInt(), (10 * density).toInt()
@@ -930,58 +904,5 @@ class ModelManagementActivity : AppCompatActivity() {
         }
     }
 
-    // ── Drawable 工厂（与 SubSettingsActivity 一致的视觉效果） ───────────
-
-    private fun getClickableBackground(): Drawable {
-        return StateListDrawable().apply {
-            addState(
-                intArrayOf(android.R.attr.state_pressed),
-                GradientDrawable().apply {
-                    setColor(colorClickable)
-                    cornerRadius = 12 * density
-                }
-            )
-            addState(
-                intArrayOf(),
-                GradientDrawable().apply {
-                    setColor(colorCard)
-                    cornerRadius = 12 * density
-                    setStroke(1, colorStroke)
-                }
-            )
-        }
-    }
-
-    private fun getPlainBackground(): Drawable {
-        return GradientDrawable().apply {
-            setColor(colorCard)
-            cornerRadius = 12 * density
-            setStroke(1, colorStroke)
-        }
-    }
-
-    private fun getIconTileBackground(): Drawable {
-        return GradientDrawable().apply {
-            setColor(colorClickable)
-            cornerRadius = 10 * density
-        }
-    }
-
-    /** 默认（绿色）badge 背景，与 SubSettingsActivity 完全一致。 */
-    private fun getBadgeBackground(): Drawable {
-        return GradientDrawable().apply {
-            setColor(badgeDefault.second)
-            cornerRadius = 6 * density
-            setStroke(1, badgeDefault.first)
-        }
-    }
-
-    /** 通用 badge 背景：暗底填充 + 强调色描边。 */
-    private fun getBadgeBackground(darkBg: Int, accentColor: Int): Drawable {
-        return GradientDrawable().apply {
-            setColor(darkBg)
-            cornerRadius = 6 * density
-            setStroke(1, accentColor)
-        }
-    }
+    // ── Drawable 工厂已提取至 [UiUtils]（保持视觉完全一致） ───────────────
 }

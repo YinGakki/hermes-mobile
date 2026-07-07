@@ -1,6 +1,8 @@
 package com.nous.hermes.mobile
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.util.AttributeSet
@@ -40,6 +42,13 @@ class TerminalView @JvmOverloads constructor(
     /** 虚拟终端屏幕 */
     val screen = TerminalScreen()
 
+    /** 渲染节流 Handler（主线程） */
+    private val renderHandler = Handler(Looper.getMainLooper())
+
+    /** 是否有 pending 的渲染请求（跨线程可见） */
+    @Volatile
+    private var renderPending = false
+
     init {
         isFocusable = true
         isFocusableInTouchMode = true
@@ -59,11 +68,22 @@ class TerminalView @JvmOverloads constructor(
 
     /**
      * 将 TerminalScreen 渲染到 EditText。
-     * 在 UI 线程执行 setText。
+     *
+     * 使用 16ms 帧节流合并高频渲染请求（约 60fps）：
+     * - 如果已有 pending 的渲染请求，跳过新的请求
+     * - render() 在 runnable 执行时读取最新缓冲区状态，因此
+     *   被跳过的写入仍会在下一次渲染中体现
+     * - 最后一帧一定会渲染：任何 write() 都会设置 dirty=true，
+     *   而被跳过的 renderToView() 调用意味着 pending runnable
+     *   尚未执行，它会在触发时读取包含最新写入的缓冲区
      */
     private fun renderToView() {
-        val rendered = screen.render()
-        post {
+        // 已有 pending 的渲染请求则跳过，合并高频调用
+        if (renderPending) return
+        renderPending = true
+        renderHandler.postDelayed({
+            renderPending = false
+            val rendered = screen.render()
             val preserved = selectionStart
             setText(rendered)
             // 滚动到底部
@@ -71,7 +91,7 @@ class TerminalView @JvmOverloads constructor(
                 val pos = minOf(preserved.coerceAtLeast(rendered.length - 1), rendered.length)
                 setSelection(pos)
             }
-        }
+        }, 16)
     }
 
     /** 计算当前视图能显示的行列数 */

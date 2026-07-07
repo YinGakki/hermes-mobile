@@ -70,7 +70,7 @@ class ChatActivity : AppCompatActivity() {
         // 使用自定义 FrameLayout 容器，支持左边缘滑动手势退出 WebUI。
         // 从屏幕左边缘向右滑动，显示跟随手指的"← 退出"指示器，
         // 滑动超过阈值松手即退出，未超过则回弹隐藏。界面无常驻按钮。
-        val container = SwipeExitContainer(this)
+        val container = SwipeExitFrameLayout(this)
 
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
@@ -152,7 +152,7 @@ class ChatActivity : AppCompatActivity() {
         setContentView(container)
 
         // 首次进入提示边缘滑动退出手势
-        showSwipeExitHint()
+        container.setSwipeHint(PREF_SWIPE_HINT_SHOWN, "从屏幕左边缘向右滑动可退出 WebUI")
 
         Log.i(TAG, "Loading $baseUrl in WebView")
         webView.loadUrl(baseUrl)
@@ -274,146 +274,7 @@ class ChatActivity : AppCompatActivity() {
         view?.evaluateJavascript(js, null)
     }
 
-    /**
-     * 首次进入 WebUI 时提示用户左边缘滑动退出手势（仅显示一次）。
-     */
-    private fun showSwipeExitHint() {
-        val prefs = getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-        if (!prefs.getBoolean(PREF_SWIPE_HINT_SHOWN, false)) {
-            android.widget.Toast.makeText(
-                this,
-                "从屏幕左边缘向右滑动可退出 WebUI",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-            prefs.edit().putBoolean(PREF_SWIPE_HINT_SHOWN, true).apply()
-        }
-    }
-
-    /**
-     * 自定义 FrameLayout：拦截左边缘右滑手势，提供优雅的退出方式。
-     *
-     * 交互流程：
-     * 1. 用户从屏幕左边缘（20dp 内）按下
-     * 2. 向右滑动超过 16dp 且横向位移 > 纵向时，开始拦截手势
-     * 3. 滑动过程中显示跟随手指的"← 退出"指示器，透明度随距离增加
-     * 4. 松手时滑动距离超过 100dp 则退出 Activity，否则回弹隐藏指示器
-     *
-     * 优势：界面完全干净，无常驻按钮；手势符合直觉（类似 iOS 边缘滑动返回）。
-     */
-    inner class SwipeExitContainer(context: Context) : android.widget.FrameLayout(context) {
-
-        private val density = resources.displayMetrics.density
-        private val edgeWidth = 24 * density       // 左边缘触发宽度
-        private val triggerThreshold = 100 * density // 滑动退出阈值
-
-        private var startX = 0f
-        private var startY = 0f
-        private var fromEdge = false
-        private var swiping = false
-
-        // 跟随手指的滑动指示器
-        private val hintView = android.widget.TextView(context).apply {
-            text = "←  退出"
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 13f
-            gravity = android.view.Gravity.CENTER
-            val padH = (16 * density).toInt()
-            val padV = (10 * density).toInt()
-            setPadding(padH, padV, padH, padV)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadius = 24 * density
-                setColor(0xCC1e293b.toInt())
-                setStroke(1, 0x66ffffff)
-            }
-            alpha = 0f
-            visibility = android.view.View.GONE
-        }
-
-        init {
-            addView(hintView, android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                gravity = android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START
-            })
-        }
-
-        /**
-         * 在左边缘区域排除系统手势（Android 10+ 的返回手势），
-         * 否则系统会优先消费左边缘触摸，导致我们的左滑退出手势无效。
-         * 系统限制每边最多 200dp 高度，超出部分自动截断。
-         */
-        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-            super.onLayout(changed, left, top, right, bottom)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && height > 0) {
-                val exclusionHeight = minOf(height, (200 * density).toInt())
-                val rect = android.graphics.Rect(0, 0, edgeWidth.toInt(), exclusionHeight)
-                systemGestureExclusionRects = listOf(rect)
-            }
-        }
-
-        override fun onInterceptTouchEvent(ev: android.view.MotionEvent): Boolean {
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    startX = ev.rawX
-                    startY = ev.rawY
-                    fromEdge = ev.x < edgeWidth
-                    swiping = false
-                }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    if (fromEdge && !swiping) {
-                        val dx = ev.rawX - startX
-                        val ady = Math.abs(ev.rawY - startY)
-                        // 横向滑动超过 16dp 且横向位移明显大于纵向时，开始拦截
-                        if (dx > 16 * density && dx > ady * 1.5f) {
-                            swiping = true
-                            hintView.visibility = android.view.View.VISIBLE
-                            return true
-                        }
-                    }
-                }
-            }
-            return false
-        }
-
-        override fun onTouchEvent(ev: android.view.MotionEvent): Boolean {
-            if (!swiping) return super.onTouchEvent(ev)
-            when (ev.actionMasked) {
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    val dx = (ev.rawX - startX).coerceAtLeast(0f)
-                    // 指示器跟随手指移动
-                    hintView.translationX = dx
-                    // 透明度随滑动距离增加（0.3 → 1.0）
-                    val progress = (dx / triggerThreshold).coerceIn(0.3f, 1f)
-                    hintView.alpha = progress
-                }
-                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                    val dx = ev.rawX - startX
-                    if (dx > triggerThreshold) {
-                        // 达到阈值，淡出后退出
-                        hintView.animate()
-                            .alpha(0f)
-                            .setDuration(100)
-                            .withEndAction { hintView.visibility = android.view.View.GONE }
-                            .start()
-                        finish()
-                    } else {
-                        // 未达到阈值，回弹隐藏
-                        hintView.animate()
-                            .translationX(0f)
-                            .alpha(0f)
-                            .setDuration(150)
-                            .withEndAction { hintView.visibility = android.view.View.GONE }
-                            .start()
-                    }
-                    swiping = false
-                    fromEdge = false
-                }
-            }
-            return true
-        }
-    }
+    // 边缘滑动退出容器与首次提示 Toast 已提取至 [SwipeExitFrameLayout]。
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {

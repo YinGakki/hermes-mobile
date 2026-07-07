@@ -121,7 +121,7 @@ class SubSettingsActivity : AppCompatActivity() {
             )
             isClickable = true
             isFocusable = true
-            background = getClickableBackground()
+            background = UiUtils.getClickableBackground(this@SubSettingsActivity)
             setOnClickListener { finish() }
         }
         val titleText = TextView(this).apply {
@@ -193,7 +193,7 @@ class SubSettingsActivity : AppCompatActivity() {
             setTextColor(0xFF10b981.toInt())
             textSize = 10f
             typeface = Typeface.DEFAULT_BOLD
-            background = getBadgeBackground()
+            background = UiUtils.getBadgeBackground(this@SubSettingsActivity)
             setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
             visibility = View.GONE
         }
@@ -212,7 +212,7 @@ class SubSettingsActivity : AppCompatActivity() {
         val channelToggle = TextView(this).apply {
             textSize = 12f
             gravity = Gravity.CENTER
-            background = getClickableBackground()
+            background = UiUtils.getClickableBackground(this@SubSettingsActivity)
             isClickable = true
             isFocusable = true
             setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
@@ -300,7 +300,7 @@ class SubSettingsActivity : AppCompatActivity() {
             setTextColor(0xFF10b981.toInt())
             textSize = 10f
             typeface = Typeface.DEFAULT_BOLD
-            background = getBadgeBackground()
+            background = UiUtils.getBadgeBackground(this@SubSettingsActivity)
             setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
             visibility = View.GONE
         }
@@ -338,7 +338,7 @@ class SubSettingsActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = if (clickable) getClickableBackground() else getPlainBackground()
+            background = if (clickable) UiUtils.getClickableBackground(this@SubSettingsActivity) else UiUtils.getPlainBackground(this@SubSettingsActivity)
             setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -351,7 +351,7 @@ class SubSettingsActivity : AppCompatActivity() {
             // 图标方块
             val iconTile = LinearLayout(this@SubSettingsActivity).apply {
                 gravity = Gravity.CENTER
-                background = getIconTileBackground()
+                background = UiUtils.getIconTileBackground(this@SubSettingsActivity)
                 layoutParams = LinearLayout.LayoutParams(
                     (44 * density).toInt(), (44 * density).toInt()
                 )
@@ -421,7 +421,7 @@ class SubSettingsActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = getClickableBackground()
+            background = UiUtils.getClickableBackground(this@SubSettingsActivity)
             setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -432,7 +432,7 @@ class SubSettingsActivity : AppCompatActivity() {
             // 图标方块
             val iconTile = LinearLayout(this@SubSettingsActivity).apply {
                 gravity = Gravity.CENTER
-                background = getIconTileBackground()
+                background = UiUtils.getIconTileBackground(this@SubSettingsActivity)
                 layoutParams = LinearLayout.LayoutParams(
                     (44 * density).toInt(), (44 * density).toInt()
                 )
@@ -507,46 +507,7 @@ class SubSettingsActivity : AppCompatActivity() {
         }
     }
 
-    // ── Drawable 工厂（代码构建，避免依赖 XML） ────────────────────────────
-
-    private fun getClickableBackground(): android.graphics.drawable.Drawable {
-        return android.graphics.drawable.StateListDrawable().apply {
-            addState(intArrayOf(android.R.attr.state_pressed),
-                android.graphics.drawable.GradientDrawable().apply {
-                    setColor(0xFF1e293b.toInt())
-                    cornerRadius = 12 * density
-                })
-            addState(intArrayOf(),
-                android.graphics.drawable.GradientDrawable().apply {
-                    setColor(0xFF0f172a.toInt())
-                    cornerRadius = 12 * density
-                    setStroke(1, 0xFF334155.toInt())
-                })
-        }
-    }
-
-    private fun getPlainBackground(): android.graphics.drawable.Drawable {
-        return android.graphics.drawable.GradientDrawable().apply {
-            setColor(0xFF0f172a.toInt())
-            cornerRadius = 12 * density
-            setStroke(1, 0xFF334155.toInt())
-        }
-    }
-
-    private fun getIconTileBackground(): android.graphics.drawable.Drawable {
-        return android.graphics.drawable.GradientDrawable().apply {
-            setColor(0xFF1e293b.toInt())
-            cornerRadius = 10 * density
-        }
-    }
-
-    private fun getBadgeBackground(): android.graphics.drawable.Drawable {
-        return android.graphics.drawable.GradientDrawable().apply {
-            setColor(0xFF064e3b.toInt())
-            cornerRadius = 6 * density
-            setStroke(1, 0xFF10b981.toInt())
-        }
-    }
+    // ── Drawable 工厂已提取至 [UiUtils]（保持视觉完全一致） ───────────────
 
     // ── 版本检测 ─────────────────────────────────────────────────────────────
 
