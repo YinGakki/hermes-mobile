@@ -60,8 +60,7 @@ class SubSettingsActivity : AppCompatActivity() {
     private lateinit var webuiUpdateBadge: TextView
     private lateinit var apkUpdateBadge: TextView
 
-    private var btnChannelStable: TextView? = null
-    private var btnChannelBeta: TextView? = null
+    private var btnChannelToggle: TextView? = null
 
     private val density by lazy { resources.displayMetrics.density }
 
@@ -182,48 +181,65 @@ class SubSettingsActivity : AppCompatActivity() {
         }
         container.addView(webuiCard)
 
-        // ── APK 更新卡片 ──
-        val (apkCard, apkVer, apkBadge) = makeUpdateCard(
-            title = "更新应用 (APK)",
-            subtitle = "",
-        )
+        // ── APK 更新卡片（右侧带通道切换按钮） ──
+        val apkBadge = TextView(this).apply {
+            text = "有更新"
+            setTextColor(0xFF10b981.toInt())
+            textSize = 10f
+            typeface = Typeface.DEFAULT_BOLD
+            background = getBadgeBackground()
+            setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
+            visibility = View.GONE
+        }
+        val apkVer = TextView(this).apply {
+            text = "—"
+            setTextColor(0xFF64748b.toInt())
+            textSize = 12f
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (4 * density).toInt() }
+        }
         apkVersionText = apkVer
         apkUpdateBadge = apkBadge
+
+        // 通道切换按钮 — 点击在正式版/测试版之间切换
+        val channelToggle = TextView(this).apply {
+            textSize = 12f
+            gravity = Gravity.CENTER
+            background = getClickableBackground()
+            isClickable = true
+            isFocusable = true
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (10 * density).toInt(), (6 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, (32 * density).toInt()
+            ).apply { marginEnd = (8 * density).toInt() }
+        }
+        btnChannelToggle = channelToggle
+        channelToggle.setOnClickListener {
+            val current = getUpdateChannel()
+            val newChannel = if (current == ApkUpdateChecker.CHANNEL_STABLE) {
+                ApkUpdateChecker.CHANNEL_BETA
+            } else {
+                ApkUpdateChecker.CHANNEL_STABLE
+            }
+            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
+                .edit().putString(PREF_UPDATE_CHANNEL, newChannel).apply()
+            updateChannelToggleUI()
+            checkVersionsAndUpdates()
+        }
+
+        val apkCard = makeCardBaseWithExtraRight(
+            title = "更新应用 (APK)",
+            subtitle = "",
+            versionView = apkVer,
+            badgeView = apkBadge,
+            extraRight = channelToggle,
+        )
         apkCard.setOnClickListener {
             setResult(RESULT_UPDATE_APK)
             finish()
         }
         container.addView(apkCard)
-
-        // ── APK 更新通道选择 ──
-        container.addView(makeSectionLabel("APK 更新通道"))
-        container.addView(makeHintText("仅适用于上方\"更新应用 (APK)\"的更新检测"))
-
-        val channelRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = (10 * density).toInt() }
-        }
-        val stable = makeChannelButton("正式版")
-        val beta = makeChannelButton("测试版")
-        btnChannelStable = stable
-        btnChannelBeta = beta
-        stable.setOnClickListener {
-            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-                .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_STABLE).apply()
-            updateChannelToggleUI()
-            checkVersionsAndUpdates()
-        }
-        beta.setOnClickListener {
-            getSharedPreferences("hermes_prefs", Context.MODE_PRIVATE)
-                .edit().putString(PREF_UPDATE_CHANNEL, ApkUpdateChecker.CHANNEL_BETA).apply()
-            updateChannelToggleUI()
-            checkVersionsAndUpdates()
-        }
-        channelRow.addView(stable)
-        channelRow.addView(beta)
-        container.addView(channelRow)
         updateChannelToggleUI()
     }
 
@@ -371,6 +387,88 @@ class SubSettingsActivity : AppCompatActivity() {
         }
     }
 
+    /** 卡片基础布局 — 带额外右侧视图（用于 APK 卡片的通道切换按钮） */
+    private fun makeCardBaseWithExtraRight(
+        title: String,
+        subtitle: String,
+        versionView: TextView?,
+        badgeView: TextView?,
+        extraRight: View,
+    ): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = getClickableBackground()
+            setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (10 * density).toInt() }
+            isClickable = true
+            isFocusable = true
+
+            // 图标方块
+            val iconTile = LinearLayout(this@SubSettingsActivity).apply {
+                gravity = Gravity.CENTER
+                background = getIconTileBackground()
+                layoutParams = LinearLayout.LayoutParams(
+                    (44 * density).toInt(), (44 * density).toInt()
+                )
+            }
+            val icon = TextView(this@SubSettingsActivity).apply {
+                text = "↻"
+                setTextColor(0xFF818cf8.toInt())
+                textSize = 20f
+                gravity = Gravity.CENTER
+            }
+            iconTile.addView(icon)
+            addView(iconTile)
+
+            // 文本区
+            val textCol = LinearLayout(this@SubSettingsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = (16 * density).toInt()
+                }
+            }
+            textCol.addView(TextView(this@SubSettingsActivity).apply {
+                text = title
+                setTextColor(0xFFe2e8f0.toInt())
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            if (subtitle.isNotEmpty()) {
+                textCol.addView(TextView(this@SubSettingsActivity).apply {
+                    text = subtitle
+                    setTextColor(0xFF94a3b8.toInt())
+                    textSize = 12f
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (2 * density).toInt() }
+                })
+            }
+            versionView?.let { textCol.addView(it) }
+            addView(textCol)
+
+            // badge + extraRight + chevron
+            badgeView?.let { addView(it) }
+            if (badgeView != null) {
+                (badgeView.layoutParams as? LinearLayout.LayoutParams)?.apply {
+                    marginEnd = (8 * density).toInt()
+                }
+            }
+            addView(extraRight)
+            addView(TextView(this@SubSettingsActivity).apply {
+                text = "›"
+                setTextColor(0xFF64748b.toInt())
+                textSize = 20f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    (20 * density).toInt(), (20 * density).toInt()
+                )
+            })
+        }
+    }
+
     private fun makeSectionLabel(text: String): TextView {
         return TextView(this).apply {
             this.text = text
@@ -381,35 +479,6 @@ class SubSettingsActivity : AppCompatActivity() {
             ).apply {
                 topMargin = (8 * density).toInt()
                 bottomMargin = (2 * density).toInt()
-                marginStart = (4 * density).toInt()
-            }
-        }
-    }
-
-    private fun makeHintText(text: String): TextView {
-        return TextView(this).apply {
-            this.text = text
-            setTextColor(0xFF475569.toInt())
-            textSize = 10f
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = (6 * density).toInt()
-                marginStart = (4 * density).toInt()
-            }
-        }
-    }
-
-    private fun makeChannelButton(text: String): TextView {
-        return TextView(this).apply {
-            this.text = text
-            textSize = 13f
-            gravity = Gravity.CENTER
-            background = getClickableBackground()
-            isClickable = true
-            isFocusable = true
-            layoutParams = LinearLayout.LayoutParams(0, (36 * density).toInt(), 1f).apply {
-                marginEnd = (4 * density).toInt()
                 marginStart = (4 * density).toInt()
             }
         }
@@ -571,11 +640,11 @@ class SubSettingsActivity : AppCompatActivity() {
     private fun updateChannelToggleUI() {
         val channel = getUpdateChannel()
         if (channel == ApkUpdateChecker.CHANNEL_STABLE) {
-            btnChannelStable?.setTextColor(0xFF10b981.toInt())
-            btnChannelBeta?.setTextColor(0xFF94a3b8.toInt())
+            btnChannelToggle?.text = "正式版"
+            btnChannelToggle?.setTextColor(0xFF10b981.toInt())
         } else {
-            btnChannelStable?.setTextColor(0xFF94a3b8.toInt())
-            btnChannelBeta?.setTextColor(0xFF10b981.toInt())
+            btnChannelToggle?.text = "测试版"
+            btnChannelToggle?.setTextColor(0xFFf59e0b.toInt())
         }
     }
 
