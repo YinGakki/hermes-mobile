@@ -120,7 +120,7 @@ class TerminalScreen(
     private var parseState = State.GROUND
     private val csiBuffer = StringBuilder()
     private val oscBuffer = StringBuilder()
-    private var escIntermediate: Char = 0
+    private var escIntermediate: Char = '\u0000'
 
     // ── 脏标记（优化渲染） ──
     @Volatile private var dirty = true
