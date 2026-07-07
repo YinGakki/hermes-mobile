@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Adaptive icon background: Deep space gradient - dark slate to deep teal.
+<!-- Adaptive icon background: Deep space gradient — dark slate to deep teal
+     with a subtle green tint at bottom-right (Android accent).
      Evokes terminal/AI/tech feel. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
@@ -17,7 +18,8 @@
                 android:endX="108"
                 android:endY="108"
                 android:startColor="#0f172a"
-                android:endColor="#164e63" />
+                android:centerColor="#164e63"
+                android:endColor="#0d3b2e" />
         </aapt:attr>
     </path>
 </vector>
