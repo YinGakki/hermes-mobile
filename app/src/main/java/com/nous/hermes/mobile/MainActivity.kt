@@ -96,6 +96,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var saveEnvLauncher: ActivityResultLauncher<String>
     private lateinit var restoreEnvLauncher: ActivityResultLauncher<Array<String>>
 
+    // 用户选择的备份类型（在 SAF 选文件名前由对话框设置）
+    private var pendingBackupType: HermesEnvBackup.BackupType = HermesEnvBackup.BackupType.FULL
+
     // 二级设置页（更新管理 / 维护工具）launcher — 接收用户选择的操作结果
     private lateinit var subSettingsLauncher: ActivityResultLauncher<Intent>
 
@@ -651,30 +654,54 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.env_save_empty, Toast.LENGTH_LONG).show()
             return
         }
-        val statusLines = buildString {
-            append(if (prootDone) "✓" else "✗").append(" proot\n")
-            append(if (depsDone) "✓" else "✗").append(" 依赖 (Python + build deps)\n")
-            append(if (hermesDone) "✓" else "✗").append(" Hermes Agent\n")
-            append(if (webuiDone) "✓" else "✗").append(" WebUI")
-        }
-        // If Hermes is done → full backup (directly save, no extra dialog).
-        // Otherwise → confirm partial backup so user understands they'll
-        // need to continue from the breakpoint after restore.
-        if (hermesDone) {
-            launchSaveEnv()
-        } else {
-            MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.env_save_partial_title)
-                .setMessage(getString(R.string.env_save_partial_msg, statusLines))
-                .setPositiveButton(R.string.env_save_action) { _, _ -> launchSaveEnv() }
-                .setNegativeButton(R.string.cancel, null)
-                .show()
-        }
+
+        // 备份类型选择对话框
+        val items = arrayOf(
+            "完整环境（~1GB，含 rootfs + 配置 + 数据）",
+            "Hermes Agent 用户数据（会话/记忆/配置，几 MB）",
+            "WebUI 用户数据（数据库/设置/上传，几 MB）",
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle("选择备份内容")
+            .setItems(items) { _, which ->
+                val type = when (which) {
+                    0 -> HermesEnvBackup.BackupType.FULL
+                    1 -> HermesEnvBackup.BackupType.AGENT_DATA
+                    2 -> HermesEnvBackup.BackupType.WEBUI_DATA
+                    else -> return@setItems
+                }
+                pendingBackupType = type
+
+                // 全量备份：如果 Hermes 未安装，提示部分备份
+                if (type == HermesEnvBackup.BackupType.FULL && !hermesDone) {
+                    val statusLines = buildString {
+                        append(if (prootDone) "✓" else "✗").append(" proot\n")
+                        append(if (depsDone) "✓" else "✗").append(" 依赖 (Python + build deps)\n")
+                        append(if (hermesDone) "✓" else "✗").append(" Hermes Agent\n")
+                        append(if (webuiDone) "✓" else "✗").append(" WebUI")
+                    }
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle(R.string.env_save_partial_title)
+                        .setMessage(getString(R.string.env_save_partial_msg, statusLines))
+                        .setPositiveButton(R.string.env_save_action) { _, _ -> launchSaveEnv() }
+                        .setNegativeButton(R.string.cancel, null)
+                        .show()
+                } else {
+                    launchSaveEnv()
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun launchSaveEnv() {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val filename = getString(R.string.env_save_filename_template, timestamp)
+        val prefix = when (pendingBackupType) {
+            HermesEnvBackup.BackupType.FULL -> "hermes-env"
+            HermesEnvBackup.BackupType.AGENT_DATA -> "hermes-agent-data"
+            HermesEnvBackup.BackupType.WEBUI_DATA -> "hermes-webui-data"
+        }
+        val filename = "${prefix}-${timestamp}.tar.gz"
         saveEnvLauncher.launch(filename)
     }
 
@@ -785,15 +812,21 @@ class MainActivity : AppCompatActivity() {
      */
     private fun runEnvBackup(targetUri: Uri) {
         if (!tryAcquireInstallLock()) return
+        val backupType = pendingBackupType
+        val title = when (backupType) {
+            HermesEnvBackup.BackupType.FULL -> getString(R.string.env_save_progress_title)
+            HermesEnvBackup.BackupType.AGENT_DATA -> "备份 Hermes Agent 数据"
+            HermesEnvBackup.BackupType.WEBUI_DATA -> "备份 WebUI 数据"
+        }
         val styled = showStyledProgressDialog(
-            title = getString(R.string.env_save_progress_title),
-            message = "正在打包环境…",
+            title = title,
+            message = "正在打包…",
             onCancel = { activeThread?.interrupt() },
         )
 
         activeThread = Thread {
             try {
-                val ok = envBackup.backup(targetUri) { msg ->
+                val ok = envBackup.backupUserData(targetUri, backupType) { msg ->
                     runOnUiThread { styled.messageView.text = msg }
                     appendLog("[backup] $msg")
                 }

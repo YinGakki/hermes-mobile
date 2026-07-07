@@ -28,6 +28,13 @@ import java.util.zip.GZIPOutputStream
  */
 class HermesEnvBackup(private val context: Context, private val serverMgr: HermesServerManager) {
 
+    /** 备份类型 */
+    enum class BackupType {
+        FULL,       // 全量环境（rootfs + home + config + lib，~1GB）
+        AGENT_DATA, // 仅 Hermes Agent 用户数据（~几 MB）
+        WEBUI_DATA, // 仅 WebUI 用户数据（~几 MB）
+    }
+
     companion object {
         private const val TAG = "HermesEnvBackup"
 
@@ -43,6 +50,23 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
             "home/.cache", "home/.npm",
             "home/hermes-agent/.venv/lib/python*/site-packages/*/__pycache__",
             "home/hermes-agent/build", "home/hermes-agent/dist",
+            // 日志目录（可重建）
+            "home/.hermes/logs",
+            "rootfs/ubuntu/root/.hermes-web-ui/logs",
+        )
+
+        // ── 用户数据轻量备份的路径 ──
+        // Hermes Agent 用户数据（相对于 filesDir/home/）
+        private val AGENT_DATA_PATHS = listOf(
+            ".hermes",  // state.db, config.yaml, .env, auth.json, SOUL.md,
+                         // memories/, skills/, mcp-tokens/, sessions/, cron/,
+                         // profiles/, active_profile
+        )
+
+        // WebUI 用户数据（相对于 filesDir/rootfs/ubuntu/root/）
+        private val WEBUI_DATA_PATHS = listOf(
+            ".hermes-web-ui",  // hermes-web-ui.db, config.json, .token,
+                                // .login-lock.json, upload/
         )
 
         // 备份文件 magic header（gzip magic 0x1f 0x8b）
@@ -164,6 +188,134 @@ class HermesEnvBackup(private val context: Context, private val serverMgr: Herme
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Backup failed", e)
+            onProgress("错误：${e.message ?: "备份失败"}")
+            return false
+        } finally {
+            tmpArchive.delete()
+        }
+    }
+
+    /**
+     * 备份用户数据（轻量）— 仅 Agent 或 WebUI 的配置/数据库/记忆等。
+     * 体积小（几 MB），适合频繁备份。
+     *
+     * @param targetUri SAF 返回的输出 Uri
+     * @param type AGENT_DATA 或 WEBUI_DATA
+     * @param onProgress 进度文本回调
+     * @return true 表示成功
+     */
+    fun backupUserData(
+        targetUri: Uri,
+        type: BackupType,
+        onProgress: (String) -> Unit,
+    ): Boolean {
+        val home = File(filesDir, "home")
+        val rootfsRoot = File(filesDir, "rootfs/ubuntu/root")
+
+        val (srcDir, dataPaths, label) = when (type) {
+            BackupType.AGENT_DATA -> Triple(home, AGENT_DATA_PATHS, "Hermes Agent")
+            BackupType.WEBUI_DATA -> Triple(rootfsRoot, WEBUI_DATA_PATHS, "WebUI")
+            BackupType.FULL -> return backup(targetUri, onProgress)
+        }
+
+        // 检查数据目录是否存在
+        if (!srcDir.exists()) {
+            onProgress("错误：未检测到 $label 数据目录")
+            return false
+        }
+        val hasData = dataPaths.any { File(srcDir, it).exists() }
+        if (!hasData) {
+            onProgress("错误：未检测到 $label 用户数据，无法备份")
+            return false
+        }
+
+        val tmpArchive = File(cacheDir, "hermes-data-backup-${System.currentTimeMillis()}.tar.gz")
+        try {
+            onProgress("正在打包 $label 用户数据…")
+
+            // 构建 tar 命令：cd srcDir && tar -cf - --exclude logs dataPath1 dataPath2
+            val excludesArg = listOf(
+                "*/logs",           // 排除日志目录
+                "*/server.log",
+                "*/bridge.log",
+                "*.pid",            // 排除 PID 文件
+                "*-wal", "*-shm",   // 排除 SQLite WAL/SHM（主 db 文件会包含）
+            ).joinToString(" ") { "--exclude '$it'" }
+            val pathsArg = dataPaths.joinToString(" ")
+            val tarCmd = "cd \"${srcDir.absolutePath}\" && tar -cf - $excludesArg $pathsArg"
+            Log.i(TAG, "Running data backup: $tarCmd")
+
+            val pb = ProcessBuilder("/system/bin/sh", "-c", tarCmd)
+            pb.environment().clear()
+            pb.directory(srcDir)
+            pb.redirectErrorStream(false)
+
+            val proc = pb.start()
+
+            val stderrThread = Thread {
+                try {
+                    proc.errorStream.bufferedReader().use { reader ->
+                        var line = reader.readLine()
+                        while (line != null) {
+                            Log.d(TAG, "[tar stderr] $line")
+                            onProgress(line)
+                            line = reader.readLine()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "stderr reader interrupted: ${e.message}")
+                }
+            }.also { it.isDaemon = true; it.start() }
+
+            var totalRead = 0L
+            try {
+                GZIPOutputStream(FileOutputStream(tmpArchive)).use { gzOut ->
+                    proc.inputStream.use { inp ->
+                        val buf = ByteArray(256 * 1024)
+                        var n = inp.read(buf)
+                        while (n > 0) {
+                            gzOut.write(buf, 0, n)
+                            totalRead += n
+                            n = inp.read(buf)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "GZIP write failed: ${e.message}")
+                proc.destroyForcibly()
+                onProgress("错误：打包失败 — ${e.message}")
+                return false
+            }
+
+            stderrThread.join(5000)
+            val code = proc.waitFor()
+            if (code != 0) {
+                Log.e(TAG, "tar failed with code $code (read $totalRead bytes)")
+                onProgress("错误：tar 打包失败（exit=$code）")
+                return false
+            }
+
+            val archiveSize = tmpArchive.length()
+            onProgress("打包完成：${formatSize(archiveSize)}，正在写入目标文件…")
+
+            context.contentResolver.openOutputStream(targetUri)?.use { out ->
+                FileInputStream(tmpArchive).use { inp ->
+                    val buf = ByteArray(64 * 1024)
+                    var n = inp.read(buf)
+                    while (n > 0) {
+                        out.write(buf, 0, n)
+                        n = inp.read(buf)
+                    }
+                }
+            } ?: run {
+                onProgress("错误：无法打开目标文件写入")
+                return false
+            }
+
+            onProgress("✓ $label 用户数据已备份到目标位置")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Data backup failed", e)
             onProgress("错误：${e.message ?: "备份失败"}")
             return false
         } finally {
