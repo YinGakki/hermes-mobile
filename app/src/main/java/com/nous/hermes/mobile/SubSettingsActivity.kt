@@ -84,7 +84,7 @@ class SubSettingsActivity : AppCompatActivity() {
 
         val category = intent.getStringExtra(EXTRA_CATEGORY) ?: CATEGORY_UPDATES
         val title = when (category) {
-            CATEGORY_UPDATES -> "更新管理"
+            CATEGORY_UPDATES -> "关于"
             CATEGORY_MAINTENANCE -> "维护工具"
             else -> "设置"
         }
@@ -165,8 +165,23 @@ class SubSettingsActivity : AppCompatActivity() {
         setContentView(root)
     }
 
-    /** 构建更新管理页面：Hermes / WebUI / APK 更新卡片 + 通道选择 */
+    /** 构建更新管理 + 关于页面 */
     private fun buildUpdatesSection(container: LinearLayout) {
+        // ── 更新管理 分栏标题 ──
+        container.addView(TextView(this).apply {
+            text = "更新管理"
+            setTextColor(0xFF64748b.toInt())
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.1f
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = (4 * density).toInt()
+                marginBottom = (8 * density).toInt()
+            }
+        })
+
         // ── Hermes Agent 更新卡片 ──
         val hermesUpdateBtn = makeUpdateButton {
             setResult(RESULT_UPDATE_HERMES)
@@ -179,12 +194,12 @@ class SubSettingsActivity : AppCompatActivity() {
         val (hermesCard, hermesVer, hermesBadge) = makeUpdateCardWithExtra(
             title = "更新 Hermes Agent",
             subtitle = "",
-            extraRight = hermesRefresh
+            extraRight = hermesRefresh,
+            iconRes = R.drawable.ic_bot
         )
         hermesVersionText = hermesVer
         hermesUpdateBadge = hermesBadge
         hermesCard.setOnClickListener {
-            // 点击卡片也检测更新
             checkSingleUpdate("hermes")
         }
         container.addView(hermesCard)
@@ -201,7 +216,8 @@ class SubSettingsActivity : AppCompatActivity() {
         val (webuiCard, webuiVer, webuiBadge) = makeUpdateCardWithExtra(
             title = "更新 WebUI",
             subtitle = "",
-            extraRight = webuiRefresh
+            extraRight = webuiRefresh,
+            iconRes = R.drawable.ic_chat
         )
         webuiVersionText = webuiVer
         webuiUpdateBadge = webuiBadge
@@ -277,13 +293,116 @@ class SubSettingsActivity : AppCompatActivity() {
             subtitle = "",
             versionView = apkVer,
             badgeView = apkBadge,
-            extras = listOf(channelToggle, apkRefresh)
+            extras = listOf(channelToggle, apkRefresh),
+            iconRes = R.drawable.ic_launcher_foreground
         )
         apkCard.setOnClickListener {
             onApkUpdateClicked()
         }
         container.addView(apkCard)
         updateChannelToggleUI()
+
+        // ── 关于 分栏 ──
+        container.addView(TextView(this).apply {
+            text = "关于"
+            setTextColor(0xFF64748b.toInt())
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.1f
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = (4 * density).toInt()
+                topMargin = (20 * density).toInt()
+                marginBottom = (8 * density).toInt()
+            }
+        })
+
+        // GitHub 仓库链接卡片
+        val repoCard = makeLinkCard(
+            title = "GitHub 仓库",
+            subtitle = "YinGakki/hermes-mobile",
+            url = "https://github.com/YinGakki/hermes-mobile"
+        )
+        container.addView(repoCard)
+
+        // GitHub 主页链接卡片
+        val profileCard = makeLinkCard(
+            title = "作者 GitHub 主页",
+            subtitle = "github.com/YinGakki",
+            url = "https://github.com/YinGakki"
+        )
+        container.addView(profileCard)
+    }
+
+    /** 创建可点击的链接卡片 */
+    private fun makeLinkCard(title: String, subtitle: String, url: String): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = UiUtils.getClickableBackground(this@SubSettingsActivity)
+            setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (10 * density).toInt() }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                startActivity(intent)
+            }
+
+            // 图标方块
+            val iconTile = LinearLayout(this@SubSettingsActivity).apply {
+                gravity = Gravity.CENTER
+                background = UiUtils.getIconTileBackground(this@SubSettingsActivity)
+                layoutParams = LinearLayout.LayoutParams(
+                    (44 * density).toInt(), (44 * density).toInt()
+                )
+            }
+            iconTile.addView(android.widget.ImageView(this@SubSettingsActivity).apply {
+                setImageResource(R.drawable.ic_launch)
+                setColorFilter(0xFF818cf8.toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    (24 * density).toInt(), (24 * density).toInt()
+                )
+            })
+            addView(iconTile)
+
+            // 文本区
+            val textCol = LinearLayout(this@SubSettingsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = (16 * density).toInt()
+                }
+            }
+            textCol.addView(TextView(this@SubSettingsActivity).apply {
+                text = title
+                setTextColor(0xFFe2e8f0.toInt())
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            textCol.addView(TextView(this@SubSettingsActivity).apply {
+                text = subtitle
+                setTextColor(0xFF94a3b8.toInt())
+                textSize = 12f
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (2 * density).toInt() }
+            })
+            addView(textCol)
+
+            // 外部链接图标
+            addView(TextView(this@SubSettingsActivity).apply {
+                text = "↗"
+                setTextColor(0xFF64748b.toInt())
+                textSize = 18f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    (24 * density).toInt(), (24 * density).toInt()
+                )
+            })
+        }
     }
 
     /** 构建维护工具页面：重新安装 + 电池优化 */
@@ -468,6 +587,7 @@ class SubSettingsActivity : AppCompatActivity() {
         title: String,
         subtitle: String,
         extraRight: View,
+        iconRes: Int = R.drawable.ic_refresh,
     ): Triple<LinearLayout, TextView, TextView> {
         val badge = TextView(this).apply {
             text = "有更新"
@@ -486,7 +606,7 @@ class SubSettingsActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = (4 * density).toInt() }
         }
-        val card = makeCardBaseWithMultipleExtra(title, subtitle, version, badge, listOf(extraRight))
+        val card = makeCardBaseWithMultipleExtra(title, subtitle, version, badge, listOf(extraRight), iconRes)
         return Triple(card, version, badge)
     }
 
@@ -497,6 +617,7 @@ class SubSettingsActivity : AppCompatActivity() {
         versionView: TextView?,
         badgeView: TextView?,
         extras: List<View>,
+        iconRes: Int = R.drawable.ic_refresh,
     ): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -509,7 +630,7 @@ class SubSettingsActivity : AppCompatActivity() {
             isClickable = true
             isFocusable = true
 
-            // 图标方块
+            // 图标方块 — 使用 ImageView 加载 drawable 图标
             val iconTile = LinearLayout(this@SubSettingsActivity).apply {
                 gravity = Gravity.CENTER
                 background = UiUtils.getIconTileBackground(this@SubSettingsActivity)
@@ -517,11 +638,12 @@ class SubSettingsActivity : AppCompatActivity() {
                     (44 * density).toInt(), (44 * density).toInt()
                 )
             }
-            val icon = TextView(this@SubSettingsActivity).apply {
-                text = "↻"
-                setTextColor(0xFF818cf8.toInt())
-                textSize = 20f
-                gravity = Gravity.CENTER
+            val icon = android.widget.ImageView(this@SubSettingsActivity).apply {
+                setImageResource(iconRes)
+                setColorFilter(0xFF818cf8.toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    (24 * density).toInt(), (24 * density).toInt()
+                )
             }
             iconTile.addView(icon)
             addView(iconTile)

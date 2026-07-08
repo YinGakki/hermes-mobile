@@ -74,9 +74,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var dashboardNotReady: View
     private lateinit var openShellButton: View
     private lateinit var btnModelManagement: View
-    private lateinit var btnSessionHistory: View
-    private lateinit var btnCronJobs: View
-    private lateinit var btnSoulEditor: View
     private lateinit var serviceToggleButton: View
     private lateinit var serviceToggleTitle: TextView
     private lateinit var serviceToggleSubtitle: TextView
@@ -161,9 +158,6 @@ class MainActivity : AppCompatActivity() {
         dashboardNotReady = findViewById(R.id.dashboardNotReady)
         openShellButton = findViewById(R.id.openShellButton)
         btnModelManagement = findViewById(R.id.btnModelManagement)
-        btnSessionHistory = findViewById(R.id.btnSessionHistory)
-        btnCronJobs = findViewById(R.id.btnCronJobs)
-        btnSoulEditor = findViewById(R.id.btnSoulEditor)
         serviceToggleButton = findViewById(R.id.serviceToggleButton)
         serviceToggleTitle = findViewById(R.id.serviceToggleTitle)
         serviceToggleSubtitle = findViewById(R.id.serviceToggleSubtitle)
@@ -260,17 +254,6 @@ class MainActivity : AppCompatActivity() {
         }
         btnModelManagement.setOnClickListener {
             startActivity(Intent(this, ModelManagementActivity::class.java))
-        }
-        btnSessionHistory.setOnClickListener {
-            startActivity(Intent(this, SessionHistoryActivity::class.java))
-        }
-        btnCronJobs.setOnClickListener {
-            ensureWebUIRunning {
-                startActivity(Intent(this, CronJobsActivity::class.java))
-            }
-        }
-        btnSoulEditor.setOnClickListener {
-            startActivity(Intent(this, SoulEditorActivity::class.java))
         }
         serviceToggleButton.setOnClickListener { onServiceToggleClicked() }
         chatButton.setOnClickListener { onChatButtonClicked() }
@@ -418,8 +401,6 @@ class MainActivity : AppCompatActivity() {
         dashboardNotReady.visibility = if (installed) View.GONE else View.VISIBLE
         openShellButton.visibility = if (installed) View.VISIBLE else View.GONE
         btnModelManagement.visibility = if (installed) View.VISIBLE else View.GONE
-        btnSessionHistory.visibility = if (installed) View.VISIBLE else View.GONE
-        btnCronJobs.visibility = if (installed) View.VISIBLE else View.GONE
         serviceToggleButton.visibility = if (installed) View.VISIBLE else View.GONE
         chatButton.visibility = if (installed) View.VISIBLE else View.GONE
         // 仪表盘不再提供"重新安装环境"入口，统一由设置页的"重新安装"按钮触发

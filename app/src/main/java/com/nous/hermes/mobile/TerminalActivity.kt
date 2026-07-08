@@ -1,11 +1,15 @@
 package com.nous.hermes.mobile
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Selection
+import android.text.SpannableStringBuilder
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -25,18 +29,19 @@ import androidx.appcompat.app.AppCompatActivity
  * - 真正的 PTY（伪终端），支持交互式 TUI 程序（hermes setup、vim、htop 等）
  * - 全屏终端显示，直接在终端里输入（无独立输入框）
  * - ANSI 转义序列处理（颜色剥离、\r 行覆盖）
- * - 底部功能键栏（ESC、Tab、Ctrl、方向键）适配软键盘
- * - 左边缘滑动退出
+ * - 底部功能键栏（ESC、Tab、Ctrl、方向键、复制）适配软键盘
+ * - 左边缘滑动退出（不杀进程，后台保持会话）
+ * - 长按终端可复制全部内容
  *
- * 架构：
- * - PtyNative (JNI) → posix_openpt + fork + exec → proot + bash
- * - TerminalView → 显示 PTY 输出，捕获键盘输入发送到 PTY
+ * 会话管理：
+ * - 使用 [TerminalSession] 单例，退出页面不杀进程
+ * - 重新打开时自动恢复之前的会话和缓冲输出
+ * - 在 shell 中输入 exit 才会真正终止进程
  */
 class TerminalActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "TerminalActivity"
-        private const val READ_BUFFER_SIZE = 8192
         private const val PREF_SWIPE_HINT_SHOWN = "terminal_swipe_hint_shown"
     }
 
@@ -44,15 +49,11 @@ class TerminalActivity : AppCompatActivity() {
     private lateinit var ctrlButton: TextView
 
     private val handler = Handler(Looper.getMainLooper())
-    private var masterFd: Int = -1
-    private var pid: Int = -1
-    @Volatile private var isRunning = false
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 保持屏幕常亮 + 全屏
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val density = resources.displayMetrics.density
@@ -83,7 +84,19 @@ class TerminalActivity : AppCompatActivity() {
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+
+        // 会话状态指示
+        val statusText = TextView(this).apply {
+            text = ""
+            setTextColor(0xFF64748b.toInt())
+            textSize = 11f
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = (8 * density).toInt() }
+        }
+
         titleBar.addView(titleText)
+        titleBar.addView(statusText)
         rootLayout.addView(titleBar)
 
         // --- 终端显示区 ---
@@ -101,9 +114,7 @@ class TerminalActivity : AppCompatActivity() {
             )
             // 输入回调 → 写入 PTY
             onUserInput = { bytes ->
-                if (masterFd >= 0) {
-                    PtyNative.write(masterFd, bytes)
-                }
+                TerminalSession.write(bytes)
             }
             // 点击终端区域 → 请求焦点 + 弹出软键盘
             setOnClickListener {
@@ -111,8 +122,17 @@ class TerminalActivity : AppCompatActivity() {
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
             }
-            // 布局变化时（如软键盘弹出/收起）更新 PTY 窗口大小，
-            // 让 bash 知道正确的行/列数，实现正确的自动换行。
+            // 长按 → 复制全部内容
+            setOnLongClickListener {
+                val text = text?.toString() ?: ""
+                if (text.isNotEmpty()) {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("terminal", text))
+                    Toast.makeText(this@TerminalActivity, "已复制终端内容", Toast.LENGTH_SHORT).show()
+                }
+                true
+            }
+            // 布局变化时更新 PTY 窗口大小
             addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
                 if (width > 0 && height > 0) {
                     val newW = right - left
@@ -165,15 +185,12 @@ class TerminalActivity : AppCompatActivity() {
             }
         }
 
-        // ESC 键
         val escBtn = makeKeyButton("ESC").apply {
             setOnClickListener { terminalView.sendByteToPty(0x1B) }
         }
-        // Tab 键
         val tabBtn = makeKeyButton("TAB").apply {
             setOnClickListener { terminalView.sendByteToPty(0x09) }
         }
-        // Ctrl 键（切换）
         ctrlButton = makeKeyButton("CTRL").apply {
             setOnClickListener {
                 terminalView.ctrlActive = !terminalView.ctrlActive
@@ -194,19 +211,26 @@ class TerminalActivity : AppCompatActivity() {
                 }
             }
         }
-        // 方向键 ←
+        // 复制按钮
+        val copyBtn = makeKeyButton("COPY").apply {
+            setOnClickListener {
+                val text = terminalView.text?.toString() ?: ""
+                if (text.isNotEmpty()) {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("terminal", text))
+                    Toast.makeText(this@TerminalActivity, "已复制", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
         val leftBtn = makeKeyButton("←", (36 * density).toInt()).apply {
             setOnClickListener { terminalView.sendToPty("\u001B[D") }
         }
-        // 方向键 ↑
         val upBtn = makeKeyButton("↑", (36 * density).toInt()).apply {
             setOnClickListener { terminalView.sendToPty("\u001B[A") }
         }
-        // 方向键 ↓
         val downBtn = makeKeyButton("↓", (36 * density).toInt()).apply {
             setOnClickListener { terminalView.sendToPty("\u001B[B") }
         }
-        // 方向键 →
         val rightBtn = makeKeyButton("→", (36 * density).toInt()).apply {
             setOnClickListener { terminalView.sendToPty("\u001B[C") }
         }
@@ -214,6 +238,7 @@ class TerminalActivity : AppCompatActivity() {
         keyBar.addView(escBtn)
         keyBar.addView(tabBtn)
         keyBar.addView(ctrlButton)
+        keyBar.addView(copyBtn)
         keyBar.addView(leftBtn)
         keyBar.addView(upBtn)
         keyBar.addView(downBtn)
@@ -226,40 +251,69 @@ class TerminalActivity : AppCompatActivity() {
         ))
         setContentView(container)
 
-        // 首次提示
-        container.setSwipeHint(PREF_SWIPE_HINT_SHOWN, "从屏幕左边缘向右滑动可退出终端")
+        container.setSwipeHint(PREF_SWIPE_HINT_SHOWN, "从屏幕左边缘向右滑动可退出终端（会话保留）")
 
-        // 启动终端
-        startPtyShell()
+        // 连接或创建终端会话
+        connectTerminal(statusText)
     }
 
     override fun onResume() {
         super.onResume()
-        // 自动聚焦终端，方便用户直接输入
         terminalView.post {
             terminalView.requestFocus()
         }
     }
 
     /**
+     * 连接到现有会话或创建新会话。
+     */
+    private fun connectTerminal(statusText: TextView) {
+        if (TerminalSession.isRunning()) {
+            // 恢复现有会话
+            statusText.text = "已有会话"
+            val replay = TerminalSession.reconnect(
+                onOutput = { bytes, len ->
+                    terminalView.appendOutput(bytes, len)
+                },
+                onExit = { code ->
+                    handler.post {
+                        val msg = "\n[进程退出，code=$code]\n"
+                        terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
+                        Toast.makeText(this, "Shell 已退出", Toast.LENGTH_SHORT).show()
+                        statusText.text = "已退出"
+                    }
+                }
+            )
+            // 回放缓存的输出
+            if (replay != null && replay.isNotEmpty()) {
+                terminalView.appendOutput(replay.toByteArray(), replay.toByteArray().size)
+            }
+            // 更新窗口大小
+            updateWindowSize()
+            Log.i(TAG, "Reconnected to existing terminal session")
+        } else {
+            // 创建新会话
+            statusText.text = "启动中…"
+            startPtyShell(statusText)
+        }
+    }
+
+    /**
      * 启动 PTY shell：通过 JNI 创建伪终端，fork + exec proot + bash。
      */
-    private fun startPtyShell() {
+    private fun startPtyShell(statusText: TextView) {
         Thread {
             try {
                 val paths = BootstrapManager.getPaths(this)
                 val pm = ProcessManager(this, paths.filesDir, paths.nativeLibDir)
 
-                // 构建交互式 shell 命令（与之前一致，但现在通过 PTY 运行）
                 val shellCmd = (
                     "cd /root/home/hermes-agent 2>/dev/null; " +
                     "export PATH=/root/home/hermes-agent/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; " +
                     "export TERM=xterm-256color; " +
-                    "echo '═══════════════════════════════════════════'; " +
+                    "export PS1='\\u@\\h:\\w\\$ '; " +
                     "echo '  Hermes Agent 终端 — proot + Ubuntu 24.04'; " +
-                    "echo '  输入 hermes --help 查看可用命令'; " +
-                    "echo '  输入 exit 退出 shell'; " +
-                    "echo '═══════════════════════════════════════════'; " +
+                    "echo '  输入 hermes --help 查看可用命令 | 输入 exit 退出 shell'; " +
                     "exec bash --login"
                 )
 
@@ -268,53 +322,44 @@ class TerminalActivity : AppCompatActivity() {
 
                 Log.i(TAG, "Starting PTY shell: ${cmd.firstOrNull()}")
 
-                // 创建 PTY 子进程
                 val result = PtyNative.createSubprocess(cmd, env)
                 if (result == null) {
                     handler.post {
                         val msg = "[错误: 无法创建 PTY]\n"
                         terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
                         Toast.makeText(this, "终端启动失败", Toast.LENGTH_LONG).show()
+                        statusText.text = "启动失败"
                     }
                     return@Thread
                 }
 
-                masterFd = result[0]
-                pid = result[1]
-                isRunning = true
+                val masterFd = result[0]
+                val pid = result[1]
 
                 Log.i(TAG, "PTY shell started: pid=$pid masterFd=$masterFd")
 
+                // 初始化会话单例
+                TerminalSession.initSession(masterFd, pid)
+
+                handler.post { statusText.text = "" }
+
+                // 注册输出和退出监听
+                TerminalSession.reconnect(
+                    onOutput = { bytes, len ->
+                        terminalView.appendOutput(bytes, len)
+                    },
+                    onExit = { code ->
+                        handler.post {
+                            val msg = "\n[进程退出，code=$code]\n"
+                            terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
+                            Toast.makeText(this, "Shell 已退出", Toast.LENGTH_SHORT).show()
+                            statusText.text = "已退出"
+                        }
+                    }
+                )
+
                 // 设置初始窗口大小
                 updateWindowSize()
-
-                // 读取循环
-                val buffer = ByteArray(READ_BUFFER_SIZE)
-                while (isRunning) {
-                    val n = PtyNative.read(masterFd, buffer)
-                    if (n > 0) {
-                        terminalView.appendOutput(buffer, n)
-                    } else if (n == 0) {
-                        // EOF
-                        break
-                    } else {
-                        // Error
-                        if (isRunning) {
-                            Log.e(TAG, "PTY read error: $n")
-                        }
-                        break
-                    }
-                }
-
-                if (isRunning) {
-                    val exitCode = PtyNative.waitFor(pid)
-                    handler.post {
-                        val msg = "\n[进程退出，code=$exitCode]\n"
-                        terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
-                        Toast.makeText(this, "Shell 已退出", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                isRunning = false
 
             } catch (e: Exception) {
                 Log.e(TAG, "PTY shell failed", e)
@@ -322,23 +367,18 @@ class TerminalActivity : AppCompatActivity() {
                     val msg = "\n[错误: ${e.message}]\n"
                     terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
                     Toast.makeText(this, "终端启动失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    statusText.text = "启动失败"
                 }
             }
         }.start()
     }
 
-    /**
-     * 根据终端视图大小计算并设置 PTY 窗口大小（行×列）。
-     * 等待布局完成后才能获得正确的 width/height，所以用 OnGlobalLayoutListener。
-     */
     private fun updateWindowSize() {
-        if (masterFd < 0) return
         terminalView.post {
             if (terminalView.width > 0 && terminalView.height > 0) {
                 terminalView.updateScreenSize()
                 sendWindowSizeToPty()
             } else {
-                // 布局尚未完成，等下一次 layout 回调
                 terminalView.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
                     override fun onGlobalLayout() {
                         if (terminalView.width > 0 && terminalView.height > 0) {
@@ -351,34 +391,17 @@ class TerminalActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 计算当前终端视图的行列数并发送给 PTY。
-     * 在 layout 变化（如软键盘弹出/收起）时也会被调用。
-     */
     private fun sendWindowSizeToPty() {
-        if (masterFd < 0) return
-        // 使用 TerminalScreen 的行列数（由 updateScreenSize 同步）
         val rows = terminalView.screen.rows
         val cols = terminalView.screen.cols
         Log.i(TAG, "Window size: ${rows}r x ${cols}c")
-        PtyNative.setWindowSize(masterFd, rows, cols)
+        TerminalSession.setWindowSize(rows, cols)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        isRunning = false
-        // 关闭 PTY 并终止子进程
-        if (pid > 0) {
-            PtyNative.killProcess(pid, 15)  // SIGTERM
-            Thread {
-                Thread.sleep(500)
-                PtyNative.killProcess(pid, 9)  // SIGKILL
-            }.start()
-        }
-        if (masterFd >= 0) {
-            PtyNative.close(masterFd)
-            masterFd = -1
-        }
+        // 断开连接但保持进程存活
+        TerminalSession.disconnect()
     }
 
     // 边缘滑动退出容器与首次提示 Toast 已提取至 [SwipeExitFrameLayout]。
