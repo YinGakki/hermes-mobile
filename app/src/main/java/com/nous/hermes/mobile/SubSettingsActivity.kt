@@ -70,8 +70,10 @@ class SubSettingsActivity : AppCompatActivity() {
 
     private var btnChannelToggle: TextView? = null
 
-    // APK 更新检测结果缓存
+    // 更新检测结果缓存
     private var lastApkUpdate: ApkUpdateInfo? = null
+    private var lastHermesUpdate: String? = null   // 最新版本号，非 null 表示有更新
+    private var lastWebuiUpdate: String? = null     // 最新版本号，非 null 表示有更新
 
     private val density by lazy { resources.displayMetrics.density }
 
@@ -196,7 +198,15 @@ class SubSettingsActivity : AppCompatActivity() {
         hermesVersionText = hermesVer
         hermesUpdateBadge = hermesBadge
         hermesCard.setOnClickListener {
-            checkSingleUpdate("hermes")
+            val cached = lastHermesUpdate
+            if (cached != null) {
+                // 已检测到更新 — 返回 MainActivity 执行更新
+                setResult(RESULT_UPDATE_HERMES)
+                finish()
+            } else {
+                // 未检测或无更新 — 重新检测
+                checkSingleUpdate("hermes")
+            }
         }
         container.addView(hermesCard)
 
@@ -214,7 +224,15 @@ class SubSettingsActivity : AppCompatActivity() {
         webuiVersionText = webuiVer
         webuiUpdateBadge = webuiBadge
         webuiCard.setOnClickListener {
-            checkSingleUpdate("webui")
+            val cached = lastWebuiUpdate
+            if (cached != null) {
+                // 已检测到更新 — 返回 MainActivity 执行更新
+                setResult(RESULT_UPDATE_WEBUI)
+                finish()
+            } else {
+                // 未检测或无更新 — 重新检测
+                checkSingleUpdate("webui")
+            }
         }
         container.addView(webuiCard)
 
@@ -289,7 +307,14 @@ class SubSettingsActivity : AppCompatActivity() {
             iconRes = R.drawable.ic_launcher_foreground
         )
         apkCard.setOnClickListener {
-            checkSingleUpdate("apk")
+            val cached = lastApkUpdate
+            if (cached != null) {
+                // 已检测到更新 — 显示更新对话框
+                showApkUpdateDialog(cached)
+            } else {
+                // 未检测或无更新 — 重新检测
+                checkSingleUpdate("apk")
+            }
         }
         container.addView(apkCard)
         updateChannelToggleUI()
@@ -510,6 +535,12 @@ class SubSettingsActivity : AppCompatActivity() {
 
     /** 检测单个组件的更新 */
     private fun checkSingleUpdate(component: String) {
+        // 清除对应缓存，允许重新检测
+        when (component) {
+            "hermes" -> lastHermesUpdate = null
+            "webui" -> lastWebuiUpdate = null
+            "apk" -> lastApkUpdate = null
+        }
         when (component) {
             "hermes" -> {
                 hermesVersionText.text = "检测中…"
@@ -527,6 +558,7 @@ class SubSettingsActivity : AppCompatActivity() {
                         } else {
                             hermesVersionText.text = "$hermesVer (最新)"
                         }
+                        lastHermesUpdate = latest
                     }
                 }.start()
             }
@@ -546,6 +578,7 @@ class SubSettingsActivity : AppCompatActivity() {
                         } else {
                             webuiVersionText.text = "$webuiVer (最新)"
                         }
+                        lastWebuiUpdate = latest
                     }
                 }.start()
             }
