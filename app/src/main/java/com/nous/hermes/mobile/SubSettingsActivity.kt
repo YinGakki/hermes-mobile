@@ -183,10 +183,6 @@ class SubSettingsActivity : AppCompatActivity() {
         })
 
         // ── Hermes Agent 更新卡片 ──
-        val hermesUpdateBtn = makeUpdateButton {
-            setResult(RESULT_UPDATE_HERMES)
-            finish()
-        }
         val hermesRefresh = makeRefreshButton().apply {
             setOnClickListener { checkSingleUpdate("hermes") }
         }
@@ -205,10 +201,6 @@ class SubSettingsActivity : AppCompatActivity() {
         container.addView(hermesCard)
 
         // ── WebUI 更新卡片 ──
-        val webuiUpdateBtn = makeUpdateButton {
-            setResult(RESULT_UPDATE_WEBUI)
-            finish()
-        }
         val webuiRefresh = makeRefreshButton().apply {
             setOnClickListener { checkSingleUpdate("webui") }
         }
@@ -297,7 +289,7 @@ class SubSettingsActivity : AppCompatActivity() {
             iconRes = R.drawable.ic_launcher_foreground
         )
         apkCard.setOnClickListener {
-            onApkUpdateClicked()
+            checkSingleUpdate("apk")
         }
         container.addView(apkCard)
         updateChannelToggleUI()
