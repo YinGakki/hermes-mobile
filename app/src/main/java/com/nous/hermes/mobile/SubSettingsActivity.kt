@@ -178,7 +178,7 @@ class SubSettingsActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 marginStart = (4 * density).toInt()
-                marginBottom = (8 * density).toInt()
+                bottomMargin = (8 * density).toInt()
             }
         })
 
@@ -314,7 +314,7 @@ class SubSettingsActivity : AppCompatActivity() {
             ).apply {
                 marginStart = (4 * density).toInt()
                 topMargin = (20 * density).toInt()
-                marginBottom = (8 * density).toInt()
+                bottomMargin = (8 * density).toInt()
             }
         })
 
@@ -361,7 +361,7 @@ class SubSettingsActivity : AppCompatActivity() {
                 )
             }
             iconTile.addView(android.widget.ImageView(this@SubSettingsActivity).apply {
-                setImageResource(R.drawable.ic_launch)
+                setImageResource(R.drawable.ic_external_link)
                 setColorFilter(0xFF818cf8.toInt())
                 layoutParams = LinearLayout.LayoutParams(
                     (24 * density).toInt(), (24 * density).toInt()
