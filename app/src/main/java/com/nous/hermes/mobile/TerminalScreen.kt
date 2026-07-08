@@ -116,6 +116,20 @@ class TerminalScreen(
     private var scrollTop = 0
     private var scrollBottom = rows - 1
 
+    // ── 备用屏幕缓冲区 ──
+    private var altBuffer: Array<Array<Cell>>? = null
+    private var altCursorRow = 0
+    private var altCursorCol = 0
+    private var altScrollTop = 0
+    private var altScrollBottom = 0
+    private var usingAltScreen = false
+
+    // ── DSR 回调：TUI 查询光标位置时通过此回调向 PTY 回写应答 ──
+    var dsrCallback: ((String) -> Unit)? = null
+
+    // ── 自动换行模式（默认开启） ──
+    private var autoWrap = true
+
     // ── ANSI 解析状态机 ──
     private enum class State { GROUND, ESC, CSI, OSC, ESC_INTERMEDIATE }
     private var parseState = State.GROUND
@@ -387,12 +401,38 @@ class TerminalScreen(
                 }
             }
 
-            // 光标显隐
-            'h' -> if (private && params.contains(25)) cursorVisible = true
-            'l' -> if (private && params.contains(25)) cursorVisible = false
+            // 光标显隐 + 私有模式
+            'h' -> {
+                if (private) {
+                    for (p in params) {
+                        when (p) {
+                            25 -> cursorVisible = true
+                            1049, 47 -> enterAltScreen()
+                            7 -> autoWrap = true
+                            // ?1, ?2004 (bracketed paste), ?1000-?1006 (mouse) — 忽略
+                        }
+                    }
+                }
+            }
+            'l' -> {
+                if (private) {
+                    for (p in params) {
+                        when (p) {
+                            25 -> cursorVisible = false
+                            1049, 47 -> exitAltScreen()
+                            7 -> autoWrap = false
+                        }
+                    }
+                }
+            }
 
-            // 光标查询（应答）
-            'n' -> { /* 设备状态报告 — 需要 PTY 回写，暂忽略 */ }
+            // 光标查询（DSR — Device Status Report）
+            'n' -> {
+                if (!private && params.getOrNull(0) == 6) {
+                    // ESC[6n — 报告光标位置: ESC[row;colR
+                    dsrCallback?.invoke("\u001B[${cursorRow + 1};${cursorCol + 1}R")
+                }
+            }
 
             else -> {
                 Log.d(TAG, "Unhandled CSI: ESC[${csiBuffer}$terminator")
@@ -492,8 +532,12 @@ class TerminalScreen(
     private fun advanceCursor() {
         cursorCol++
         if (cursorCol >= cols) {
-            cursorCol = 0
-            lineFeed()
+            if (autoWrap) {
+                cursorCol = 0
+                lineFeed()
+            } else {
+                cursorCol = cols - 1
+            }
         }
     }
 
@@ -651,6 +695,44 @@ class TerminalScreen(
         scrollBottom = bottom.coerceIn(scrollTop, rows - 1)
         // 光标移到区域内
         setCursor(scrollTop, 0)
+    }
+
+    /** 进入备用屏幕缓冲区（TUI 应用如 hermes CLI、vim、htop 等） */
+    private fun enterAltScreen() {
+        if (usingAltScreen) return
+        // 保存主屏幕状态
+        synchronized(bufferLock) {
+            altBuffer = buffer
+            altCursorRow = cursorRow
+            altCursorCol = cursorCol
+            altScrollTop = scrollTop
+            altScrollBottom = scrollBottom
+            // 创建新的空白屏幕
+            buffer = Array(rows) { Array(cols) { Cell() } }
+        }
+        cursorRow = 0
+        cursorCol = 0
+        scrollTop = 0
+        scrollBottom = rows - 1
+        usingAltScreen = true
+        dirty = true
+        Log.i(TAG, "Entered alternate screen buffer")
+    }
+
+    /** 退出备用屏幕缓冲区，恢复主屏幕 */
+    private fun exitAltScreen() {
+        if (!usingAltScreen) return
+        synchronized(bufferLock) {
+            altBuffer?.let { buffer = it }
+            altBuffer = null
+        }
+        cursorRow = altCursorRow
+        cursorCol = altCursorCol
+        scrollTop = altScrollTop
+        scrollBottom = altScrollBottom
+        usingAltScreen = false
+        dirty = true
+        Log.i(TAG, "Exited alternate screen buffer")
     }
 
     private fun saveCursor() {

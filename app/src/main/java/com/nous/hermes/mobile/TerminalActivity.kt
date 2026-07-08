@@ -95,8 +95,56 @@ class TerminalActivity : AppCompatActivity() {
             ).apply { marginEnd = (8 * density).toInt() }
         }
 
+        // 会话管理按钮
+        val sessionBtn = TextView(this).apply {
+            text = "会话 +"
+            setTextColor(0xFFe2e8f0.toInt())
+            textSize = 12f
+            gravity = Gravity.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = 6 * density
+                setColor(0xFF334155.toInt())
+            }
+            val pad = (10 * density).toInt()
+            setPadding(pad, (6 * density).toInt(), pad, (6 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = (6 * density).toInt() }
+            isClickable = true
+            setOnClickListener {
+                showSessionDialog(statusText)
+            }
+        }
+
+        // 退出终端按钮
+        val exitBtn = TextView(this).apply {
+            text = "退出"
+            setTextColor(0xFFfca5a5.toInt())
+            textSize = 12f
+            gravity = Gravity.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = 6 * density
+                setColor(0xFF7f1d1d.toInt())
+            }
+            val pad = (10 * density).toInt()
+            setPadding(pad, (6 * density).toInt(), pad, (6 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            isClickable = true
+            setOnClickListener {
+                showExitDialog()
+            }
+        }
+
         titleBar.addView(titleText)
         titleBar.addView(statusText)
+        titleBar.addView(sessionBtn)
+        titleBar.addView(exitBtn)
         rootLayout.addView(titleBar)
 
         // --- 终端显示区 ---
@@ -268,6 +316,12 @@ class TerminalActivity : AppCompatActivity() {
      * 连接到现有会话或创建新会话。
      */
     private fun connectTerminal(statusText: TextView) {
+        statusTextRef = statusText
+        // 设置 DSR 回调 — TUI 应用通过 ESC[6n 查询光标位置
+        terminalView.screen.dsrCallback = { response ->
+            TerminalSession.write(response.toByteArray())
+        }
+
         if (TerminalSession.isRunning()) {
             // 恢复现有会话
             statusText.text = "已有会话"
@@ -403,6 +457,97 @@ class TerminalActivity : AppCompatActivity() {
         // 断开连接但保持进程存活
         TerminalSession.disconnect()
     }
+
+    /** 会话管理对话框 — 新建会话、切换会话、关闭会话 */
+    private fun showSessionDialog(statusText: TextView) {
+        val sessionList = TerminalSession.getSessionList()
+        val items = if (sessionList.isEmpty()) {
+            arrayOf("+ 新建会话")
+        } else {
+            sessionList.map { it.second }.toTypedArray() + arrayOf("+ 新建会话")
+        }
+
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("终端会话 (${sessionList.size})")
+            .setItems(items) { _, which ->
+                if (which == items.size - 1) {
+                    // 新建会话
+                    createNewSession(statusText)
+                } else {
+                    // 切换到选中的会话
+                    val sessionId = sessionList[which].first
+                    if (sessionId != TerminalSession.activeSessionId) {
+                        switchToSession(sessionId, statusText)
+                    }
+                }
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    /** 新建终端会话 */
+    private fun createNewSession(statusText: TextView) {
+        // 断开当前会话的监听
+        TerminalSession.disconnect()
+        // 清空终端显示
+        terminalView.screen.resetScreen()
+        terminalView.setText("")
+        statusText.text = "启动中…"
+        startPtyShell(statusText)
+    }
+
+    /** 切换到另一个会话 */
+    private fun switchToSession(sessionId: Int, statusText: TextView) {
+        TerminalSession.disconnect()
+        terminalView.screen.resetScreen()
+        terminalView.setText("")
+
+        if (TerminalSession.switchTo(sessionId)) {
+            statusText.text = "会话 $sessionId"
+            val replay = TerminalSession.reconnect(
+                onOutput = { bytes, len ->
+                    terminalView.appendOutput(bytes, len)
+                },
+                onExit = { code ->
+                    handler.post {
+                        val msg = "\n[进程退出，code=$code]\n"
+                        terminalView.appendOutput(msg.toByteArray(), msg.toByteArray().size)
+                        Toast.makeText(this, "Shell 已退出", Toast.LENGTH_SHORT).show()
+                        statusText.text = "已退出"
+                    }
+                }
+            )
+            if (replay != null && replay.isNotEmpty()) {
+                terminalView.appendOutput(replay.toByteArray(), replay.toByteArray().size)
+            }
+            updateWindowSize()
+        }
+    }
+
+    /** 退出终端对话框 */
+    private fun showExitDialog() {
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle("退出终端")
+            .setMessage("退出终端页面（会话保持后台运行）还是终止当前会话？")
+            .setPositiveButton("仅退出页面") { _, _ ->
+                finish()
+            }
+            .setNegativeButton("终止会话") { _, _ ->
+                TerminalSession.killSession()
+                Toast.makeText(this, "会话已终止", Toast.LENGTH_SHORT).show()
+                // 如果还有其他会话，切换过去；否则关闭页面
+                if (TerminalSession.isRunning()) {
+                    statusTextRef?.let { switchToSession(TerminalSession.activeSessionId, it) }
+                } else {
+                    finish()
+                }
+            }
+            .setNeutralButton("取消", null)
+            .show()
+    }
+
+    // statusText 引用（供 showExitDialog 使用）
+    private var statusTextRef: TextView? = null
 
     // 边缘滑动退出容器与首次提示 Toast 已提取至 [SwipeExitFrameLayout]。
 }
