@@ -21,27 +21,28 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
 
 /**
  * 模型管理页面 — 管理 Hermes Agent 的模型 / Provider 配置。
  *
- * 通过 hermes-web-ui（端口 8648）提供的 REST API 完成：
- *   - GET    /api/hermes/available-models            获取所有可用模型 / provider
- *   - PUT    /api/hermes/config/model                设置默认模型
- *   - POST   /api/hermes/config/providers            添加自定义 provider
- *   - DELETE /api/hermes/config/providers/:poolKey   删除自定义 provider
+ * 不再依赖 hermes-webui 的 REST API，改为通过 [HermesConfigManager] 直接读写
+ * `~/.hermes/config.yaml` 与 `~/.hermes/.env`：
+ *   - [HermesConfigManager.readConfig]            读取当前配置（默认模型 / API Key / 自定义 provider）
+ *   - [HermesConfigManager.setDefaultModel]       设置默认模型
+ *   - [HermesConfigManager.setApiKey]             写入 / 更新 API Key（.env）
+ *   - [HermesConfigManager.addCustomProvider]     添加自定义 provider（config.yaml）
+ *   - [HermesConfigManager.removeCustomProvider]  删除自定义 provider（config.yaml）
+ *
+ * Provider 列表由 [HermesConfigManager.BUILTIN_PROVIDERS]（内置）与配置文件中的
+ * custom_providers（自定义）合并而来。每个内置 provider 会检查 .env 中是否已设置
+ * 对应的 API Key，未设置时可在卡片点击对话框中补填。
  *
  * UI 完全用代码构建（无 XML layout），视觉风格与 [SubSettingsActivity] 一致：
  * 深色背景、圆角卡片、StateListDrawable 点击反馈、@ 文字图标方块。
  *
  * 交互：
- *   - 点击 Provider 卡片 → 弹出模型选择对话框（设为默认）
+ *   - 点击 Provider 卡片 → 弹出模型选择 + API Key 编辑对话框
  *   - 点击「添加 Provider」→ 弹出表单对话框
  *   - 长按 Provider 卡片 → 删除确认对话框（仅自定义 provider）
  */
@@ -49,11 +50,13 @@ class ModelManagementActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "ModelManagementActivity"
-        private const val BASE_URL = "http://127.0.0.1:8648"
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private val density by lazy { resources.displayMetrics.density }
+
+    /** 直接读写 ~/.hermes 配置文件，不经过 WebUI。 */
+    private val configManager by lazy { HermesConfigManager(this) }
 
     // ── 颜色常量（主题色引用 [UiUtils]，保持与 SubSettingsActivity 一致） ─
     private val colorBg = UiUtils.BG
@@ -70,7 +73,7 @@ class ModelManagementActivity : AppCompatActivity() {
     private val badgeCustom = UiUtils.WARNING to 0xFF451a03.toInt()         // 橙 自定义
 
     // ── 数据模型 ─────────────────────────────────────────────────────────
-    /** 一个 provider 分组（对应 available-models.groups[] 的一项）。 */
+    /** 一个 provider 分组。 */
     private data class ProviderGroup(
         val provider: String,
         val label: String,
@@ -78,14 +81,19 @@ class ModelManagementActivity : AppCompatActivity() {
         val models: List<String>,
         val apiKey: String,
         val builtin: Boolean,
-        /** 保留原始 JSON，删除时从中读取 pool_key / source / provider_key 等字段。 */
+        /**
+         * 附加元数据。内置 / 自定义 provider 均会写入：
+         *   - api_key_env   API Key 对应的环境变量名（如 OPENROUTER_API_KEY）
+         *   - api_key_label API Key 的展示名（如 "OpenRouter API Key"）
+         */
         val raw: JSONObject,
     )
 
     private var defaultModel: String = ""
     private var defaultProvider: String = ""
     private var groups: List<ProviderGroup> = emptyList()
-    private var allProvidersRaw: JSONArray? = null
+    /** 最近一次读取的配置，用于查询 API Key 是否已设置。 */
+    private var currentConfig: HermesConfigManager.Config? = null
 
     // ── UI 引用 ──────────────────────────────────────────────────────────
     private lateinit var contentScrollView: ScrollView
@@ -345,11 +353,18 @@ class ModelManagementActivity : AppCompatActivity() {
         }
     }
 
-    /** Provider 卡片：图标方块 + 名称/badge + base_url + 默认模型 + 模型数量/箭头。 */
+    /** Provider 卡片：图标方块 + 名称/badge + base_url + API Key 状态 + 默认模型 + 模型数量/箭头。 */
     private fun makeProviderCard(group: ProviderGroup): LinearLayout {
         val isDefaultProvider =
             defaultProvider.isNotEmpty() && group.provider == defaultProvider
         val displayName = group.label.ifEmpty { group.provider.ifEmpty { "未命名 Provider" } }
+
+        // API Key 状态（仅当 provider 关联了环境变量时）
+        val apiKeyEnv = group.raw.optString("api_key_env", "")
+        val apiKeyLabel = group.raw.optString("api_key_label", "API Key")
+        val hasApiKeyEnv = apiKeyEnv.isNotEmpty()
+        val isKeySet = hasApiKeyEnv &&
+            currentConfig?.apiKeys?.get(apiKeyEnv)?.isNotEmpty() == true
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -433,6 +448,20 @@ class ModelManagementActivity : AppCompatActivity() {
                 })
             }
 
+            // API Key 状态行：已设置（绿）/ 未设置（橙）
+            if (hasApiKeyEnv) {
+                textCol.addView(TextView(this@ModelManagementActivity).apply {
+                    text = if (isKeySet) "● API Key 已设置" else "○ 未设置 API Key"
+                    setTextColor(if (isKeySet) UiUtils.SUCCESS else UiUtils.WARNING)
+                    textSize = 11f
+                    maxLines = 1
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = (3 * density).toInt() }
+                })
+            }
+
             // 第三行：当前默认模型（青色，仅默认 provider 显示）
             if (isDefaultProvider && defaultModel.isNotEmpty()) {
                 textCol.addView(TextView(this@ModelManagementActivity).apply {
@@ -476,8 +505,10 @@ class ModelManagementActivity : AppCompatActivity() {
             })
             addView(rightCol)
 
-            // 交互：点击选模型，长按删除
-            setOnClickListener { showModelSelectorDialog(group) }
+            // 交互：点击选模型 / 编辑 API Key，长按删除
+            setOnClickListener {
+                showProviderDetailDialog(group, apiKeyEnv, apiKeyLabel, hasApiKeyEnv, isKeySet)
+            }
             setOnLongClickListener {
                 if (group.builtin) {
                     Toast.makeText(
@@ -534,24 +565,92 @@ class ModelManagementActivity : AppCompatActivity() {
 
     // ── 对话框 ───────────────────────────────────────────────────────────
 
-    /** 点击 Provider 卡片：弹出该 provider 的模型列表，可选择设为默认。 */
-    private fun showModelSelectorDialog(group: ProviderGroup) {
-        if (group.models.isEmpty()) {
+    /**
+     * 点击 Provider 卡片：弹出该 provider 的模型列表（可设为默认），
+     * 若该 provider 关联了 API Key 环境变量，附带「设置 / 更换 API Key」入口。
+     */
+    private fun showProviderDetailDialog(
+        group: ProviderGroup,
+        apiKeyEnv: String,
+        apiKeyLabel: String,
+        hasApiKeyEnv: Boolean,
+        isKeySet: Boolean,
+    ) {
+        if (group.models.isEmpty() && !hasApiKeyEnv) {
             Toast.makeText(this, "该 Provider 暂无可用模型", Toast.LENGTH_SHORT).show()
             return
         }
-        val models = group.models.toTypedArray()
-        // 若该 provider 正是默认 provider，预选当前默认模型
-        val checkedItem = if (group.provider == defaultProvider) {
-            group.models.indexOf(defaultModel)
-        } else -1
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle("${group.label} · 选择默认模型")
-            .setSingleChoiceItems(models, checkedItem) { dialog, which ->
+        val builder = MaterialAlertDialogBuilder(this)
+            .setTitle(group.label)
+            .setNegativeButton("关闭", null)
+
+        // 顶部展示 API Key 状态
+        if (hasApiKeyEnv) {
+            val status = if (isKeySet) "已设置" else "未设置"
+            builder.setMessage("$apiKeyLabel：$status")
+        }
+
+        // 模型单选列表（设为默认）
+        if (group.models.isNotEmpty()) {
+            val models = group.models.toTypedArray()
+            // 若该 provider 正是默认 provider，预选当前默认模型
+            val checkedItem = if (group.provider == defaultProvider) {
+                group.models.indexOf(defaultModel)
+            } else -1
+            builder.setSingleChoiceItems(models, checkedItem) { dialog, which ->
                 val selected = group.models[which]
                 dialog.dismiss()
                 setDefaultModel(selected, group.provider)
+            }
+        }
+
+        // API Key 编辑入口
+        if (hasApiKeyEnv) {
+            val btnText = if (isKeySet) "更换 API Key" else "设置 API Key"
+            builder.setNeutralButton(btnText) { _, _ ->
+                showApiKeyEditDialog(apiKeyEnv, apiKeyLabel)
+            }
+        }
+
+        builder.show()
+    }
+
+    /** 设置 / 更换某个环境变量对应的 API Key（写入 .env）。 */
+    private fun showApiKeyEditDialog(apiKeyEnv: String, apiKeyLabel: String) {
+        val et = EditText(this).apply {
+            hint = "输入 $apiKeyLabel"
+            setTextColor(colorTitle)
+            setHintTextColor(colorDim)
+            textSize = 14f
+            typeface = Typeface.MONOSPACE
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            background = UiUtils.getPlainBackground(this@ModelManagementActivity)
+            setPadding(
+                (12 * density).toInt(), (10 * density).toInt(),
+                (12 * density).toInt(), (10 * density).toInt()
+            )
+        }
+        val container = LinearLayout(this).apply {
+            setPadding(
+                (20 * density).toInt(), (8 * density).toInt(),
+                (20 * density).toInt(), (4 * density).toInt()
+            )
+            addView(et, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(apiKeyLabel)
+            .setView(container)
+            .setPositiveButton("保存") { _, _ ->
+                val value = et.text.toString().trim()
+                if (value.isEmpty()) {
+                    Toast.makeText(this, "API Key 不能为空", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                setApiKey(apiKeyEnv, value)
             }
             .setNegativeButton("取消", null)
             .show()
@@ -640,68 +739,10 @@ class ModelManagementActivity : AppCompatActivity() {
             .setTitle("删除 Provider")
             .setMessage("确定要删除「${group.label}」吗？\n此操作不可撤销。")
             .setPositiveButton("删除") { _, _ ->
-                val (poolKey, source, providerKey) = resolveDeleteKeys(group)
-                deleteProvider(poolKey, source, providerKey)
+                deleteProvider(group.provider)
             }
             .setNegativeButton("取消", null)
             .show()
-    }
-
-    /**
-     * 解析删除所需的 poolKey / source / providerKey。
-     *
-     * DELETE /api/hermes/config/providers/:poolKey?source=...&providerKey=...
-     *
-     * 优先从 provider 分组的原始 JSON 读取 pool_key / source / provider_key
-     * 等字段；缺失时回退到 allProviders 数组中匹配项；最终回退到 provider
-     * 标识与 "custom_providers"。
-     */
-    private fun resolveDeleteKeys(group: ProviderGroup): Triple<String, String, String> {
-        val raw = group.raw
-        var poolKey = firstNonEmpty(
-            raw.optString("pool_key", null),
-            raw.optString("poolKey", null),
-        ) ?: group.provider
-        var source = firstNonEmpty(raw.optString("source", null)) ?: "custom_providers"
-        var providerKey = firstNonEmpty(
-            raw.optString("provider_key", null),
-            raw.optString("providerKey", null),
-            raw.optString("key", null),
-        ) ?: group.provider
-
-        // 从 allProviders 补全缺失字段
-        allProvidersRaw?.let { arr ->
-            for (i in 0 until arr.length()) {
-                val p = arr.optJSONObject(i) ?: continue
-                val matches = p.optString("provider", null) == group.provider ||
-                    p.optString("provider_key", null) == group.provider ||
-                    p.optString("name", null) == group.label
-                if (matches) {
-                    if (poolKey == group.provider) {
-                        poolKey = firstNonEmpty(
-                            p.optString("pool_key", null),
-                            p.optString("poolKey", null),
-                        ) ?: poolKey
-                    }
-                    if (source == "custom_providers") {
-                        source = firstNonEmpty(p.optString("source", null)) ?: source
-                    }
-                    if (providerKey == group.provider) {
-                        providerKey = firstNonEmpty(
-                            p.optString("provider_key", null),
-                            p.optString("providerKey", null),
-                            p.optString("key", null),
-                        ) ?: providerKey
-                    }
-                    break
-                }
-            }
-        }
-        return Triple(poolKey, source, providerKey)
-    }
-
-    private fun firstNonEmpty(vararg candidates: String?): String? {
-        return candidates.firstOrNull { !it.isNullOrEmpty() }
     }
 
     /** 非阻塞进度对话框（用于写操作期间）。 */
@@ -736,49 +777,63 @@ class ModelManagementActivity : AppCompatActivity() {
             .show()
     }
 
-    // ── API 调用 ─────────────────────────────────────────────────────────
+    // ── 配置读写（直接操作 ~/.hermes，不依赖 WebUI） ──────────────────────
 
-    /** GET /api/hermes/available-models → 解析并渲染卡片。 */
+    /** 读取 config.yaml / .env，合并内置与自定义 provider，渲染卡片。 */
     private fun loadModels() {
         showLoading()
         Thread {
             try {
-                val resp = httpRequest("GET", "/api/hermes/available-models")
-                val json = JSONObject(resp)
-                val def = json.optString("default", "")
-                val defProv = json.optString("default_provider", "")
-                val allProviders = json.optJSONArray("allProviders")
-                val groupsArr = json.optJSONArray("groups")
-
-                val parsed = ArrayList<ProviderGroup>()
-                if (groupsArr != null) {
-                    for (i in 0 until groupsArr.length()) {
-                        val g = groupsArr.optJSONObject(i) ?: continue
-                        val modelsArr = g.optJSONArray("models")
-                        val modelsList = ArrayList<String>()
-                        if (modelsArr != null) {
-                            for (j in 0 until modelsArr.length()) {
-                                modelsList.add(modelsArr.optString(j))
-                            }
-                        }
-                        parsed.add(
-                            ProviderGroup(
-                                provider = g.optString("provider", ""),
-                                label = g.optString("label", g.optString("provider", "未命名")),
-                                baseUrl = g.optString("base_url", ""),
-                                models = modelsList,
-                                apiKey = g.optString("api_key", ""),
-                                builtin = g.optBoolean("builtin", false),
-                                raw = g,
-                            )
-                        )
+                if (!configManager.isConfigAvailable()) {
+                    handler.post {
+                        showError("未找到 Hermes 配置目录\n请先安装并初始化 Hermes Agent")
                     }
+                    return@Thread
+                }
+
+                val config = configManager.readConfig()
+                val parsed = ArrayList<ProviderGroup>()
+
+                // 内置 provider：始终列出，并标记 API Key 是否已配置
+                for (bp in HermesConfigManager.BUILTIN_PROVIDERS) {
+                    parsed.add(
+                        ProviderGroup(
+                            provider = bp.key,
+                            label = bp.label,
+                            baseUrl = bp.baseUrl,
+                            models = bp.models,
+                            apiKey = "",
+                            builtin = true,
+                            raw = JSONObject().apply {
+                                put("api_key_env", bp.apiKeyEnv)
+                                put("api_key_label", bp.apiKeyLabel)
+                            },
+                        )
+                    )
+                }
+
+                // 自定义 provider：来自 config.yaml 的 custom_providers
+                for (cp in config.customProviders) {
+                    parsed.add(
+                        ProviderGroup(
+                            provider = cp.name,
+                            label = cp.name,
+                            baseUrl = cp.baseUrl,
+                            models = cp.models,
+                            apiKey = "",
+                            builtin = false,
+                            raw = JSONObject().apply {
+                                put("api_key_env", cp.apiKeyEnv)
+                                put("api_key_label", "${cp.name} API Key")
+                            },
+                        )
+                    )
                 }
 
                 handler.post {
-                    defaultModel = def
-                    defaultProvider = defProv
-                    allProvidersRaw = allProviders
+                    currentConfig = config
+                    defaultModel = config.defaultModel
+                    defaultProvider = config.defaultProvider
                     groups = parsed
                     renderCards()
                     showContent()
@@ -790,20 +845,20 @@ class ModelManagementActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** PUT /api/hermes/config/model — 设置默认模型。 */
+    /** 设置默认模型 / provider（写入 config.yaml）。 */
     private fun setDefaultModel(model: String, provider: String) {
         val dialog = showProgressDialog("正在设置默认模型…")
         Thread {
             try {
-                val body = JSONObject().apply {
-                    put("default", model)
-                    put("provider", provider)
-                }.toString()
-                httpRequest("PUT", "/api/hermes/config/model", body)
+                val ok = configManager.setDefaultModel(provider, model)
                 handler.post {
                     dialog.dismiss()
-                    Toast.makeText(this, "已设为默认模型", Toast.LENGTH_SHORT).show()
-                    refreshModels()
+                    if (ok) {
+                        Toast.makeText(this, "已设为默认模型", Toast.LENGTH_SHORT).show()
+                        refreshModels()
+                    } else {
+                        Toast.makeText(this, "设置失败", Toast.LENGTH_LONG).show()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "setDefaultModel failed", e)
@@ -815,22 +870,35 @@ class ModelManagementActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** POST /api/hermes/config/providers — 添加自定义 provider。 */
+    /**
+     * 添加自定义 provider：先保存 API Key（.env），再写入 provider 定义（config.yaml）。
+     * API Key 环境变量名由 provider 名称派生（大写 + 非字母数字转下划线 + _API_KEY）。
+     */
     private fun addProvider(name: String, baseUrl: String, apiKey: String, model: String) {
         val dialog = showProgressDialog("正在添加 Provider…")
         Thread {
             try {
-                val body = JSONObject().apply {
-                    put("name", name)
-                    put("base_url", baseUrl)
-                    put("api_key", apiKey)
-                    put("model", model)
-                }.toString()
-                httpRequest("POST", "/api/hermes/config/providers", body)
+                val apiKeyEnv = (name.uppercase()
+                    .replace(Regex("[^A-Z0-9]+"), "_")
+                    .trim('_')) + "_API_KEY"
+
+                var ok = true
+                if (apiKey.isNotEmpty()) {
+                    ok = configManager.setApiKey(apiKeyEnv, apiKey)
+                }
+                if (ok) {
+                    val models = if (model.isNotEmpty()) listOf(model) else emptyList()
+                    ok = configManager.addCustomProvider(name, baseUrl, apiKeyEnv, models)
+                }
+
                 handler.post {
                     dialog.dismiss()
-                    Toast.makeText(this, "Provider 已添加", Toast.LENGTH_SHORT).show()
-                    refreshModels()
+                    if (ok) {
+                        Toast.makeText(this, "Provider 已添加", Toast.LENGTH_SHORT).show()
+                        refreshModels()
+                    } else {
+                        Toast.makeText(this, "添加失败", Toast.LENGTH_LONG).show()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "addProvider failed", e)
@@ -842,20 +910,20 @@ class ModelManagementActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** DELETE /api/hermes/config/providers/:poolKey?source=...&providerKey=... — 删除 provider。 */
-    private fun deleteProvider(poolKey: String, source: String, providerKey: String) {
+    /** 删除自定义 provider（从 config.yaml 移除）。 */
+    private fun deleteProvider(name: String) {
         val dialog = showProgressDialog("正在删除 Provider…")
         Thread {
             try {
-                val path = "/api/hermes/config/providers/" +
-                    URLEncoder.encode(poolKey, "UTF-8") +
-                    "?source=" + URLEncoder.encode(source, "UTF-8") +
-                    "&providerKey=" + URLEncoder.encode(providerKey, "UTF-8")
-                httpRequest("DELETE", path)
+                val ok = configManager.removeCustomProvider(name)
                 handler.post {
                     dialog.dismiss()
-                    Toast.makeText(this, "Provider 已删除", Toast.LENGTH_SHORT).show()
-                    refreshModels()
+                    if (ok) {
+                        Toast.makeText(this, "Provider 已删除", Toast.LENGTH_SHORT).show()
+                        refreshModels()
+                    } else {
+                        Toast.makeText(this, "删除失败", Toast.LENGTH_LONG).show()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "deleteProvider failed", e)
@@ -867,41 +935,34 @@ class ModelManagementActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** 保存 / 更新 API Key（写入 .env）。 */
+    private fun setApiKey(apiKeyEnv: String, value: String) {
+        val dialog = showProgressDialog("正在保存 API Key…")
+        Thread {
+            try {
+                val ok = configManager.setApiKey(apiKeyEnv, value)
+                handler.post {
+                    dialog.dismiss()
+                    if (ok) {
+                        Toast.makeText(this, "API Key 已保存", Toast.LENGTH_SHORT).show()
+                        refreshModels()
+                    } else {
+                        Toast.makeText(this, "保存失败", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "setApiKey failed", e)
+                handler.post {
+                    dialog.dismiss()
+                    Toast.makeText(this, "保存失败：${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
     /** 重新加载模型列表。 */
     private fun refreshModels() {
         loadModels()
-    }
-
-    // ── HTTP 工具 ────────────────────────────────────────────────────────
-
-    /**
-     * 执行一次 HTTP 请求，返回响应体字符串。
-     * 仅在后台线程调用；非 2xx 响应抛出 [IOException]。
-     */
-    @Throws(IOException::class)
-    private fun httpRequest(method: String, path: String, body: String? = null): String {
-        val conn = (URL(BASE_URL + path).openConnection() as HttpURLConnection)
-        try {
-            conn.requestMethod = method
-            conn.connectTimeout = 15000
-            conn.readTimeout = 30000
-            conn.instanceFollowRedirects = true
-            conn.setRequestProperty("Accept", "application/json")
-            if (body != null) {
-                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                conn.doOutput = true
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-            if (code !in 200..299) {
-                throw IOException("HTTP $code: ${text.take(300)}")
-            }
-            return text
-        } finally {
-            conn.disconnect()
-        }
     }
 
     // ── Drawable 工厂已提取至 [UiUtils]（保持视觉完全一致） ───────────────

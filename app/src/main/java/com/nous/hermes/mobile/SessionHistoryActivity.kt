@@ -1,6 +1,8 @@
 package com.nous.hermes.mobile
 
 import android.content.res.ColorStateList
+import android.database.Cursor
+import android.database.sqlite.SQLiteDatabase
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -24,10 +26,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
+import java.io.File
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -38,9 +37,16 @@ import java.time.format.DateTimeParseException
 /**
  * 会话历史页面 — 浏览 Hermes Agent 的历史会话。
  *
- * 通过 hermes-web-ui（端口 8648）提供的 REST API 完成：
- *   - GET /api/hermes/sessions                 获取会话列表
- *   - GET /api/hermes/sessions/{id}/messages   获取某会话的消息详情
+ * 直接读取 Hermes 的本地 SQLite 数据库（`~/.hermes/state.db`，在 Android 端
+ * 映射到 `filesDir/home/.hermes/state.db`），**不再依赖 hermes-web-ui 的 REST API**。
+ *
+ * 由于数据库 schema 可能随版本变化，本类在运行时通过 `sqlite_master` 发现表结构，
+ * 按表名/列名关键词推断会话表与消息表，并完成字段映射：
+ *   - 会话表：sessions / conversation / thread / chat（名称不含 message）
+ *   - 消息表：messages / chat_messages / conversation_messages
+ *
+ * 若会话表自带 `message_count` 列则直接读取；否则在存在消息表 + 会话外键时，
+ * 通过 `LEFT JOIN ... COUNT(*)` 计算消息数；都没有则为 0。
  *
  * UI 完全用代码构建（无 XML layout），视觉风格与 [SubSettingsActivity] /
  * [ModelManagementActivity] 一致：深色背景、圆角卡片、StateListDrawable 点击反馈、
@@ -53,11 +59,11 @@ class SessionHistoryActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "SessionHistoryActivity"
-        private const val BASE_URL = "http://127.0.0.1:8648"
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private val density by lazy { resources.displayMetrics.density }
+    private val configManager by lazy { HermesConfigManager(this) }
 
     // ── 颜色常量（与 SubSettingsActivity / ModelManagementActivity 一致） ──
     private val colorBg = 0xFF020617.toInt()
@@ -86,6 +92,34 @@ class SessionHistoryActivity : AppCompatActivity() {
         val role: String,
         val content: String,
         val timestamp: String,
+    )
+
+    /** 数据库表的列信息（来自 PRAGMA table_info）。 */
+    private data class ColumnInfo(
+        val name: String,
+        val isPk: Boolean,
+        val pkOrder: Int,
+    )
+
+    /** 会话表 schema 发现结果。 */
+    private data class SessionTableInfo(
+        val name: String,
+        val colId: String?,
+        val colTitle: String?,
+        val colCreatedAt: String?,
+        val colProvider: String?,
+        val colModel: String?,
+        val colMessageCount: String?,
+    )
+
+    /** 消息表 schema 发现结果。 */
+    private data class MessageTableInfo(
+        val name: String,
+        val colId: String?,
+        val colRole: String?,
+        val colContent: String?,
+        val colTimestamp: String?,
+        val colSessionFk: String?,
     )
 
     private var sessions: List<Session> = emptyList()
@@ -469,24 +503,32 @@ class SessionHistoryActivity : AppCompatActivity() {
     private fun showMessagesDialog(session: Session) {
         val progressDialog = showProgressDialog("加载消息中…")
         Thread {
+            var db: SQLiteDatabase? = null
             try {
-                val resp = httpRequest(
-                    "GET",
-                    "/api/hermes/sessions/" +
-                        URLEncoder.encode(session.id, "UTF-8") + "/messages"
-                )
-                val arr = JSONArray(resp)
-                val messages = ArrayList<Message>()
-                for (i in 0 until arr.length()) {
-                    val m = arr.optJSONObject(i) ?: continue
-                    messages.add(
-                        Message(
-                            role = m.optString("role", "unknown"),
-                            content = extractContent(m),
-                            timestamp = m.optString("timestamp", ""),
-                        )
-                    )
+                val dbFile = stateDbFile()
+                if (!dbFile.exists()) {
+                    handler.post {
+                        progressDialog.dismiss()
+                        Toast.makeText(
+                            this,
+                            "数据库不存在（Hermes 可能未安装或尚未产生会话）",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return@Thread
                 }
+                db = openStateDb(dbFile.absolutePath)
+
+                val tables = listTables(db)
+                val sessionInfo = discoverSessionTable(db, tables)
+                val messageInfo = discoverMessageTable(db, tables, sessionInfo)
+                    ?: throw IllegalStateException("未找到消息表（messages/chat_messages 等）")
+                val fk = messageInfo.colSessionFk
+                    ?: throw IllegalStateException(
+                        "消息表 '${messageInfo.name}' 缺少会话外键列"
+                    )
+
+                val messages = queryMessages(db, messageInfo, fk, session.id)
                 handler.post {
                     progressDialog.dismiss()
                     if (messages.isEmpty()) {
@@ -501,6 +543,8 @@ class SessionHistoryActivity : AppCompatActivity() {
                     progressDialog.dismiss()
                     Toast.makeText(this, "加载消息失败：${e.message}", Toast.LENGTH_LONG).show()
                 }
+            } finally {
+                db?.close()
             }
         }.start()
     }
@@ -646,29 +690,33 @@ class SessionHistoryActivity : AppCompatActivity() {
             .show()
     }
 
-    // ── API 调用 ─────────────────────────────────────────────────────────
+    // ── 数据加载（直接读取 SQLite） ──────────────────────────────────────
 
-    /** GET /api/hermes/sessions → 解析并渲染卡片。 */
+    /** 打开 state.db → 发现 schema → 查询会话列表 → 渲染卡片。 */
     private fun loadSessions() {
         showLoading()
         Thread {
+            var db: SQLiteDatabase? = null
             try {
-                val resp = httpRequest("GET", "/api/hermes/sessions")
-                val arr = JSONArray(resp)
-                val parsed = ArrayList<Session>()
-                for (i in 0 until arr.length()) {
-                    val s = arr.optJSONObject(i) ?: continue
-                    parsed.add(
-                        Session(
-                            id = s.optString("id", ""),
-                            title = s.optString("title", ""),
-                            createdAt = s.optString("created_at", ""),
-                            messageCount = s.optInt("message_count", 0),
-                            provider = s.optString("provider", ""),
-                            model = s.optString("model", ""),
-                        )
-                    )
+                val dbFile = stateDbFile()
+                if (!dbFile.exists()) {
+                    handler.post {
+                        showError("数据库不存在（Hermes 可能未安装或尚未产生会话）")
+                    }
+                    return@Thread
                 }
+                db = openStateDb(dbFile.absolutePath)
+
+                val tables = listTables(db)
+                if (tables.isEmpty()) {
+                    handler.post { showError("数据库中未找到任何数据表") }
+                    return@Thread
+                }
+
+                val sessionInfo = discoverSessionTable(db, tables)
+                val messageInfo = discoverMessageTable(db, tables, sessionInfo)
+
+                val parsed = querySessions(db, sessionInfo, messageInfo)
                 // 按创建时间倒序（最新在前）
                 parsed.sortByDescending { it.createdAt }
                 handler.post {
@@ -679,39 +727,393 @@ class SessionHistoryActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "loadSessions failed", e)
                 handler.post { showError(e.message ?: "未知错误") }
+            } finally {
+                db?.close()
             }
         }.start()
     }
 
-    // ── HTTP 工具 ────────────────────────────────────────────────────────
+    // ── SQLite 工具 ─────────────────────────────────────────────────────
+
+    /** state.db 的 host 路径：filesDir/home/.hermes/state.db。 */
+    private fun stateDbFile(): File = configManager.getStateDbPath()
 
     /**
-     * 执行一次 HTTP 请求，返回响应体字符串。
-     * 仅在后台线程调用；非 2xx 响应抛出 [IOException]。
+     * 以只读方式打开 state.db，并设置忙等待超时（容忍 Hermes daemon 并发写入）。
+     * 仅在后台线程调用。
      */
-    @Throws(IOException::class)
-    private fun httpRequest(method: String, path: String, body: String? = null): String {
-        val conn = (URL(BASE_URL + path).openConnection() as HttpURLConnection)
+    private fun openStateDb(path: String): SQLiteDatabase {
+        val db = SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY)
         try {
-            conn.requestMethod = method
-            conn.connectTimeout = 15000
-            conn.readTimeout = 30000
-            conn.instanceFollowRedirects = true
-            conn.setRequestProperty("Accept", "application/json")
-            if (body != null) {
-                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                conn.doOutput = true
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            // busy_timeout 是连接级设置，不写文件，只读连接也可设置
+            db.execSQL("PRAGMA busy_timeout = 3000")
+        } catch (_: Exception) {
+            // 忽略 — 不影响只读查询
+        }
+        return db
+    }
+
+    /** 列出数据库中所有用户表（排除 sqlite_/android_metadata/room 内部表）。 */
+    private fun listTables(db: SQLiteDatabase): List<String> {
+        val tables = ArrayList<String>()
+        db.rawQuery(
+            "SELECT name FROM sqlite_master WHERE type='table' " +
+                "AND name NOT LIKE 'sqlite_%' " +
+                "AND name NOT LIKE 'android_metadata' " +
+                "AND name NOT LIKE 'room_master_%'",
+            null
+        ).use { c ->
+            while (c.moveToNext()) {
+                tables.add(c.getString(0))
             }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-            if (code !in 200..299) {
-                throw IOException("HTTP $code: ${text.take(300)}")
+        }
+        return tables
+    }
+
+    /** 通过 PRAGMA table_info 获取表的列信息（含主键顺序）。 */
+    private fun getColumnInfo(db: SQLiteDatabase, table: String): List<ColumnInfo> {
+        val list = ArrayList<ColumnInfo>()
+        try {
+            db.rawQuery("PRAGMA table_info(\"$table\")", null).use { c ->
+                val nameIdx = c.getColumnIndexOrThrow("name")
+                val pkIdx = c.getColumnIndexOrThrow("pk")
+                while (c.moveToNext()) {
+                    val pk = c.getInt(pkIdx)
+                    list.add(ColumnInfo(name = c.getString(nameIdx), isPk = pk > 0, pkOrder = pk))
+                }
             }
-            return text
-        } finally {
-            conn.disconnect()
+        } catch (e: Exception) {
+            Log.w(TAG, "getColumnInfo($table) failed", e)
+        }
+        return list
+    }
+
+    /**
+     * 在列中查找匹配的列名。
+     * @param preferPk 是否优先取主键列
+     * @param exact    精确匹配关键词（按优先级，大小写不敏感）
+     * @param contains 包含匹配关键词（精确匹配全部失败后再尝试，按优先级）
+     */
+    private fun matchColumn(
+        cols: List<ColumnInfo>,
+        preferPk: Boolean = false,
+        exact: List<String> = emptyList(),
+        contains: List<String> = emptyList()
+    ): String? {
+        if (preferPk) {
+            cols.filter { it.isPk }.minByOrNull { it.pkOrder }?.let { return it.name }
+        }
+        val lower = cols.map { it.name.lowercase() }
+        for (kw in exact) {
+            val idx = lower.indexOf(kw.lowercase())
+            if (idx >= 0) return cols[idx].name
+        }
+        for (kw in contains) {
+            val lkw = kw.lowercase()
+            val idx = lower.indexOfFirst { it.contains(lkw) }
+            if (idx >= 0) return cols[idx].name
+        }
+        return null
+    }
+
+    /** 查找 id/主键列：主键 → 精确名 → 安全包含名（避免 "id" 误命中 modified 等）。 */
+    private fun findIdColumn(cols: List<ColumnInfo>): String? {
+        cols.filter { it.isPk }.minByOrNull { it.pkOrder }?.let { return it.name }
+        val lower = cols.map { it.name.lowercase() }
+        val exactIds = listOf(
+            "id", "session_id", "sessionid", "conversation_id", "conversationid",
+            "thread_id", "threadid", "message_id", "messageid",
+            "uuid", "uid", "mid", "sid", "oid", "guid"
+        )
+        for (kw in exactIds) {
+            val idx = lower.indexOf(kw)
+            if (idx >= 0) return cols[idx].name
+        }
+        val containsIds = listOf(
+            "session_id", "sessionid", "conversation_id", "conversationid",
+            "thread_id", "threadid", "message_id", "messageid",
+            "uuid", "uid", "guid"
+        )
+        for (kw in containsIds) {
+            val idx = lower.indexOfFirst { it.contains(kw) }
+            if (idx >= 0) return cols[idx].name
+        }
+        return null
+    }
+
+    /** 按优先级挑选会话表（sessions / conversation / thread / chat，不含 message）。 */
+    private fun pickSessionTable(tables: List<String>): String? {
+        val lower = tables.map { it.lowercase() }
+        for (name in listOf(
+            "sessions", "session", "conversations", "conversation",
+            "threads", "thread", "chats", "chat"
+        )) {
+            val idx = lower.indexOf(name)
+            if (idx >= 0) return tables[idx]
+        }
+        // 回退：名称含 session/conversation/thread/chat 且不含 message/msg
+        for (i in lower.indices) {
+            val t = lower[i]
+            if ((t.contains("session") || t.contains("conversation") ||
+                    t.contains("thread") || t.contains("chat")) &&
+                !t.contains("message") && !t.contains("msg")
+            ) {
+                return tables[i]
+            }
+        }
+        return null
+    }
+
+    /** 按优先级挑选消息表（messages / chat_messages / conversation_messages ...）。 */
+    private fun pickMessageTable(tables: List<String>): String? {
+        val lower = tables.map { it.lowercase() }
+        for (name in listOf(
+            "messages", "message", "chat_messages", "chatmessages",
+            "conversation_messages", "conversationmessages",
+            "session_messages", "sessionmessages", "msgs", "msg"
+        )) {
+            val idx = lower.indexOf(name)
+            if (idx >= 0) return tables[idx]
+        }
+        for (i in lower.indices) {
+            if (lower[i].contains("message") || lower[i].contains("msg")) {
+                return tables[i]
+            }
+        }
+        return null
+    }
+
+    /** 发现会话表并映射字段。找不到则抛出 [IllegalStateException]。 */
+    private fun discoverSessionTable(
+        db: SQLiteDatabase,
+        tables: List<String>
+    ): SessionTableInfo {
+        val name = pickSessionTable(tables)
+            ?: throw IllegalStateException(
+                "未找到会话表（sessions/conversation/thread/chat）"
+            )
+        val cols = getColumnInfo(db, name)
+        if (cols.isEmpty()) throw IllegalStateException("会话表 '$name' 无可读列")
+        return SessionTableInfo(
+            name = name,
+            colId = findIdColumn(cols),
+            colTitle = matchColumn(
+                cols,
+                exact = listOf("title", "name", "summary", "subject", "label", "heading", "topic"),
+                contains = listOf("title", "summary", "subject", "heading", "label", "topic")
+            ),
+            colCreatedAt = matchColumn(
+                cols,
+                exact = listOf(
+                    "created_at", "created", "create_time", "createdtime",
+                    "timestamp", "ts", "time", "date", "start_time", "starttime", "begintime"
+                ),
+                contains = listOf("created", "timestamp", "create_time", "start_time", "starttime")
+            ),
+            colProvider = matchColumn(
+                cols,
+                exact = listOf("provider", "backend", "engine", "vendor", "source"),
+                contains = listOf("provider", "backend", "engine", "vendor")
+            ),
+            colModel = matchColumn(
+                cols,
+                exact = listOf("model", "model_name", "modelname", "model_id"),
+                contains = listOf("model")
+            ),
+            colMessageCount = matchColumn(
+                cols,
+                exact = listOf(
+                    "message_count", "messagecount", "msg_count", "msgcount",
+                    "num_messages", "nummessages", "messages_count", "messagescount"
+                ),
+                contains = listOf(
+                    "message_count", "msg_count", "num_messages", "messagecount", "msgcount"
+                )
+            ),
+        )
+    }
+
+    /** 发现消息表并映射字段。找不到返回 null。 */
+    private fun discoverMessageTable(
+        db: SQLiteDatabase,
+        tables: List<String>,
+        sessionInfo: SessionTableInfo
+    ): MessageTableInfo? {
+        val name = pickMessageTable(tables) ?: return null
+        val cols = getColumnInfo(db, name)
+        if (cols.isEmpty()) return null
+        return MessageTableInfo(
+            name = name,
+            colId = findIdColumn(cols),
+            colRole = matchColumn(
+                cols,
+                exact = listOf("role", "sender", "author", "actor", "speaker", "from", "source", "origin"),
+                contains = listOf("role", "sender", "author", "actor", "speaker")
+            ),
+            colContent = matchColumn(
+                cols,
+                exact = listOf("content", "text", "body", "message", "data", "payload", "value", "content_text", "msg"),
+                contains = listOf("content", "payload", "body", "data")
+            ),
+            colTimestamp = matchColumn(
+                cols,
+                exact = listOf(
+                    "timestamp", "created_at", "created", "create_time",
+                    "time", "date", "ts", "sent_at", "sent_time"
+                ),
+                contains = listOf("timestamp", "created", "sent", "create_time")
+            ),
+            colSessionFk = findSessionFk(cols, sessionInfo),
+        )
+    }
+
+    /** 在消息表中查找会话外键列。 */
+    private fun findSessionFk(cols: List<ColumnInfo>, sessionInfo: SessionTableInfo): String? {
+        val lower = cols.map { it.name.lowercase() }
+        val fkNames = listOf(
+            "session_id", "sessionid", "conversation_id", "conversationid",
+            "thread_id", "threadid", "chat_id", "chatid",
+            "session", "conversation", "thread", "chat"
+        )
+        // 1. 精确匹配
+        for (kw in fkNames) {
+            val idx = lower.indexOf(kw)
+            if (idx >= 0) return cols[idx].name
+        }
+        // 2. 包含匹配
+        for (kw in fkNames) {
+            val idx = lower.indexOfFirst { it.contains(kw) }
+            if (idx >= 0) return cols[idx].name
+        }
+        // 3. 与会话表 id 同名（且非通用 "id"，避免误取消息自身主键）
+        sessionInfo.colId?.let { sid ->
+            if (sid.lowercase() != "id") {
+                val idx = lower.indexOf(sid.lowercase())
+                if (idx >= 0) return cols[idx].name
+            }
+        }
+        // 4. 回退：非主键且以 "_id" 结尾的列
+        cols.firstOrNull { !it.isPk && it.name.lowercase().endsWith("_id") }?.let { return it.name }
+        return null
+    }
+
+    /** 构建会话表 SELECT 的列片段（带别名，避免 JOIN 时列名歧义）。 */
+    private fun buildSessionSelectColumns(s: SessionTableInfo): String {
+        val seen = LinkedHashSet<String>()
+        val cols = mutableListOf<String>()
+        fun add(col: String?) {
+            if (col != null && seen.add(col.lowercase())) {
+                cols.add("s.\"$col\" AS \"$col\"")
+            }
+        }
+        add(s.colId)
+        add(s.colTitle)
+        add(s.colCreatedAt)
+        add(s.colProvider)
+        add(s.colModel)
+        return if (cols.isEmpty()) "NULL" else cols.joinToString(", ")
+    }
+
+    /** 查询全部会话。消息数优先取自带列，否则 JOIN COUNT，再否则 0。 */
+    private fun querySessions(
+        db: SQLiteDatabase,
+        s: SessionTableInfo,
+        m: MessageTableInfo?
+    ): ArrayList<Session> {
+        val parsed = ArrayList<Session>()
+        val idCol = s.colId
+            ?: throw IllegalStateException("会话表 '${s.name}' 缺少 id/主键列")
+
+        val sql: String = when {
+            // 自带消息数列
+            s.colMessageCount != null -> {
+                val cols = buildSessionSelectColumns(s)
+                "SELECT $cols, s.\"${s.colMessageCount}\" AS \"__msg_count\" " +
+                    "FROM \"${s.name}\" s"
+            }
+            // 通过消息表 JOIN 计算消息数
+            m != null && m.colSessionFk != null -> {
+                val cols = buildSessionSelectColumns(s)
+                val fk = m.colSessionFk
+                "SELECT $cols, COUNT(m.\"$fk\") AS \"__msg_count\" " +
+                    "FROM \"${s.name}\" s " +
+                    "LEFT JOIN \"${m.name}\" m ON m.\"$fk\" = s.\"$idCol\" " +
+                    "GROUP BY s.\"$idCol\""
+            }
+            // 无法计算消息数
+            else -> {
+                val cols = buildSessionSelectColumns(s)
+                "SELECT $cols, 0 AS \"__msg_count\" FROM \"${s.name}\" s"
+            }
+        }
+
+        db.rawQuery(sql, null).use { c ->
+            while (c.moveToNext()) {
+                parsed.add(
+                    Session(
+                        id = readString(c, idCol) ?: "",
+                        title = s.colTitle?.let { readString(c, it) } ?: "",
+                        createdAt = s.colCreatedAt?.let { readString(c, it) } ?: "",
+                        messageCount = readCount(c, "__msg_count"),
+                        provider = s.colProvider?.let { readString(c, it) } ?: "",
+                        model = s.colModel?.let { readString(c, it) } ?: "",
+                    )
+                )
+            }
+        }
+        return parsed
+    }
+
+    /** 按会话 id 查询消息列表（按时间升序）。 */
+    private fun queryMessages(
+        db: SQLiteDatabase,
+        m: MessageTableInfo,
+        fkCol: String,
+        sessionId: String
+    ): ArrayList<Message> {
+        val parsed = ArrayList<Message>()
+        val selectParts = mutableListOf<String>()
+        if (m.colRole != null) selectParts.add("\"${m.colRole}\" AS \"__role\"")
+        if (m.colContent != null) selectParts.add("\"${m.colContent}\" AS \"__content\"")
+        if (m.colTimestamp != null) selectParts.add("\"${m.colTimestamp}\" AS \"__ts\"")
+        if (selectParts.isEmpty()) return parsed
+
+        val orderBy = if (m.colTimestamp != null) " ORDER BY \"__ts\" ASC" else ""
+        val sql = "SELECT ${selectParts.joinToString(", ")} FROM \"${m.name}\" " +
+            "WHERE \"$fkCol\" = ?$orderBy"
+        db.rawQuery(sql, arrayOf(sessionId)).use { c ->
+            while (c.moveToNext()) {
+                val role = readString(c, "__role") ?: "unknown"
+                val content = readString(c, "__content") ?: ""
+                val ts = readString(c, "__ts") ?: ""
+                parsed.add(
+                    Message(
+                        role = role.ifEmpty { "unknown" },
+                        content = extractContentString(content),
+                        timestamp = ts,
+                    )
+                )
+            }
+        }
+        return parsed
+    }
+
+    /** 读取文本列（对整数/浮点存储也兼容，返回其字符串形式）。 */
+    private fun readString(c: Cursor, colName: String): String? {
+        val idx = c.getColumnIndex(colName)
+        if (idx < 0 || c.isNull(idx)) return null
+        return c.getString(idx)
+    }
+
+    /** 读取 __msg_count 列，兼容整数/浮点/字符串数字存储。 */
+    private fun readCount(c: Cursor, colName: String): Int {
+        val idx = c.getColumnIndex(colName)
+        if (idx < 0 || c.isNull(idx)) return 0
+        return when (c.getType(idx)) {
+            Cursor.FIELD_TYPE_INTEGER -> c.getInt(idx)
+            Cursor.FIELD_TYPE_FLOAT -> c.getInt(idx)
+            Cursor.FIELD_TYPE_STRING -> c.getString(idx).trim().toIntOrNull() ?: 0
+            else -> 0
         }
     }
 
@@ -720,6 +1122,8 @@ class SessionHistoryActivity : AppCompatActivity() {
     /**
      * 从消息 JSON 提取内容文本。
      * content 可能是字符串，也可能是内容块数组（Anthropic / OpenAI 格式）。
+     *
+     * 保持不变：用于解析消息对象中 content 字段为 JSON 对象/数组的情形。
      */
     private fun extractContent(obj: JSONObject): String {
         val content = obj.opt("content") ?: return ""
@@ -746,6 +1150,55 @@ class SessionHistoryActivity : AppCompatActivity() {
                 sb.toString()
             }
             else -> content.toString()
+        }
+    }
+
+    /**
+     * 从数据库中读取的原始 content 字段提取文本。
+     * content 可能是纯文本，也可能是 JSON：
+     *   - JSON 数组（内容块，如 OpenAI/Anthropic 格式）
+     *   - JSON 对象（可能含 content/text 字段，或单个内容块对象）
+     *   - 纯文本
+     * 解析失败时原样返回。
+     */
+    private fun extractContentString(raw: String): String {
+        if (raw.isBlank()) return ""
+        val trimmed = raw.trim()
+        return try {
+            when {
+                trimmed.startsWith("[") -> {
+                    val arr = JSONArray(trimmed)
+                    val sb = StringBuilder()
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optJSONObject(i) ?: continue
+                        val type = item.optString("type", "")
+                        if (type == "text" || item.has("text")) {
+                            val t = item.optString("text", "")
+                            if (t.isNotEmpty()) {
+                                if (sb.isNotEmpty()) sb.append("\n")
+                                sb.append(t)
+                            }
+                        } else if (type == "tool_use" || type == "tool_result") {
+                            val name = item.optString("name", type)
+                            if (sb.isNotEmpty()) sb.append("\n")
+                            sb.append("[$name]")
+                        }
+                    }
+                    sb.toString().ifEmpty { raw }
+                }
+                trimmed.startsWith("{") -> {
+                    val obj = JSONObject(trimmed)
+                    when {
+                        obj.has("content") -> extractContent(obj)
+                        obj.has("text") -> obj.optString("text", "")
+                        obj.has("body") -> obj.optString("body", "")
+                        else -> raw
+                    }
+                }
+                else -> raw
+            }
+        } catch (e: Exception) {
+            raw
         }
     }
 

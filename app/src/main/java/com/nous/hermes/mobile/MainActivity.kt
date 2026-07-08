@@ -259,14 +259,10 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, TerminalActivity::class.java))
         }
         btnModelManagement.setOnClickListener {
-            ensureWebUIRunning {
-                startActivity(Intent(this, ModelManagementActivity::class.java))
-            }
+            startActivity(Intent(this, ModelManagementActivity::class.java))
         }
         btnSessionHistory.setOnClickListener {
-            ensureWebUIRunning {
-                startActivity(Intent(this, SessionHistoryActivity::class.java))
-            }
+            startActivity(Intent(this, SessionHistoryActivity::class.java))
         }
         btnCronJobs.setOnClickListener {
             ensureWebUIRunning {
