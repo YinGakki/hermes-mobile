@@ -127,6 +127,18 @@ class TerminalScreen(
     // ── DSR 回调：TUI 查询光标位置时通过此回调向 PTY 回写应答 ──
     var dsrCallback: ((String) -> Unit)? = null
 
+    // ── 鼠标回调：点击事件通过此回调向 PTY 回写鼠标转义序列 ──
+    var mouseCallback: ((String) -> Unit)? = null
+
+    // ── 鼠标模式状态 ──
+    private var mouseEnabled = false       // ?1000 — 基本鼠标
+    private var mouseButtonEvent = false   // ?1002 — 按钮事件（含拖拽）
+    private var mouseSgrMode = false       // ?1006 — SGR 编码
+    private var mouseAnyEvent = false      // ?1003 — 任意事件（含移动）
+
+    /** 判断鼠标是否已启用 */
+    val isMouseEnabled: Boolean get() = mouseEnabled || mouseButtonEvent || mouseAnyEvent
+
     // ── 自动换行模式（默认开启） ──
     private var autoWrap = true
 
@@ -414,7 +426,11 @@ class TerminalScreen(
                             25 -> cursorVisible = true
                             1049, 47 -> enterAltScreen()
                             7 -> autoWrap = true
-                            // ?1, ?2004 (bracketed paste), ?1000-?1006 (mouse) — 忽略
+                            1000 -> mouseEnabled = true
+                            1002 -> mouseButtonEvent = true
+                            1003 -> mouseAnyEvent = true
+                            1006 -> mouseSgrMode = true
+                            // ?1, ?2004 (bracketed paste) — 忽略
                         }
                     }
                 }
@@ -426,6 +442,10 @@ class TerminalScreen(
                             25 -> cursorVisible = false
                             1049, 47 -> exitAltScreen()
                             7 -> autoWrap = false
+                            1000 -> mouseEnabled = false
+                            1002 -> mouseButtonEvent = false
+                            1003 -> mouseAnyEvent = false
+                            1006 -> mouseSgrMode = false
                         }
                     }
                 }
@@ -738,6 +758,33 @@ class TerminalScreen(
         usingAltScreen = false
         dirty = true
         Log.i(TAG, "Exited alternate screen buffer")
+    }
+
+    /**
+     * 处理鼠标点击事件 — 将行列号编码为鼠标转义序列并发送给 PTY。
+     *
+     * SGR 模式 (1006):  ESC[<button;x;yM (按下)  ESC[<button;x;ym (释放)
+     * 普通模式 (1000):  ESC[M + 3 字节 (button+32, x+32, y+32)
+     *
+     * @param row 0-based 行号
+     * @param col 0-based 列号
+     * @param button 0=左键 1=中键 2=右键
+     * @param isPress true=按下 false=释放
+     */
+    fun reportMouseEvent(row: Int, col: Int, button: Int, isPress: Boolean) {
+        if (!isMouseEnabled) return
+        val r = (row + 1).coerceAtLeast(1)
+        val c = (col + 1).coerceAtLeast(1)
+
+        if (mouseSgrMode) {
+            // SGR 编码: ESC[<button;x;yM (按下) / ESC[<button;x;ym (释放)
+            val suffix = if (isPress) 'M' else 'm'
+            mouseCallback?.invoke("\u001B[<${button};${c};${r}${suffix}")
+        } else {
+            // 传统编码: ESC[M 后跟 3 个字节
+            val b = (if (isPress) button + 32 else 3 + 32) // 释放统一用 3
+            mouseCallback?.invoke("\u001B[M${b.toChar()}${(c + 32).toChar()}${(r + 32).toChar()}")
+        }
     }
 
     private fun saveCursor() {

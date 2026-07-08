@@ -7,6 +7,7 @@ import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.util.AttributeSet
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -126,6 +127,46 @@ class TerminalView @JvmOverloads constructor(
 
     fun sendByteToPty(byte: Int) {
         onUserInput?.invoke(byteArrayOf(byte.toByte()))
+    }
+
+    // ── 触摸/鼠标支持 ──
+    // 当 TUI 应用启用鼠标模式时，将触摸点击转换为鼠标转义序列
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        // 只在鼠标模式启用时拦截触摸事件
+        if (!screen.isMouseEnabled) {
+            return super.onTouchEvent(event)
+        }
+
+        val paint = this.paint
+        val charWidth = if (paint.measureText("M") > 0) paint.measureText("M") else 7f
+        val charHeight = maxOf(lineHeight, 1)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val col = ((event.x - paddingLeft) / charWidth).toInt().coerceIn(0, screen.cols - 1)
+                val row = ((event.y - paddingTop) / charHeight).toInt().coerceIn(0, screen.rows - 1)
+                screen.reportMouseEvent(row, col, button = 0, isPress = true)
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                val col = ((event.x - paddingLeft) / charWidth).toInt().coerceIn(0, screen.cols - 1)
+                val row = ((event.y - paddingTop) / charHeight).toInt().coerceIn(0, screen.rows - 1)
+                screen.reportMouseEvent(row, col, button = 0, isPress = false)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                // 拖拽（鼠标移动+按下）— 仅在 button-event 或 any-event 模式下报告
+                if (screen.isMouseEnabled) {
+                    val col = ((event.x - paddingLeft) / charWidth).toInt().coerceIn(0, screen.cols - 1)
+                    val row = ((event.y - paddingTop) / charHeight).toInt().coerceIn(0, screen.rows - 1)
+                    // 用 button=32 表示拖拽中（SGR 模式下 Cb=32+0=32）
+                    screen.reportMouseEvent(row, col, button = 32, isPress = true)
+                    return true
+                }
+            }
+        }
+        return super.onTouchEvent(event)
     }
 
     fun sendCharWithCtrl(ch: Char) {

@@ -321,6 +321,10 @@ class TerminalActivity : AppCompatActivity() {
         terminalView.screen.dsrCallback = { response ->
             TerminalSession.write(response.toByteArray())
         }
+        // 设置鼠标回调 — TUI 应用启用鼠标模式后，将触摸点击编码为鼠标转义序列
+        terminalView.screen.mouseCallback = { response ->
+            TerminalSession.write(response.toByteArray())
+        }
 
         if (TerminalSession.isRunning()) {
             // 恢复现有会话
