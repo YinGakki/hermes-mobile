@@ -200,9 +200,11 @@ class SubSettingsActivity : AppCompatActivity() {
         hermesCard.setOnClickListener {
             val cached = lastHermesUpdate
             if (cached != null) {
-                // 已检测到更新 — 返回 MainActivity 执行更新
-                setResult(RESULT_UPDATE_HERMES)
-                finish()
+                // 有缓存 — 重新检测确认仍有更新，然后执行
+                recheckThenUpdate("hermes") {
+                    setResult(RESULT_UPDATE_HERMES)
+                    finish()
+                }
             } else {
                 // 未检测或无更新 — 重新检测
                 checkSingleUpdate("hermes")
@@ -226,9 +228,11 @@ class SubSettingsActivity : AppCompatActivity() {
         webuiCard.setOnClickListener {
             val cached = lastWebuiUpdate
             if (cached != null) {
-                // 已检测到更新 — 返回 MainActivity 执行更新
-                setResult(RESULT_UPDATE_WEBUI)
-                finish()
+                // 有缓存 — 重新检测确认仍有更新，然后执行
+                recheckThenUpdate("webui") {
+                    setResult(RESULT_UPDATE_WEBUI)
+                    finish()
+                }
             } else {
                 // 未检测或无更新 — 重新检测
                 checkSingleUpdate("webui")
@@ -309,8 +313,15 @@ class SubSettingsActivity : AppCompatActivity() {
         apkCard.setOnClickListener {
             val cached = lastApkUpdate
             if (cached != null) {
-                // 已检测到更新 — 显示更新对话框
-                showApkUpdateDialog(cached)
+                // 有缓存 — 重新检测确认仍有更新，然后显示对话框
+                recheckThenUpdate("apk") {
+                    val latest = lastApkUpdate
+                    if (latest != null) {
+                        showApkUpdateDialog(latest)
+                    } else {
+                        Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
+                    }
+                }
             } else {
                 // 未检测或无更新 — 重新检测
                 checkSingleUpdate("apk")
@@ -504,37 +515,152 @@ class SubSettingsActivity : AppCompatActivity() {
         }
     }
 
-    /** 只显示当前版本号，不检测更新 */
+    /** 只显示当前版本号，并读取上次缓存的检测结果 */
     private fun showCurrentVersionsOnly() {
         val defaultColor = 0xFF64748b.toInt()
+        val prefs = getSharedPreferences("update_cache", Context.MODE_PRIVATE)
 
-        // Hermes 版本 — 后台获取本地版本
+        // Hermes 版本 — 后台获取本地版本 + 读取缓存
         hermesVersionText.text = "获取中…"
         hermesVersionText.setTextColor(defaultColor)
         Thread {
             val hermesVer = try { serverManager.getHermesVersion() } catch (e: Exception) { null }
             handler.post {
                 hermesVersionText.text = hermesVer ?: if (serverManager.isHermesInstalled()) "已安装" else "未安装"
+                // 读取缓存
+                val cachedHermes = prefs.getString("hermes_latest", null)
+                if (cachedHermes != null && hermesVer != null) {
+                    lastHermesUpdate = cachedHermes
+                    hermesVersionText.text = "$hermesVer → $cachedHermes"
+                    hermesVersionText.setTextColor(0xFF10b981.toInt())
+                    hermesUpdateBadge.visibility = View.VISIBLE
+                }
             }
         }.start()
 
-        // WebUI 版本 — 后台获取本地版本
+        // WebUI 版本 — 后台获取本地版本 + 读取缓存
         webuiVersionText.text = "获取中…"
         webuiVersionText.setTextColor(defaultColor)
         Thread {
             val webuiVer = try { studioInstaller.getWebUIVersion() } catch (e: Exception) { null }
             handler.post {
                 webuiVersionText.text = webuiVer ?: if (studioInstaller.isInstalled()) "已安装" else "未安装"
+                // 读取缓存
+                val cachedWebui = prefs.getString("webui_latest", null)
+                if (cachedWebui != null && webuiVer != null) {
+                    lastWebuiUpdate = cachedWebui
+                    webuiVersionText.text = "$webuiVer → $cachedWebui"
+                    webuiVersionText.setTextColor(0xFF10b981.toInt())
+                    webuiUpdateBadge.visibility = View.VISIBLE
+                }
             }
         }.start()
 
-        // APK 版本 — 直接从 PackageInfo 获取
+        // APK 版本 — 直接从 PackageInfo 获取 + 读取缓存
         apkVersionText.text = getVersionDisplayText()
         apkVersionText.setTextColor(defaultColor)
+        // 读取 APK 缓存
+        val cachedApkVer = prefs.getString("apk_version", null)
+        val cachedApkUrl = prefs.getString("apk_url", null)
+        val cachedApkSize = prefs.getLong("apk_size", 0L)
+        val cachedApkBeta = prefs.getBoolean("apk_beta", false)
+        val cachedApkTag = prefs.getString("apk_tag", null)
+        val cachedApkBody = prefs.getString("apk_body", null)
+        val cachedApkName = prefs.getString("apk_name", null)
+        val cachedApkUrl2 = prefs.getString("apk_release_url", null)
+        val cachedApkSha = prefs.getString("apk_sha256", null)
+        if (cachedApkVer != null && cachedApkUrl != null) {
+            lastApkUpdate = ApkUpdateInfo(
+                version = cachedApkVer,
+                tagName = cachedApkTag ?: "",
+                downloadUrl = cachedApkUrl,
+                changelog = cachedApkBody ?: "",
+                isBeta = cachedApkBeta,
+                releaseName = cachedApkName ?: "",
+                releaseUrl = cachedApkUrl2 ?: "",
+                fileSize = cachedApkSize,
+                releaseSha256 = cachedApkSha,
+            )
+            apkVersionText.text = "${getVersionDisplayText()} → $cachedApkVer"
+            apkVersionText.setTextColor(0xFF10b981.toInt())
+            apkUpdateBadge.visibility = View.VISIBLE
+        }
+    }
+
+    /**
+     * 重新检测更新，确认仍有更新后执行 action。
+     * 用于点击卡片执行更新前的二次确认，防止使用过期缓存。
+     */
+    private fun recheckThenUpdate(component: String, action: () -> Unit) {
+        val checking = Toast.makeText(this, "正在确认更新…", Toast.LENGTH_SHORT)
+        checking.show()
+        Thread {
+            // 后台重新检测
+            when (component) {
+                "hermes" -> {
+                    val hermesVer = try { serverManager.getHermesVersion() } catch (e: Exception) { null }
+                    val latest = if (hermesVer != null) try { serverManager.checkHermesUpdate() } catch (e: Exception) { null } else null
+                    handler.post {
+                        lastHermesUpdate = latest
+                        if (latest != null) {
+                            action()
+                        } else {
+                            // 缓存已过期，更新 UI
+                            hermesVersionText.text = "$hermesVer (最新)"
+                            hermesVersionText.setTextColor(0xFF64748b.toInt())
+                            hermesUpdateBadge.visibility = View.GONE
+                            getSharedPreferences("update_cache", Context.MODE_PRIVATE)
+                                .edit().remove("hermes_latest").apply()
+                            Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                "webui" -> {
+                    val webuiVer = try { studioInstaller.getWebUIVersion() } catch (e: Exception) { null }
+                    val latest = if (webuiVer != null) try { studioInstaller.checkWebUIUpdate() } catch (e: Exception) { null } else null
+                    handler.post {
+                        lastWebuiUpdate = latest
+                        if (latest != null) {
+                            action()
+                        } else {
+                            webuiVersionText.text = "$webuiVer (最新)"
+                            webuiVersionText.setTextColor(0xFF64748b.toInt())
+                            webuiUpdateBadge.visibility = View.GONE
+                            getSharedPreferences("update_cache", Context.MODE_PRIVATE)
+                                .edit().remove("webui_latest").apply()
+                            Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                "apk" -> {
+                    val apkVer = getVersionName()
+                    val channel = getUpdateChannel()
+                    val apkPath = getLocalApkPath()
+                    val apkUpdate = try { ApkUpdateChecker.checkUpdate(apkVer, channel, apkPath) } catch (e: Exception) { null }
+                    lastApkUpdate = apkUpdate
+                    handler.post {
+                        if (apkUpdate != null) {
+                            action()
+                        } else {
+                            apkVersionText.text = "${getVersionDisplayText()} (最新)"
+                            apkVersionText.setTextColor(0xFF64748b.toInt())
+                            apkUpdateBadge.visibility = View.GONE
+                            getSharedPreferences("update_cache", Context.MODE_PRIVATE).edit().apply {
+                                remove("apk_version"); remove("apk_tag"); remove("apk_url")
+                                remove("apk_body"); remove("apk_beta"); remove("apk_name")
+                                remove("apk_release_url"); remove("apk_size"); remove("apk_sha256")
+                            }.apply()
+                            Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }.start()
     }
 
     /** 检测单个组件的更新 */
     private fun checkSingleUpdate(component: String) {
+        val prefs = getSharedPreferences("update_cache", Context.MODE_PRIVATE)
         // 清除对应缓存，允许重新检测
         when (component) {
             "hermes" -> lastHermesUpdate = null
@@ -559,6 +685,11 @@ class SubSettingsActivity : AppCompatActivity() {
                             hermesVersionText.text = "$hermesVer (最新)"
                         }
                         lastHermesUpdate = latest
+                        // 写入/清除缓存
+                        prefs.edit().apply {
+                            if (latest != null) putString("hermes_latest", latest)
+                            else remove("hermes_latest")
+                        }.apply()
                     }
                 }.start()
             }
@@ -579,6 +710,11 @@ class SubSettingsActivity : AppCompatActivity() {
                             webuiVersionText.text = "$webuiVer (最新)"
                         }
                         lastWebuiUpdate = latest
+                        // 写入/清除缓存
+                        prefs.edit().apply {
+                            if (latest != null) putString("webui_latest", latest)
+                            else remove("webui_latest")
+                        }.apply()
                     }
                 }.start()
             }
@@ -599,6 +735,34 @@ class SubSettingsActivity : AppCompatActivity() {
                         } else {
                             apkVersionText.text = "${getVersionDisplayText()} (最新)"
                         }
+                        // 写入/清除缓存
+                        prefs.edit().apply {
+                            if (apkUpdate != null) {
+                                putString("apk_version", apkUpdate.version)
+                                putString("apk_tag", apkUpdate.tagName)
+                                putString("apk_url", apkUpdate.downloadUrl)
+                                putString("apk_body", apkUpdate.changelog)
+                                putBoolean("apk_beta", apkUpdate.isBeta)
+                                putString("apk_name", apkUpdate.releaseName)
+                                putString("apk_release_url", apkUpdate.releaseUrl)
+                                putLong("apk_size", apkUpdate.fileSize)
+                                if (apkUpdate.releaseSha256 != null) {
+                                    putString("apk_sha256", apkUpdate.releaseSha256)
+                                } else {
+                                    remove("apk_sha256")
+                                }
+                            } else {
+                                remove("apk_version")
+                                remove("apk_tag")
+                                remove("apk_url")
+                                remove("apk_body")
+                                remove("apk_beta")
+                                remove("apk_name")
+                                remove("apk_release_url")
+                                remove("apk_size")
+                                remove("apk_sha256")
+                            }
+                        }.apply()
                     }
                 }.start()
             }

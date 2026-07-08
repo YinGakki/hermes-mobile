@@ -674,54 +674,25 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 备份类型选择对话框 — 用自定义 ListView 加分界线
+        // 备份类型选择对话框
         val items = arrayOf(
             "完整环境（~1GB，含 rootfs + 配置 + 数据）",
             "Hermes Agent 用户数据（会话/记忆/配置，几 MB）",
             "WebUI 用户数据（数据库/设置/上传，几 MB）",
         )
-        val listView = android.widget.ListView(this).apply {
-            divider = android.graphics.drawable.ColorDrawable(0xFF1e293b.toInt())
-            dividerHeight = (1 * resources.displayMetrics.density).toInt()
-            setBackgroundColor(0xFF0f172a.toInt())
-            layoutParams = android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
-        val adapter = object : android.widget.ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, items) {
-            override fun getView(position: Int, convertView: android.view.View?, parent: android.view.ViewGroup): android.view.View {
-                val tv = super.getView(position, convertView, parent) as android.widget.TextView
-                tv.setTextColor(0xFFe2e8f0.toInt())
-                tv.textSize = 14f
-                tv.setPadding(
-                    (24 * resources.displayMetrics.density).toInt(),
-                    (16 * resources.displayMetrics.density).toInt(),
-                    (24 * resources.displayMetrics.density).toInt(),
-                    (16 * resources.displayMetrics.density).toInt()
-                )
-                tv.setBackgroundColor(0xFF0f172a.toInt())
-                return tv
-            }
-        }
-        listView.adapter = adapter
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle("选择备份内容")
-            .setView(listView)
-            .setNegativeButton(R.string.cancel, null)
-            .create()
-        listView.setOnItemClickListener { _, _, which, _ ->
-            dialog.dismiss()
-            val type = when (which) {
-                0 -> HermesEnvBackup.BackupType.FULL
-                1 -> HermesEnvBackup.BackupType.AGENT_DATA
-                2 -> HermesEnvBackup.BackupType.WEBUI_DATA
-                else -> return@setOnItemClickListener
-            }
-            pendingBackupType = type
+            .setItems(items) { _, which ->
+                val type = when (which) {
+                    0 -> HermesEnvBackup.BackupType.FULL
+                    1 -> HermesEnvBackup.BackupType.AGENT_DATA
+                    2 -> HermesEnvBackup.BackupType.WEBUI_DATA
+                    else -> return@setItems
+                }
+                pendingBackupType = type
 
-            // 全量备份：如果 Hermes 未安装，提示部分备份
-            if (type == HermesEnvBackup.BackupType.FULL && !hermesDone) {
+                // 全量备份：如果 Hermes 未安装，提示部分备份
+                if (type == HermesEnvBackup.BackupType.FULL && !hermesDone) {
                     val statusLines = buildString {
                         append(if (prootDone) "✓" else "✗").append(" proot\n")
                         append(if (depsDone) "✓" else "✗").append(" 依赖 (Python + build deps)\n")
@@ -738,6 +709,8 @@ class MainActivity : AppCompatActivity() {
                     launchSaveEnv()
                 }
             }
+            .setNegativeButton(R.string.cancel, null)
+            .create()
         dialog.show()
     }
 
@@ -761,7 +734,7 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.env_confirm_restore_title)
             .setMessage(R.string.env_confirm_restore_msg)
-            .setPositiveButton(R.string.action_exit) { _, _ ->
+            .setPositiveButton("确认还原") { _, _ ->
                 // 用户确认 → 打开 SAF 选择 .tar.gz 备份文件
                 restoreEnvLauncher.launch(arrayOf("application/gzip", "application/x-gzip", "application/x-tar"))
             }
