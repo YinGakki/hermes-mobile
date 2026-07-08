@@ -805,7 +805,7 @@ class TerminalScreen(
         curUnderline = savedUnderline
     }
 
-    private fun resetScreen() {
+    fun resetScreen() {
         for (r in 0 until rows)
             for (c in 0 until cols)
                 clearCell(buffer[r][c])
