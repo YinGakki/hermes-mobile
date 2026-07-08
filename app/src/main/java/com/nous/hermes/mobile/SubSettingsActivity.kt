@@ -198,17 +198,7 @@ class SubSettingsActivity : AppCompatActivity() {
         hermesVersionText = hermesVer
         hermesUpdateBadge = hermesBadge
         hermesCard.setOnClickListener {
-            val cached = lastHermesUpdate
-            if (cached != null) {
-                // 有缓存 — 重新检测确认仍有更新，然后执行
-                recheckThenUpdate("hermes") {
-                    setResult(RESULT_UPDATE_HERMES)
-                    finish()
-                }
-            } else {
-                // 未检测或无更新 — 重新检测
-                checkSingleUpdate("hermes")
-            }
+            checkSingleUpdate("hermes")
         }
         container.addView(hermesCard)
 
@@ -226,17 +216,7 @@ class SubSettingsActivity : AppCompatActivity() {
         webuiVersionText = webuiVer
         webuiUpdateBadge = webuiBadge
         webuiCard.setOnClickListener {
-            val cached = lastWebuiUpdate
-            if (cached != null) {
-                // 有缓存 — 重新检测确认仍有更新，然后执行
-                recheckThenUpdate("webui") {
-                    setResult(RESULT_UPDATE_WEBUI)
-                    finish()
-                }
-            } else {
-                // 未检测或无更新 — 重新检测
-                checkSingleUpdate("webui")
-            }
+            checkSingleUpdate("webui")
         }
         container.addView(webuiCard)
 
@@ -311,21 +291,7 @@ class SubSettingsActivity : AppCompatActivity() {
             iconRes = R.drawable.ic_launcher_foreground
         )
         apkCard.setOnClickListener {
-            val cached = lastApkUpdate
-            if (cached != null) {
-                // 有缓存 — 重新检测确认仍有更新，然后显示对话框
-                recheckThenUpdate("apk") {
-                    val latest = lastApkUpdate
-                    if (latest != null) {
-                        showApkUpdateDialog(latest)
-                    } else {
-                        Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } else {
-                // 未检测或无更新 — 重新检测
-                checkSingleUpdate("apk")
-            }
+            checkSingleUpdate("apk")
         }
         container.addView(apkCard)
         updateChannelToggleUI()
@@ -588,74 +554,27 @@ class SubSettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * 重新检测更新，确认仍有更新后执行 action。
-     * 用于点击卡片执行更新前的二次确认，防止使用过期缓存。
+     * Hermes/WebUI 检测到更新后弹出确认对话框。
+     * 用户点击"更新"后返回 MainActivity 执行更新。
      */
-    private fun recheckThenUpdate(component: String, action: () -> Unit) {
-        val checking = Toast.makeText(this, "正在确认更新…", Toast.LENGTH_SHORT)
-        checking.show()
-        Thread {
-            // 后台重新检测
-            when (component) {
-                "hermes" -> {
-                    val hermesVer = try { serverManager.getHermesVersion() } catch (e: Exception) { null }
-                    val latest = if (hermesVer != null) try { serverManager.checkHermesUpdate() } catch (e: Exception) { null } else null
-                    handler.post {
-                        lastHermesUpdate = latest
-                        if (latest != null) {
-                            action()
-                        } else {
-                            // 缓存已过期，更新 UI
-                            hermesVersionText.text = "$hermesVer (最新)"
-                            hermesVersionText.setTextColor(0xFF64748b.toInt())
-                            hermesUpdateBadge.visibility = View.GONE
-                            getSharedPreferences("update_cache", Context.MODE_PRIVATE)
-                                .edit().remove("hermes_latest").apply()
-                            Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
-                        }
+    private fun showComponentUpdateDialog(name: String, currentVer: String, latestVer: String, component: String) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("发现 $name 新版本")
+            .setMessage("当前版本: $currentVer\n最新版本: $latestVer\n\n是否立即更新？")
+            .setPositiveButton("立即更新") { _, _ ->
+                when (component) {
+                    "hermes" -> {
+                        setResult(RESULT_UPDATE_HERMES)
+                        finish()
                     }
-                }
-                "webui" -> {
-                    val webuiVer = try { studioInstaller.getWebUIVersion() } catch (e: Exception) { null }
-                    val latest = if (webuiVer != null) try { studioInstaller.checkWebUIUpdate() } catch (e: Exception) { null } else null
-                    handler.post {
-                        lastWebuiUpdate = latest
-                        if (latest != null) {
-                            action()
-                        } else {
-                            webuiVersionText.text = "$webuiVer (最新)"
-                            webuiVersionText.setTextColor(0xFF64748b.toInt())
-                            webuiUpdateBadge.visibility = View.GONE
-                            getSharedPreferences("update_cache", Context.MODE_PRIVATE)
-                                .edit().remove("webui_latest").apply()
-                            Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-                "apk" -> {
-                    val apkVer = getVersionName()
-                    val channel = getUpdateChannel()
-                    val apkPath = getLocalApkPath()
-                    val apkUpdate = try { ApkUpdateChecker.checkUpdate(apkVer, channel, apkPath) } catch (e: Exception) { null }
-                    lastApkUpdate = apkUpdate
-                    handler.post {
-                        if (apkUpdate != null) {
-                            action()
-                        } else {
-                            apkVersionText.text = "${getVersionDisplayText()} (最新)"
-                            apkVersionText.setTextColor(0xFF64748b.toInt())
-                            apkUpdateBadge.visibility = View.GONE
-                            getSharedPreferences("update_cache", Context.MODE_PRIVATE).edit().apply {
-                                remove("apk_version"); remove("apk_tag"); remove("apk_url")
-                                remove("apk_body"); remove("apk_beta"); remove("apk_name")
-                                remove("apk_release_url"); remove("apk_size"); remove("apk_sha256")
-                            }.apply()
-                            Toast.makeText(this, "已是最新版本", Toast.LENGTH_SHORT).show()
-                        }
+                    "webui" -> {
+                        setResult(RESULT_UPDATE_WEBUI)
+                        finish()
                     }
                 }
             }
-        }.start()
+            .setNegativeButton("稍后", null)
+            .show()
     }
 
     /** 检测单个组件的更新 */
@@ -681,6 +600,8 @@ class SubSettingsActivity : AppCompatActivity() {
                             hermesVersionText.text = "$hermesVer → $latest"
                             hermesVersionText.setTextColor(0xFF10b981.toInt())
                             hermesUpdateBadge.visibility = View.VISIBLE
+                            // 检测到更新 — 弹出更新对话框
+                            showComponentUpdateDialog("Hermes Agent", hermesVer, latest, "hermes")
                         } else {
                             hermesVersionText.text = "$hermesVer (最新)"
                         }
@@ -706,6 +627,8 @@ class SubSettingsActivity : AppCompatActivity() {
                             webuiVersionText.text = "$webuiVer → $latest"
                             webuiVersionText.setTextColor(0xFF10b981.toInt())
                             webuiUpdateBadge.visibility = View.VISIBLE
+                            // 检测到更新 — 弹出更新对话框
+                            showComponentUpdateDialog("WebUI", webuiVer, latest, "webui")
                         } else {
                             webuiVersionText.text = "$webuiVer (最新)"
                         }
@@ -732,6 +655,8 @@ class SubSettingsActivity : AppCompatActivity() {
                             apkVersionText.text = "${getVersionDisplayText()} → ${apkUpdate.version}"
                             apkVersionText.setTextColor(0xFF10b981.toInt())
                             apkUpdateBadge.visibility = View.VISIBLE
+                            // 检测到更新 — 直接弹出安装对话框
+                            showApkUpdateDialog(apkUpdate)
                         } else {
                             apkVersionText.text = "${getVersionDisplayText()} (最新)"
                         }
