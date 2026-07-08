@@ -4,10 +4,6 @@
 
 通过 **proot + Ubuntu 24.04 rootfs** 在 Android 用户空间构建完整 Linux 环境，内置 hermes-web-ui Web 仪表盘。
 
-## 当前版本：v0.0.2-beta
-
-> ⚠️ 测试版，功能可能不稳定，仅供测试。
-
 ## 架构
 
 ```
