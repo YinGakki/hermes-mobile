@@ -195,7 +195,7 @@ class SubSettingsActivity : AppCompatActivity() {
             title = "更新 Hermes Agent",
             subtitle = "",
             extraRight = hermesRefresh,
-            iconRes = R.drawable.ic_bot
+            iconRes = R.drawable.ic_hermes_agent
         )
         hermesVersionText = hermesVer
         hermesUpdateBadge = hermesBadge
@@ -217,7 +217,7 @@ class SubSettingsActivity : AppCompatActivity() {
             title = "更新 WebUI",
             subtitle = "",
             extraRight = webuiRefresh,
-            iconRes = R.drawable.ic_chat
+            iconRes = R.drawable.ic_hermes_studio
         )
         webuiVersionText = webuiVer
         webuiUpdateBadge = webuiBadge
@@ -640,7 +640,6 @@ class SubSettingsActivity : AppCompatActivity() {
             }
             val icon = android.widget.ImageView(this@SubSettingsActivity).apply {
                 setImageResource(iconRes)
-                setColorFilter(0xFF818cf8.toInt())
                 layoutParams = LinearLayout.LayoutParams(
                     (24 * density).toInt(), (24 * density).toInt()
                 )
