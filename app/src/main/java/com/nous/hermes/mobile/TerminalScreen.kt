@@ -377,6 +377,11 @@ class TerminalScreen(
             'E' -> setCursor(cursorRow + (params.getOrNull(0) ?: 1), 0)  // 下一行行首
             'F' -> setCursor(cursorRow - (params.getOrNull(0) ?: 1), 0)  // 上一行行首
             'G' -> setCursor(cursorRow, (params.getOrNull(0)?.let { it - 1 } ?: 0))  // 列定位
+            'd' -> setCursor((params.getOrNull(0)?.let { it - 1 } ?: 0), cursorCol)  // 行定位 (VPA)
+
+            // 保存/恢复光标 (ANSI 版 — 与 ESC 7/8 功能相同)
+            's' -> if (!private) saveCursor()
+            'u' -> if (!private) restoreCursor()
 
             // 清除
             'J' -> eraseDisplay(params.getOrNull(0) ?: 0)    // 清屏
