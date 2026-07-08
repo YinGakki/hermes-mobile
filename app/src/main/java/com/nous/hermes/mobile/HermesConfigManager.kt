@@ -167,98 +167,112 @@ class HermesConfigManager(private val context: Context) {
     private val configFile: File by lazy { File(hermesDir, CONFIG_FILE) }
     private val envFile: File by lazy { File(hermesDir, ENV_FILE) }
 
-    /** 读取完整配置 */
+    /**
+     * 读取完整配置。
+     *
+     * Hermes Agent config.yaml 格式：
+     *   model:
+     *     default: "anthropic/claude-opus-4.6"
+     *     provider: "auto"
+     *     base_url: "https://openrouter.ai/api/v1"
+     *
+     *   providers:
+     *     my-proxy:
+     *       base_url: "https://..."
+     *       key_env: "MY_PROXY_API_KEY"
+     *       models:
+     *         model-1:
+     *         model-2:
+     */
     fun readConfig(): Config {
         val configText = if (configFile.exists()) configFile.readText() else ""
         val envText = if (envFile.exists()) envFile.readText() else ""
 
-        // 解析 config.yaml
         var provider = ""
         var model = ""
         val customProviders = mutableListOf<CustomProvider>()
 
-        // 简单 YAML 解析 — 只处理我们关心的字段
         val lines = configText.lines()
         var i = 0
         var inModel = false
-        var inCustomProviders = false
-        var currentProvider: MutableMap<String, Any>? = null
-        var currentModels: MutableList<String>? = null
+        var inProviders = false
+        var currentProviderName = ""
+        var currentBaseUrl = ""
+        var currentKeyEnv = ""
+        var currentModels = mutableListOf<String>()
 
         while (i < lines.size) {
             val line = lines[i]
             val trimmed = line.trim()
 
             when {
-                trimmed.startsWith("model:") -> {
+                // 顶层 model: 段
+                trimmed.startsWith("model:") && !line.startsWith(" ") -> {
                     inModel = true
-                    inCustomProviders = false
+                    inProviders = false
+                    flushProvider(customProviders, currentProviderName, currentBaseUrl, currentKeyEnv, currentModels)
+                    currentProviderName = ""; currentBaseUrl = ""; currentKeyEnv = ""; currentModels = mutableListOf()
                 }
-                trimmed.startsWith("custom_providers:") || trimmed.startsWith("providers:") -> {
+                // 顶层 providers: 段
+                trimmed.startsWith("providers:") && !line.startsWith(" ") -> {
                     inModel = false
-                    inCustomProviders = true
+                    inProviders = true
+                    flushProvider(customProviders, currentProviderName, currentBaseUrl, currentKeyEnv, currentModels)
+                    currentProviderName = ""; currentBaseUrl = ""; currentKeyEnv = ""; currentModels = mutableListOf()
                 }
-                trimmed.startsWith("- ") && inCustomProviders -> {
-                    // 新 provider 开始
-                    if (currentProvider != null) {
-                        customProviders.add(CustomProvider(
-                            name = currentProvider["name"] as? String ?: "",
-                            baseUrl = currentProvider["base_url"] as? String ?: "",
-                            apiKeyEnv = currentProvider["api_key_env"] as? String ?: "",
-                            models = (currentProvider["models"] as? List<String>) ?: emptyList(),
-                        ))
-                    }
-                    currentProvider = mutableMapOf()
-                    currentModels = mutableListOf()
-                    currentProvider["models"] = currentModels!!
-                    // 解析同行内容 "- name: xxx"
-                    val rest = trimmed.removePrefix("- ").trim()
-                    if (rest.contains(":")) {
-                        val (k, v) = rest.split(":", limit = 2).map { it.trim() }
-                        currentProvider[k] = v
+                // providers: 下的子键（provider 名称）
+                inProviders && trimmed.isNotEmpty() && !trimmed.startsWith("-") && trimmed.contains(":") -> {
+                    val indent = line.takeWhile { it == ' ' }.length
+                    if (indent == 2) {
+                        // 新的 provider 名称
+                        flushProvider(customProviders, currentProviderName, currentBaseUrl, currentKeyEnv, currentModels)
+                        currentProviderName = trimmed.substringBefore(":").trim()
+                        currentBaseUrl = ""
+                        currentKeyEnv = ""
+                        currentModels = mutableListOf()
+                    } else if (indent >= 4 && currentProviderName.isNotEmpty()) {
+                        // provider 的属性
+                        val (k, v) = trimmed.split(":", limit = 2).map { it.trim() }
+                        when (k) {
+                            "base_url" -> currentBaseUrl = v.trim('"')
+                            "key_env", "api_key_env" -> currentKeyEnv = v.trim('"')
+                        }
                     }
                 }
-                trimmed.contains(":") && inCustomProviders && currentProvider != null -> {
+                // providers: > provider > models: 下的模型名
+                inProviders && trimmed.isNotEmpty() && !trimmed.startsWith("-") && !trimmed.contains(": ") -> {
+                    // models 子段下的模型名（如 "  model-name:"）
+                    val indent = line.takeWhile { it == ' ' }.length
+                    if (indent >= 6 && currentProviderName.isNotEmpty()) {
+                        val modelName = trimmed.removeSuffix(":").trim().trim('"')
+                        if (modelName.isNotEmpty()) {
+                            currentModels.add(modelName)
+                        }
+                    }
+                }
+                // model: 段下的字段
+                inModel && trimmed.isNotEmpty() && trimmed.contains(":") -> {
                     val (k, v) = trimmed.split(":", limit = 2).map { it.trim() }
                     when (k) {
-                        "models" -> { /* 列表开始，currentModels 已初始化 */ }
-                        else -> currentProvider[k] = v
+                        "provider" -> provider = v.trim('"')
+                        // Hermes 用 "default" 作为模型名键，兼容 "name" 和 "model"
+                        "default", "name", "model" -> model = v.trim('"')
                     }
                 }
-                trimmed.startsWith("- ") && currentModels != null -> {
-                    currentModels.add(trimmed.removePrefix("- ").trim().trim('"'))
-                }
-                trimmed.contains(":") && inModel -> {
-                    val (k, v) = trimmed.split(":", limit = 2).map { it.trim() }
-                    when (k) {
-                        "provider" -> provider = v
-                        "name" -> model = v
-                    }
-                }
-                trimmed.isEmpty() -> {
-                    if (inCustomProviders && currentProvider != null) {
-                        customProviders.add(CustomProvider(
-                            name = currentProvider["name"] as? String ?: "",
-                            baseUrl = currentProvider["base_url"] as? String ?: "",
-                            apiKeyEnv = currentProvider["api_key_env"] as? String ?: "",
-                            models = (currentProvider["models"] as? List<String>) ?: emptyList(),
-                        ))
-                        currentProvider = null
-                        currentModels = null
+                // 遇到新的顶层段，结束当前段
+                trimmed.isNotEmpty() && !line.startsWith(" ") && !line.startsWith("#") && !trimmed.startsWith("-") -> {
+                    if (inModel || inProviders) {
+                        flushProvider(customProviders, currentProviderName, currentBaseUrl, currentKeyEnv, currentModels)
+                        currentProviderName = ""; currentBaseUrl = ""; currentKeyEnv = ""; currentModels = mutableListOf()
+                        inModel = false
+                        inProviders = false
                     }
                 }
             }
             i++
         }
         // 处理最后一个 provider
-        if (currentProvider != null) {
-            customProviders.add(CustomProvider(
-                name = currentProvider["name"] as? String ?: "",
-                baseUrl = currentProvider["base_url"] as? String ?: "",
-                apiKeyEnv = currentProvider["api_key_env"] as? String ?: "",
-                models = (currentProvider["models"] as? List<String>) ?: emptyList(),
-            ))
-        }
+        flushProvider(customProviders, currentProviderName, currentBaseUrl, currentKeyEnv, currentModels)
 
         // 解析 .env
         val apiKeys = mutableMapOf<String, String>()
@@ -276,6 +290,18 @@ class HermesConfigManager(private val context: Context) {
         return Config(provider, model, apiKeys, customProviders)
     }
 
+    private fun flushProvider(
+        list: MutableList<CustomProvider>,
+        name: String,
+        baseUrl: String,
+        keyEnv: String,
+        models: MutableList<String>,
+    ) {
+        if (name.isNotEmpty()) {
+            list.add(CustomProvider(name, baseUrl, keyEnv, models.toList()))
+        }
+    }
+
     /** 设置默认模型和 provider */
     fun setDefaultModel(provider: String, model: String): Boolean {
         return try {
@@ -288,20 +314,20 @@ class HermesConfigManager(private val context: Context) {
 
             for (i in lines.indices) {
                 val trimmed = lines[i].trim()
-                if (trimmed.startsWith("model:")) {
+                if (trimmed.startsWith("model:") && !lines[i].startsWith(" ")) {
                     inModel = true
                     modelStartIdx = i
                     continue
                 }
-                if (inModel && trimmed.isNotEmpty() && !trimmed.startsWith(" ") && !trimmed.startsWith("-")) {
+                if (inModel && trimmed.isNotEmpty() && !lines[i].startsWith(" ") && !trimmed.startsWith("-")) {
                     inModel = false
                 }
                 if (inModel) {
                     if (trimmed.startsWith("provider:")) {
-                        lines[i] = lines[i].replaceBefore(':', "  provider:") + " $provider"
+                        lines[i] = "  provider: \"$provider\""
                         providerSet = true
-                    } else if (trimmed.startsWith("name:")) {
-                        lines[i] = lines[i].replaceBefore(':', "  name:") + " $model"
+                    } else if (trimmed.startsWith("default:") || trimmed.startsWith("name:") || trimmed.startsWith("model:")) {
+                        lines[i] = "  default: \"$model\""
                         modelSet = true
                     }
                 }
@@ -310,17 +336,16 @@ class HermesConfigManager(private val context: Context) {
             // 如果没有 model 段，添加一个
             if (modelStartIdx < 0) {
                 lines.add(0, "model:")
-                lines.add(1, "  provider: $provider")
-                lines.add(2, "  name: $model")
+                lines.add(1, "  provider: \"$provider\"")
+                lines.add(2, "  default: \"$model\"")
             } else if (!providerSet || !modelSet) {
-                // model 段存在但缺少字段，在 model: 行后插入
                 var insertIdx = modelStartIdx + 1
                 if (!providerSet) {
-                    lines.add(insertIdx, "  provider: $provider")
+                    lines.add(insertIdx, "  provider: \"$provider\"")
                     insertIdx++
                 }
                 if (!modelSet) {
-                    lines.add(insertIdx, "  name: $model")
+                    lines.add(insertIdx, "  default: \"$model\"")
                 }
             }
 
@@ -363,20 +388,34 @@ class HermesConfigManager(private val context: Context) {
         }
     }
 
-    /** 添加自定义 provider（写入 config.yaml） */
+    /**
+     * 添加自定义 provider（写入 config.yaml 的 providers: 段）。
+     * 格式：
+     *   providers:
+     *     provider-name:
+     *       base_url: "https://..."
+     *       key_env: "API_KEY_ENV"
+     */
     fun addCustomProvider(name: String, baseUrl: String, apiKeyEnv: String, models: List<String>): Boolean {
         return try {
             val configText = if (configFile.exists()) configFile.readText() else ""
             val sb = StringBuilder(configText)
             if (!configText.endsWith("\n") && configText.isNotEmpty()) sb.append("\n")
 
-            sb.append("\ncustom_providers:\n")
-            sb.append("  - name: $name\n")
-            sb.append("    base_url: $baseUrl\n")
-            sb.append("    api_key_env: $apiKeyEnv\n")
-            sb.append("    models:\n")
-            for (m in models) {
-                sb.append("      - $m\n")
+            // 检查是否已有 providers: 段
+            if (configText.contains("\nproviders:") || configText.startsWith("providers:")) {
+                sb.append("  $name:\n")
+            } else {
+                sb.append("\nproviders:\n")
+                sb.append("  $name:\n")
+            }
+            sb.append("    base_url: \"$baseUrl\"\n")
+            sb.append("    key_env: \"$apiKeyEnv\"\n")
+            if (models.isNotEmpty()) {
+                sb.append("    models:\n")
+                for (m in models) {
+                    sb.append("      $m:\n")
+                }
             }
 
             configFile.writeText(sb.toString())
@@ -388,27 +427,47 @@ class HermesConfigManager(private val context: Context) {
         }
     }
 
-    /** 删除自定义 provider（从 config.yaml 移除） */
+    /** 删除自定义 provider（从 config.yaml 的 providers: 段移除） */
     fun removeCustomProvider(name: String): Boolean {
         return try {
             val configText = if (configFile.exists()) configFile.readText() else ""
             val lines = configText.lines().toMutableList()
             val result = mutableListOf<String>()
+            var inProviders = false
             var skipping = false
 
             for (i in lines.indices) {
                 val trimmed = lines[i].trim()
-                if (trimmed.startsWith("- name:") && trimmed.contains(name)) {
-                    skipping = true
+                val indent = lines[i].takeWhile { it == ' ' }.length
+
+                if (trimmed.startsWith("providers:") && indent == 0) {
+                    inProviders = true
+                    result.add(lines[i])
                     continue
                 }
-                if (skipping) {
-                    // 跳过直到下一个 - 或空行后非缩进行
-                    if (trimmed.startsWith("- ") || (trimmed.isNotEmpty() && !lines[i].startsWith(" "))) {
-                        skipping = false
-                        result.add(lines[i])
+                if (indent == 0 && trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                    inProviders = false
+                    skipping = false
+                    result.add(lines[i])
+                    continue
+                }
+                if (inProviders) {
+                    if (indent == 2 && trimmed.isNotEmpty()) {
+                        // provider 名称行
+                        val pName = trimmed.substringBefore(":").trim()
+                        if (pName == name) {
+                            skipping = true
+                            continue
+                        } else {
+                            skipping = false
+                            result.add(lines[i])
+                            continue
+                        }
                     }
-                    // 否则跳过
+                    if (skipping) {
+                        continue
+                    }
+                    result.add(lines[i])
                 } else {
                     result.add(lines[i])
                 }

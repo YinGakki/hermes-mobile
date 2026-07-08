@@ -100,8 +100,11 @@ class TerminalView @JvmOverloads constructor(
         val paint = this.paint
         val charWidth = if (paint.measureText("M") > 0) paint.measureText("M") else 7f
         val charHeight = maxOf(lineHeight, 1)
-        val newCols = maxOf((width / charWidth).toInt(), 20)
-        val newRows = maxOf((height / charHeight).toInt(), 5)
+        // 减去 padding，确保列数与可见区域匹配
+        val usableWidth = width - paddingLeft - paddingRight
+        val usableHeight = height - paddingTop - paddingBottom
+        val newCols = maxOf((usableWidth / charWidth).toInt(), 20)
+        val newRows = maxOf((usableHeight / charHeight).toInt(), 5)
         if (newCols != screen.cols || newRows != screen.rows) {
             screen.resize(newRows, newCols)
             renderToView()
