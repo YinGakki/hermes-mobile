@@ -1371,7 +1371,11 @@ class MainActivity : AppCompatActivity() {
             installChatUi()
             return
         }
-        ensureWebUIRunning { openChatWebView() }
+        if (!studioInstaller.isRunning) {
+            Toast.makeText(this, R.string.card_open_chat_subtitle_stopped, Toast.LENGTH_SHORT).show()
+            return
+        }
+        openChatWebView()
     }
 
     /**
@@ -1388,49 +1392,6 @@ class MainActivity : AppCompatActivity() {
             }
             startChatServer()
         }
-    }
-
-    /**
-     * 确保 WebUI 已启动，然后执行 action。
-     * 如果 WebUI 已在运行，直接执行 action。
-     * 如果未运行，先后台启动 WebUI，启动成功后再执行 action。
-     */
-    private fun ensureWebUIRunning(action: () -> Unit) {
-        if (studioInstaller.isRunning) {
-            action()
-            return
-        }
-        if (!studioInstaller.isInstalled()) {
-            Toast.makeText(this, "WebUI 未安装，请先完成安装", Toast.LENGTH_SHORT).show()
-            return
-        }
-        // 后台启动 WebUI，成功后执行 action
-        val styled = showStyledProgressDialog(
-            title = "正在启动 WebUI",
-            message = "请稍候…",
-        )
-        Thread {
-            val ok = studioInstaller.start { msg ->
-                runOnUiThread {
-                    if (!isFinishing) {
-                        styled.messageView.text = msg
-                        appendLog(msg)
-                    }
-                }
-            }
-            runOnUiThread {
-                if (!isFinishing) {
-                    styled.dialog.dismiss()
-                    activeProgressDialog = null
-                    refreshDashboardState()
-                    if (ok) {
-                        action()
-                    } else {
-                        Toast.makeText(this, "WebUI 启动失败，请手动启动服务后重试", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        }.also { activeThread = it; it.start() }
     }
 
     /**
